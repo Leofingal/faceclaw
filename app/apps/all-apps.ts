@@ -16,6 +16,7 @@ import blocksApp from "./blocks";
 import minesweeperApp from "./minesweeper";
 import freecellApp from "./freecell";
 import pinballApp from "./pinball";
+import paperclipsApp from "./paperclips";
 import debugTestsApp from "./debug-tests";
 import settingsApp from "./settings";
 
@@ -42,6 +43,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   minesweeperApp,
   freecellApp,
   pinballApp,
+  paperclipsApp,
   debugTestsApp,
   settingsApp,
 ];

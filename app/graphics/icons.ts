@@ -32,6 +32,8 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="6" r="3"/><path d="M4 14l7 5"/><path d="M20 14l-7 5"/><circle cx="4" cy="14" r="1"/><circle cx="20" cy="14" r="1"/></svg>',
   spade:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M12 18v4"/><path d="M2 14.499a5.5 5.5 0 0 0 9.591 3.675.6.6 0 0 1 .818.001A5.5 5.5 0 0 0 22 14.5c0-2.29-1.5-4-3-5.5l-5.492-5.312a2 2 0 0 0-3-.02L5 8.999c-1.5 1.5-3 3.2-3 5.5"/></svg>',
+  paperclip:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>',
   "file-text":
