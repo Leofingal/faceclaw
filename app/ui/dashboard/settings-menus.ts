@@ -139,6 +139,7 @@ function settingsSections(): SettingsSection[] {
         bundledDocMenuItem("README.md", "README"),
         bundledDocMenuItem("LICENSE", "License"),
         bundledDocMenuItem("PRIVACY", "Privacy policy"),
+        bundledDocMenuItem("ACKNOWLEDGEMENTS.md", "Acknowledgements"),
       ],
       renderDetail: renderAbout,
     },
