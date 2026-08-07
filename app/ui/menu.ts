@@ -24,6 +24,8 @@ export type MenuLayout = {
   x: number;
   y: number;
   width: number;
+  /** Whether to draw the rounded outline around the menu. Default: true. */
+  showBorder?: boolean;
   /** Smallest box to draw even when items don't fill it. Default: top half of the screen. */
   minHeight?: number;
   /** Height cap before the menu starts scrolling. Default: the full screen. */
@@ -215,7 +217,9 @@ export class MenuLayer implements Layer {
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
     image.fillRoundedRect(x, y, width, height, 1);
-    image.drawRoundedRect(x, y, width, height, 72);
+    if (this.layout.showBorder !== false) {
+      image.drawRoundedRect(x, y, width, height, 72);
+    }
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);
     }

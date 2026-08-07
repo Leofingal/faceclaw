@@ -98,3 +98,25 @@ Being a background app on a locked Android phone is fraught, and there may be
 issues with manufacturer-psecific battery optimization software that lead to
 it getting paused, throttled to low CPU usage, etc.
 
+## Contributing
+
+Be bold. Modify Faceclaw into the app that you want it to be for yourself,
+without worrying about whether other people will like your version. Then if you
+think your changes might be useful to others, make a pull request at 
+https://github.com/jimrandomh/faceclaw.
+
+The Typescript and Java code in this repository runs on your phone, not on the
+glasses themselves, and (with the narrow exception of the firmware-updating
+tool), can't hurt your hardware. For changes to the glasses firmware, refer to
+[g2flash](https://github.com/jimrandomh/faceclaw); changes there require more
+caution.
+
+Faceclaw is Free Software (GPLv3). Please only contribute code that you wrote
+(or prompted an agent to write), hold the copyright to, and have tested on
+physical hardware under real-world conditions. If you make any changes that
+involve integration with a third party's API or services, modify PRIVACY to
+mention them and link to that provider's privacy policy. For services that
+involve a user-provided API key, we assume that the user agreed to any terms
+associated with that service when they generated the key. For services that
+don't involve API keys, more caution may be required.
+

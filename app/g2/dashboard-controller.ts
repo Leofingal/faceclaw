@@ -1,4 +1,4 @@
-import { ImageSource } from "@nativescript/core";
+import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
@@ -1703,6 +1703,15 @@ class DashboardController {
    */
   private updateCompositePreview(): void {
     if (!this.communicator) return;
+    // The connected foreground service intentionally keeps this controller
+    // alive after the phone UI is backgrounded. Do not keep constructing
+    // 640x480 Android Bitmaps for a window that cannot display them: besides
+    // being wasted work, paused NativeScript views can retain queued image
+    // updates long enough to put severe pressure on the native heap.
+    if (global.isAndroid) {
+      const activity = Application.android.foregroundActivity;
+      if (!activity || !activity.hasWindowFocus()) return;
+    }
     const now = Date.now();
     if (
       this.lastConnectedPreviewUpdateAtMs > 0 &&

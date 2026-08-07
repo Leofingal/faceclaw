@@ -2,6 +2,7 @@ import { MenuLayer } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
 import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
+import { ResourceUsageLayer } from "./resource-usage";
 import { appViewportSize } from "../../ui/shell/geometry";
 import {
   createInProcessWindow,
@@ -19,7 +20,7 @@ export function createDebugTestsAppWindow(options: InProcessAppOptions): InProce
     "Debug tests",
     [
       {
-        label: "Screen test",
+        label: "Dither test",
         onSelect: (ctx) => {
           ctx.stack.push(new ScreenTestLayer());
         },
@@ -36,11 +37,18 @@ export function createDebugTestsAppWindow(options: InProcessAppOptions): InProce
           ctx.stack.push(new AccelerometerDemoLayer(DEBUG_TESTS_WINDOW_ID, ctx.actions.requestRender));
         },
       },
+      {
+        label: "Show resource usage",
+        onSelect: (ctx) => {
+          ctx.stack.push(new ResourceUsageLayer(DEBUG_TESTS_WINDOW_ID, ctx.actions.requestRender));
+        },
+      },
     ],
     {
       x: 8,
       y: 8,
       width: 272,
+      showBorder: false,
       minHeight: 0,
       maxHeight: appViewportSize("min").height - 16,
     },
