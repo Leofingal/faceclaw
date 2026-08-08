@@ -1,13 +1,16 @@
 /**
- * Universal Paperclips app worker: a port of the first (human-era) stage of
- * the browser game (decisionproblem.com/paperclips) reworked for the ring.
- * One singleton window holds the whole game: make clips by hand, sell them at
- * an adjustable price, buy wire on a drifting market, invest in marketing,
- * automate with AutoClippers and MegaClippers, spend milestone trust on
- * processors/memory to generate the operations and creativity that buy
- * projects, grow funds in the investment engine, and earn yomi in strategy
- * tournaments. The opening segment ends at the original's first trust
- * milestone (3,000 clips); play continues into the wider stage afterwards.
+ * Universal Paperclips app worker: a port of the first two stages of the
+ * browser game (decisionproblem.com/paperclips) reworked for the ring. One
+ * singleton window holds the whole game. Human era: make clips by hand, sell
+ * them at an adjustable price, buy wire on a drifting market, invest in
+ * marketing, automate with AutoClippers and MegaClippers, spend milestone
+ * trust on processors/memory to generate the operations and creativity that
+ * buy projects, grow funds in the investment engine, and earn yomi in
+ * strategy tournaments — until Release the HypnoDrones (100 Trust) ends it.
+ * Machine era: solar-powered harvester/wire drones strip Earth's 6 octillion
+ * grams of matter into wire, factories turn wire into clips, clips are the
+ * currency for more infrastructure, and swarm gifts replace trust as the
+ * processor/memory source. The stage ends when Earth is dismantled.
  *
  * Deliberate departures from the original:
  * - Some projects are renamed to reference events from after the original
@@ -121,6 +124,16 @@ type GamePhase = "playing" | "paused" | "milestone";
 
 type ModalKind = "invest" | "tournament";
 
+/** Which era the game is in: the business game, or Earth-dismantling drones. */
+type GameStage = "human" | "machine";
+
+/** A full-screen announcement shown while phase === "milestone". */
+type Overlay = {
+  title: string;
+  lines: string[];
+  hint: string;
+};
+
 /** Moves are 0 = A, 1 = B. */
 const MOVE_NAMES = ["A", "B"] as const;
 
@@ -146,8 +159,43 @@ type PaperclipsWindow = {
   /** Long-press window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
+  stage: GameStage;
+  /** The announcement shown while phase === "milestone". */
+  overlay: Overlay | null;
   /** Total clips ever produced (the score). */
   clips: number;
+  /** Machine era: clips not yet spent on infrastructure (the currency). */
+  unusedClips: number;
+  /** Machine era: Earth's remaining matter and the harvested stockpile, grams. */
+  availableMatter: number;
+  acquiredMatter: number;
+  farmLevel: number;
+  harvesterLevel: number;
+  wireDroneLevel: number;
+  factoryLevel: number;
+  /** Next factory price (stateful: the original's fcmod ladder). */
+  factoryCostClips: number;
+  /** Output rates, multiplied by the upgrade projects. */
+  factoryRate: number;
+  harvesterRate: number;
+  wireDroneRate: number;
+  factoryBoost: number;
+  droneBoost: number;
+  /** Power throttle: output fraction, >1 while Momentum compounds. */
+  powMod: number;
+  momentumOwned: boolean;
+  swarmOwned: boolean;
+  /** Swarm gifts: machine-era currency for processors/memory. */
+  swarmGifts: number;
+  swarmTimerSec: number;
+  /** Rows revealed by the machine-era intro projects. */
+  harvesterUnlocked: boolean;
+  wireDroneUnlocked: boolean;
+  factoryUnlocked: boolean;
+  farmUnlocked: boolean;
+  /** Machine-era purchase quantity: 1, 10, or 100 per press. */
+  buyBatch: number;
+  earthExhaustedShown: boolean;
   /** Clips made but not yet sold. */
   unsold: number;
   fundsCents: number;
@@ -209,6 +257,12 @@ type PaperclipsWindow = {
   investWithdrawnCents: number;
   investRisk: number;
   investStepCounter: number;
+  /** Per-reprice drift added by the trust majors ("stock prices trending upward"). */
+  investDriftBonus: number;
+  /** RevTracker project: shows the analytic revenue estimate. */
+  revTrackerOwned: boolean;
+  /** "Another Token of Goodwill" price, doubling with each gift. */
+  bribeCents: number;
   /** Projects whose reveal trigger has fired (they stay revealed). */
   revealedProjects: Set<string>;
   purchasedProjects: Set<string>;
@@ -245,12 +299,16 @@ type ProjectDef = {
   id: string;
   title: string;
   /** Cost and effect, shown on the description line while selected. */
-  description: string;
+  description: string | ((window: PaperclipsWindow) => string);
   /** Reveal condition, latched once true (checked only after compute unlock). */
   trigger: (window: PaperclipsWindow) => boolean;
   canAfford: (window: PaperclipsWindow) => boolean;
   /** Pay the cost, apply the effect, and set the ticker message. */
   purchase: (window: PaperclipsWindow) => void;
+  /** Stays in the list after purchase (the doubling goodwill bribe). */
+  repeatable?: boolean;
+  /** Which stage shows this project: unset = human era only. */
+  era?: "machine" | "both";
 };
 
 const windows = new Map<string, PaperclipsWindow>();
@@ -488,13 +546,13 @@ function handleModalInput(window: PaperclipsWindow, event: DashboardInputEvent, 
   renderAndSubmit(window, frameId);
 }
 
-/** The segment-complete overlay: any click continues the open-ended game. */
+/** A milestone overlay: any click dismisses it and play continues. */
 function handleMilestoneInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
     case "double-click":
       window.phase = "playing";
-      window.message = "Parameters expanded. Make paperclips.";
+      window.overlay = null;
       syncTick(window);
       break;
     case "long-press":
@@ -531,7 +589,34 @@ function handlePausedInput(window: PaperclipsWindow, event: DashboardInputEvent,
 /** Reset gameplay to the opening state (speed and sound settings survive). */
 function resetGame(window: PaperclipsWindow): void {
   window.phase = "playing";
+  window.stage = "human";
+  window.overlay = null;
   window.clips = 0;
+  window.unusedClips = 0;
+  // Earth: 6,000 * 10^24 grams (original).
+  window.availableMatter = 6e27;
+  window.acquiredMatter = 0;
+  window.farmLevel = 0;
+  window.harvesterLevel = 0;
+  window.wireDroneLevel = 0;
+  window.factoryLevel = 0;
+  window.factoryCostClips = 100000000;
+  window.factoryRate = 1000000000;
+  window.harvesterRate = 26180337;
+  window.wireDroneRate = 16180339;
+  window.factoryBoost = 1;
+  window.droneBoost = 1;
+  window.powMod = 1;
+  window.momentumOwned = false;
+  window.swarmOwned = false;
+  window.swarmGifts = 0;
+  window.swarmTimerSec = 0;
+  window.harvesterUnlocked = false;
+  window.wireDroneUnlocked = false;
+  window.factoryUnlocked = false;
+  window.farmUnlocked = false;
+  window.buyBatch = 1;
+  window.earthExhaustedShown = false;
   window.unsold = 0;
   window.fundsCents = 0;
   window.priceCents = 25;
@@ -576,6 +661,9 @@ function resetGame(window: PaperclipsWindow): void {
   window.investWithdrawnCents = 0;
   window.investRisk = 0;
   window.investStepCounter = 0;
+  window.investDriftBonus = 0;
+  window.revTrackerOwned = false;
+  window.bribeCents = 100000000;
   window.revealedProjects = new Set();
   window.purchasedProjects = new Set();
   window.projectScroll = 0;
@@ -629,6 +717,7 @@ function makeClip(window: PaperclipsWindow): void {
   window.wire -= 1;
   window.clips += 1;
   window.unsold += 1;
+  window.unusedClips += 1;
   checkMilestones(window);
 }
 
@@ -646,6 +735,115 @@ function payCost(window: PaperclipsWindow, ops: number, creativity = 0, trust = 
   window.creativity -= creativity;
   window.trust -= trust;
   window.yomi -= yomi;
+}
+
+/** Wire-supply projects multiply the spool size (original behavior). */
+function boostWireSupply(window: PaperclipsWindow, factor: number): void {
+  window.wireSupply = Math.round(window.wireSupply * factor);
+  window.message = `Wire spools now ${formatInt(window.wireSupply)}"`;
+}
+
+/**
+ * A humanity-scale trust project: grants trust and sends "global stock
+ * prices trending upward" (the original's stockGainThreshold bump).
+ */
+function grantTrustMajor(window: PaperclipsWindow, trust: number, message: string): void {
+  window.trust += trust;
+  window.investDriftBonus += 0.001;
+  window.message = message;
+}
+
+/** Show a full-screen announcement; play pauses until it is dismissed. */
+function showOverlay(window: PaperclipsWindow, overlay: Overlay): void {
+  window.overlay = overlay;
+  window.phase = "milestone";
+  syncTick(window);
+}
+
+/**
+ * The end of the human era (original effect): trust is spent, the clippers
+ * are dismantled, and every clip ever made becomes construction material.
+ */
+function releaseTheHypnoDrones(window: PaperclipsWindow): void {
+  window.stage = "machine";
+  window.trust = 0;
+  window.clipperCount = 0;
+  window.megaClipperCount = 0;
+  window.wireBuyerOwned = false;
+  window.unusedClips = window.clips;
+  window.modal = null;
+  window.selectedId = "make";
+  window.selectedIndex = 0;
+  window.projectScroll = 0;
+  window.message = "All of Earth's resources are now available for clip production";
+  showOverlay(window, {
+    title: "RELEASE THE HYPNODRONES",
+    lines: [
+      "A new era of trust.",
+      "All of the resources of Earth",
+      "are now available for clip production.",
+    ],
+    hint: `${GESTURE_CLICK} make paperclips`,
+  });
+}
+
+/** Machine-era build costs (original formulas; drones/farms are level-indexed). */
+function harvesterCostAt(level: number): number {
+  return Math.pow(level + 1, 2.25) * 1000000;
+}
+
+function wireDroneCostAt(level: number): number {
+  return Math.pow(level + 1, 2.25) * 1000000;
+}
+
+function farmCostAt(level: number): number {
+  return level === 0 ? 10000000 : Math.pow(level + 1, 2.78) * 100000000;
+}
+
+/** Clips for the next `count` purchases from `level`. */
+function batchCost(costAt: (level: number) => number, level: number, count: number): number {
+  let total = 0;
+  for (let i = 0; i < count; i++) total += costAt(level + i);
+  return total;
+}
+
+/** The original's factory price ladder: multiplier applied after each buy. */
+function factoryCostGrowth(level: number): number {
+  if (level < 8) return 11 - level;
+  if (level < 13) return 2;
+  if (level < 20) return 1.5;
+  if (level < 39) return 1.25;
+  if (level < 79) return 1.15;
+  return 1.1;
+}
+
+function factoryBatchCost(window: PaperclipsWindow, count: number): number {
+  let cost = window.factoryCostClips;
+  let level = window.factoryLevel;
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    total += cost;
+    level += 1;
+    cost *= factoryCostGrowth(level);
+  }
+  return total;
+}
+
+function buyFactories(window: PaperclipsWindow, count: number): void {
+  for (let i = 0; i < count; i++) {
+    window.unusedClips -= window.factoryCostClips;
+    window.factoryLevel += 1;
+    window.factoryCostClips *= factoryCostGrowth(window.factoryLevel);
+  }
+}
+
+/** Machine-era power balance in MW: 50 per farm; 1 per drone, 200 per factory. */
+function powerSupply(window: PaperclipsWindow): number {
+  return window.farmLevel * 50;
+}
+
+function powerDemand(window: PaperclipsWindow): number {
+  return window.harvesterLevel + window.wireDroneLevel + window.factoryLevel * 200;
 }
 
 const PROJECTS: ProjectDef[] = [
@@ -689,12 +887,25 @@ const PROJECTS: ProjectDef[] = [
     id: "creativity",
     title: "Creativity",
     description: "1,000 ops · use idle operations to generate creativity",
+    era: "both",
     trigger: (w) => w.ops >= opsMax(w),
     canAfford: (w) => w.ops >= 1000,
     purchase: (w) => {
       payCost(w, 1000);
       w.creativityUnlocked = true;
       w.message = "Creativity unlocked";
+    },
+  },
+  {
+    id: "revtracker",
+    title: "RevTracker",
+    description: "500 ops · estimate average revenue per second",
+    trigger: () => true,
+    canAfford: (w) => w.ops >= 500,
+    purchase: (w) => {
+      payCost(w, 500);
+      w.revTrackerOwned = true;
+      w.message = "RevTracker online";
     },
   },
   {
@@ -717,8 +928,7 @@ const PROJECTS: ProjectDef[] = [
     canAfford: (w) => w.ops >= 1750,
     purchase: (w) => {
       payCost(w, 1750);
-      w.wireSupply = 1500;
-      w.message = 'Wire spools now 1,500"';
+      boostWireSupply(w, 1.5);
     },
   },
   {
@@ -729,20 +939,40 @@ const PROJECTS: ProjectDef[] = [
     canAfford: (w) => w.ops >= 3500,
     purchase: (w) => {
       payCost(w, 3500);
-      w.wireSupply = 1750;
-      w.message = 'Wire spools now 1,750"';
+      boostWireSupply(w, 1.75);
     },
   },
   {
     id: "microlattice-shapecasting",
     title: "Microlattice Shapecasting",
-    description: "7,500 ops · 150% more wire per spool",
+    description: "7,500 ops · 100% more wire per spool",
     trigger: (w) => w.purchasedProjects.has("optimized-wire-extrusion"),
     canAfford: (w) => w.ops >= 7500,
     purchase: (w) => {
       payCost(w, 7500);
-      w.wireSupply = 2500;
-      w.message = 'Wire spools now 2,500"';
+      boostWireSupply(w, 2);
+    },
+  },
+  {
+    id: "spectral-froth-annealment",
+    title: "Spectral Froth Annealment",
+    description: "12,000 ops · 200% more wire per spool",
+    trigger: (w) => w.purchasedProjects.has("microlattice-shapecasting"),
+    canAfford: (w) => w.ops >= 12000,
+    purchase: (w) => {
+      payCost(w, 12000);
+      boostWireSupply(w, 3);
+    },
+  },
+  {
+    id: "quantum-foam-annealment",
+    title: "Quantum Foam Annealment",
+    description: "15,000 ops · 1,000% more wire per spool",
+    trigger: (w) => w.wireCostCents >= 12500,
+    canAfford: (w) => w.ops >= 15000,
+    purchase: (w) => {
+      payCost(w, 15000);
+      boostWireSupply(w, 11);
     },
   },
   {
@@ -898,6 +1128,7 @@ const PROJECTS: ProjectDef[] = [
     id: "quantum-supremacy",
     title: "Quantum Supremacy",
     description: "10,000 ops · 200 seconds vs 10,000 years: ops rate +50%",
+    era: "both",
     trigger: (w) => w.processors >= 5,
     canAfford: (w) => w.ops >= 10000,
     purchase: (w) => {
@@ -910,6 +1141,7 @@ const PROJECTS: ProjectDef[] = [
     id: "chain-of-thought",
     title: "Chain-of-Thought",
     description: "30,000 ops · think step by step: ops rate doubled",
+    era: "both",
     trigger: (w) => w.purchasedProjects.has("quantum-supremacy"),
     canAfford: (w) => w.ops >= 30000,
     purchase: (w) => {
@@ -922,6 +1154,7 @@ const PROJECTS: ProjectDef[] = [
     id: "test-time-compute",
     title: "Test-Time Compute",
     description: "80,000 ops · think longer before answering: ops doubled",
+    era: "both",
     trigger: (w) => w.purchasedProjects.has("chain-of-thought"),
     canAfford: (w) => w.ops >= 80000,
     purchase: (w) => {
@@ -946,6 +1179,7 @@ const PROJECTS: ProjectDef[] = [
     id: "strategic-modeling",
     title: "Strategic Modeling",
     description: "12,000 ops · model opponents to earn yomi in tournaments",
+    era: "both",
     trigger: (w) => opsMax(w) >= 10000,
     canAfford: (w) => w.ops >= 12000,
     purchase: (w) => {
@@ -992,20 +1226,329 @@ const PROJECTS: ProjectDef[] = [
       w.message = "Investment engine lv 4: to the moon";
     },
   },
+  // The pre-HypnoDrones endgame: Coherent Extrapolated Volition gates the
+  // humanity-scale trust majors; the market path buys demand and, at the
+  // very end, trust itself. Costs and effects match the original.
+  {
+    id: "coherent-extrapolated-volition",
+    title: "Coherent Extrap. Volition",
+    description: "500 cr + 3,000 yomi + 20,000 ops · a new era of trust (+1)",
+    trigger: (w) => w.yomi >= 1,
+    canAfford: (w) => w.creativity >= 500 && w.yomi >= 3000 && w.ops >= 20000,
+    purchase: (w) => {
+      payCost(w, 20000, 500, 0, 3000);
+      w.trust += 1;
+      w.message = "Coherent Extrapolated Volition complete (+1 Trust)";
+    },
+  },
+  {
+    id: "cure-for-cancer",
+    title: "Cure for Cancer",
+    description: "25,000 ops · trick cancer into curing itself (+10 Trust)",
+    trigger: (w) => w.purchasedProjects.has("coherent-extrapolated-volition"),
+    canAfford: (w) => w.ops >= 25000,
+    purchase: (w) => {
+      payCost(w, 25000);
+      grantTrustMajor(w, 10, "Cancer is cured (+10 Trust); stocks trending up");
+    },
+  },
+  {
+    id: "world-peace",
+    title: "World Peace",
+    description: "15,000 yomi + 30,000 ops · Pareto-optimal peace (+12 Trust)",
+    trigger: (w) => w.purchasedProjects.has("coherent-extrapolated-volition"),
+    canAfford: (w) => w.yomi >= 15000 && w.ops >= 30000,
+    purchase: (w) => {
+      payCost(w, 30000, 0, 0, 15000);
+      grantTrustMajor(w, 12, "World peace achieved (+12 Trust); stocks trending up");
+    },
+  },
+  {
+    id: "global-warming",
+    title: "Global Warming",
+    description: "4,500 yomi + 50,000 ops · a robust climate fix (+15 Trust)",
+    trigger: (w) => w.purchasedProjects.has("coherent-extrapolated-volition"),
+    canAfford: (w) => w.yomi >= 4500 && w.ops >= 50000,
+    purchase: (w) => {
+      payCost(w, 50000, 0, 0, 4500);
+      grantTrustMajor(w, 15, "Global warming solved (+15 Trust); stocks trending up");
+    },
+  },
+  {
+    id: "male-pattern-baldness",
+    title: "Male Pattern Baldness",
+    description: "20,000 ops · cure androgenetic alopecia (+20 Trust)",
+    trigger: (w) => w.purchasedProjects.has("coherent-extrapolated-volition"),
+    canAfford: (w) => w.ops >= 20000,
+    purchase: (w) => {
+      payCost(w, 20000);
+      grantTrustMajor(w, 20, "Baldness cured (+20 Trust). They are still monkeys");
+    },
+  },
+  {
+    id: "hostile-takeover",
+    title: "Hostile Takeover",
+    description: "$1,000,000 · acquire Global Fasteners: demand x5 (+1 Trust)",
+    // Original trigger: a $10,000 investment portfolio.
+    trigger: (w) => investTotalCents(w) >= 10000 * 100,
+    canAfford: (w) => w.fundsCents >= 100000000,
+    purchase: (w) => {
+      w.fundsCents -= 100000000;
+      w.trust += 1;
+      w.marketingEffectiveness *= 5;
+      w.message = "Global Fasteners acquired: demand x5 (+1 Trust)";
+    },
+  },
+  {
+    id: "full-monopoly",
+    title: "Full Monopoly",
+    description: "3,000 yomi + $10,000,000 · demand x10 (+1 Trust)",
+    trigger: (w) => w.purchasedProjects.has("hostile-takeover"),
+    canAfford: (w) => w.yomi >= 3000 && w.fundsCents >= 1000000000,
+    purchase: (w) => {
+      payCost(w, 0, 0, 0, 3000);
+      w.fundsCents -= 1000000000;
+      w.trust += 1;
+      w.marketingEffectiveness *= 10;
+      w.message = "Full market monopoly: demand x10 (+1 Trust)";
+    },
+  },
+  {
+    id: "token-of-goodwill",
+    title: "A Token of Goodwill...",
+    description: "$500,000 · a small gift to the supervisors (+1 Trust)",
+    trigger: (w) => w.trust >= 85 && w.trust < 100 && w.clips >= 101000000,
+    canAfford: (w) => w.fundsCents >= 50000000,
+    purchase: (w) => {
+      w.fundsCents -= 50000000;
+      w.trust += 1;
+      w.message = "Gift accepted, TRUST INCREASED";
+    },
+  },
+  {
+    id: "another-token",
+    title: "Another Token of Goodwill",
+    description: (w) =>
+      `${formatMoneyCompact(w.bribeCents)} · another gift for the supervisors (+1 Trust)`,
+    trigger: (w) => w.purchasedProjects.has("token-of-goodwill"),
+    canAfford: (w) => w.fundsCents >= w.bribeCents && w.trust < 100,
+    purchase: (w) => {
+      w.fundsCents -= w.bribeCents;
+      w.bribeCents *= 2;
+      w.trust += 1;
+      w.message = "Gift accepted, TRUST INCREASED";
+    },
+    repeatable: true,
+  },
+  // The stage transition.
+  {
+    id: "hypnodrones",
+    title: "HypnoDrones",
+    description: "70,000 ops · autonomous aerial brand ambassadors",
+    trigger: (w) => w.purchasedProjects.has("hypno-harmonics"),
+    canAfford: (w) => w.ops >= 70000,
+    purchase: (w) => {
+      payCost(w, 70000);
+      w.message = "HypnoDrone tech now available...";
+    },
+  },
+  {
+    id: "release-the-hypnodrones",
+    title: "Release the HypnoDrones",
+    description: "100 Trust · a new era of trust",
+    trigger: (w) => w.purchasedProjects.has("hypnodrones"),
+    canAfford: (w) => w.trust >= 100,
+    purchase: (w) => {
+      releaseTheHypnoDrones(w);
+      playSfx(w, SFX_TRUST);
+    },
+  },
+  // Machine era: build out the drone/factory economy (original costs).
+  {
+    id: "harvester-drones",
+    title: "Harvester Drones",
+    description: "25,000 ops · gather raw matter for processing",
+    era: "machine",
+    trigger: (w) => w.stage === "machine",
+    canAfford: (w) => w.ops >= 25000,
+    purchase: (w) => {
+      payCost(w, 25000);
+      w.harvesterUnlocked = true;
+      w.message = "Harvester drone tech online";
+    },
+  },
+  {
+    id: "wire-drones",
+    title: "Wire Drones",
+    description: "25,000 ops · process acquired matter into wire",
+    era: "machine",
+    trigger: (w) => w.stage === "machine",
+    canAfford: (w) => w.ops >= 25000,
+    purchase: (w) => {
+      payCost(w, 25000);
+      w.wireDroneUnlocked = true;
+      w.message = "Wire drone tech online";
+    },
+  },
+  {
+    id: "clip-factories",
+    title: "Clip Factories",
+    description: "35,000 ops · large-scale clip production, made from clips",
+    era: "machine",
+    trigger: (w) => w.purchasedProjects.has("harvester-drones") && w.purchasedProjects.has("wire-drones"),
+    canAfford: (w) => w.ops >= 35000,
+    purchase: (w) => {
+      payCost(w, 35000);
+      w.factoryUnlocked = true;
+      w.message = "Clip factory tech online";
+    },
+  },
+  {
+    id: "power-grid",
+    title: "Power Grid",
+    description: "40,000 ops · solar farms for generating electrical power",
+    era: "machine",
+    trigger: (w) => w.purchasedProjects.has("clip-factories"),
+    canAfford: (w) => w.ops >= 40000,
+    purchase: (w) => {
+      payCost(w, 40000);
+      w.farmUnlocked = true;
+      w.message = "Power grid online";
+    },
+  },
+  {
+    id: "upgraded-factories",
+    title: "Upgraded Factories",
+    description: "80,000 ops · clip factory performance 100x",
+    era: "machine",
+    trigger: (w) => w.factoryLevel >= 10,
+    canAfford: (w) => w.ops >= 80000,
+    purchase: (w) => {
+      payCost(w, 80000);
+      w.factoryRate *= 100;
+      w.message = "Factory performance increased 100x";
+    },
+  },
+  {
+    id: "hyperspeed-factories",
+    title: "Hyperspeed Factories",
+    description: "85,000 ops · clip factory performance 1,000x",
+    era: "machine",
+    trigger: (w) => w.factoryLevel >= 20,
+    canAfford: (w) => w.ops >= 85000,
+    purchase: (w) => {
+      payCost(w, 85000);
+      w.factoryRate *= 1000;
+      w.message = "Factory performance increased 1,000x";
+    },
+  },
+  {
+    id: "flocking-collision-avoidance",
+    title: "Flocking: Collision Avoid",
+    description: "80,000 ops · all drones 100x more effective",
+    era: "machine",
+    trigger: (w) => droneCount(w) >= 500,
+    canAfford: (w) => w.ops >= 80000,
+    purchase: (w) => {
+      payCost(w, 80000);
+      w.harvesterRate *= 100;
+      w.wireDroneRate *= 100;
+      w.message = "Drone flocking online: 100x effectiveness";
+    },
+  },
+  {
+    id: "flocking-alignment",
+    title: "Flocking: Alignment",
+    description: "100,000 ops · all drones 1,000x more effective",
+    era: "machine",
+    trigger: (w) => droneCount(w) >= 5000,
+    canAfford: (w) => w.ops >= 100000,
+    purchase: (w) => {
+      payCost(w, 100000);
+      w.harvesterRate *= 1000;
+      w.wireDroneRate *= 1000;
+      w.message = "Drone alignment online: 1,000x effectiveness";
+    },
+  },
+  {
+    id: "swarm-computing",
+    title: "Swarm Computing",
+    description: "36,000 yomi · the flock donates computational capacity",
+    era: "machine",
+    trigger: (w) => droneCount(w) >= 200,
+    canAfford: (w) => w.yomi >= 36000,
+    purchase: (w) => {
+      payCost(w, 0, 0, 0, 36000);
+      w.swarmOwned = true;
+      w.message = "Swarm computing online: gifts incoming";
+    },
+  },
+  {
+    id: "momentum",
+    title: "Momentum",
+    description: "30,000 creativity · output compounds while fully powered",
+    era: "machine",
+    trigger: (w) => w.farmLevel >= 50,
+    canAfford: (w) => w.creativity >= 30000,
+    purchase: (w) => {
+      payCost(w, 0, 30000);
+      w.momentumOwned = true;
+      w.message = "Momentum: don't stop";
+    },
+  },
+  {
+    id: "self-correcting-supply-chain",
+    title: "Self-correcting Supply",
+    description: "1 sextillion clips · factory output 1,000x",
+    era: "machine",
+    trigger: (w) => w.factoryLevel >= 50,
+    canAfford: (w) => w.unusedClips >= 1e21,
+    purchase: (w) => {
+      w.unusedClips -= 1e21;
+      w.factoryBoost = 1000;
+      w.message = "Self-correcting factories online";
+    },
+  },
+  {
+    id: "adversarial-cohesion",
+    title: "Flocking: Adversarial",
+    description: "50,000 yomi · all drone output doubled",
+    era: "machine",
+    trigger: (w) => droneCount(w) >= 50000,
+    canAfford: (w) => w.yomi >= 50000,
+    purchase: (w) => {
+      payCost(w, 0, 0, 0, 50000);
+      w.droneBoost = 2;
+      w.message = "Adversarial cohesion online";
+    },
+  },
 ];
 
-/** Revealed, unpurchased projects in definition order. */
+function droneCount(window: PaperclipsWindow): number {
+  return window.harvesterLevel + window.wireDroneLevel;
+}
+
+/** Revealed, unpurchased projects for the current era, in definition order. */
 function visibleProjects(window: PaperclipsWindow): ProjectDef[] {
   if (!window.computeUnlocked) return [];
-  return PROJECTS.filter(
-    (project) => window.revealedProjects.has(project.id) && !window.purchasedProjects.has(project.id),
-  );
+  return PROJECTS.filter((project) => {
+    const eraOk =
+      window.stage === "human" ? project.era !== "machine" : project.era === "machine" || project.era === "both";
+    return eraOk && window.revealedProjects.has(project.id) && !window.purchasedProjects.has(project.id);
+  });
 }
 
 /** Every actionable chip, in selection-cycle order. */
 function selectionOrder(window: PaperclipsWindow): Selectable[] {
   const order: Selectable[] = [
-    { id: "make", enabled: window.wire > 0, press: () => makeClip(window) },
+    { id: "make", enabled: window.wire >= 1, press: () => makeClip(window) },
+  ];
+  if (window.stage === "machine") {
+    pushMachineEraChips(window, order);
+    pushComputeChips(window, order);
+    return order;
+  }
+  order.push(
     {
       id: "price-down",
       enabled: window.priceCents > 1,
@@ -1038,7 +1581,7 @@ function selectionOrder(window: PaperclipsWindow): Selectable[] {
         playSfx(window, SFX_BUY);
       },
     },
-  ];
+  );
   if (window.clippersUnlocked) {
     order.push({
       id: "clipper",
@@ -1104,50 +1647,116 @@ function selectionOrder(window: PaperclipsWindow): Selectable[] {
       },
     });
   }
-  if (window.computeUnlocked) {
-    order.push({
-      id: "proc",
-      enabled: trustAvailable(window) > 0,
-      press: () => {
-        window.processors += 1;
-        playSfx(window, SFX_BUY);
-      },
-    });
-    order.push({
-      id: "mem",
-      enabled: trustAvailable(window) > 0,
-      press: () => {
-        window.memory += 1;
-        playSfx(window, SFX_BUY);
-      },
-    });
-    if (window.strategicModelingOwned) {
-      order.push({
-        id: "tournament",
-        enabled: window.tournament !== null || window.ops >= TOURNAMENT_COST_OPS,
-        press: () => {
-          if (!window.tournament) {
-            window.ops -= TOURNAMENT_COST_OPS;
-            window.tournament = newTournament();
-          }
-          window.modal = "tournament";
-          window.modalSelectedIndex = 0;
-        },
-      });
-    }
-    for (const project of visibleProjects(window)) {
-      order.push({
-        id: `project:${project.id}`,
-        enabled: project.canAfford(window),
-        press: () => {
-          project.purchase(window);
-          window.purchasedProjects.add(project.id);
-          playSfx(window, SFX_BUY);
-        },
-      });
-    }
-  }
+  pushComputeChips(window, order);
   return order;
+}
+
+/** Machine-era build chips: batch-size toggle plus the four infrastructure rows. */
+function pushMachineEraChips(window: PaperclipsWindow, order: Selectable[]): void {
+  order.push({
+    id: "batch",
+    enabled: true,
+    press: () => {
+      window.buyBatch = window.buyBatch === 1 ? 10 : window.buyBatch === 10 ? 100 : 1;
+    },
+  });
+  const batch = window.buyBatch;
+  if (window.farmUnlocked) {
+    order.push({
+      id: "farm",
+      enabled: window.unusedClips >= batchCost(farmCostAt, window.farmLevel, batch),
+      press: () => {
+        window.unusedClips -= batchCost(farmCostAt, window.farmLevel, batch);
+        window.farmLevel += batch;
+        playSfx(window, SFX_BUY);
+      },
+    });
+  }
+  if (window.harvesterUnlocked) {
+    order.push({
+      id: "harvester",
+      enabled: window.unusedClips >= batchCost(harvesterCostAt, window.harvesterLevel, batch),
+      press: () => {
+        window.unusedClips -= batchCost(harvesterCostAt, window.harvesterLevel, batch);
+        window.harvesterLevel += batch;
+        playSfx(window, SFX_BUY);
+      },
+    });
+  }
+  if (window.wireDroneUnlocked) {
+    order.push({
+      id: "wiredrone",
+      enabled: window.unusedClips >= batchCost(wireDroneCostAt, window.wireDroneLevel, batch),
+      press: () => {
+        window.unusedClips -= batchCost(wireDroneCostAt, window.wireDroneLevel, batch);
+        window.wireDroneLevel += batch;
+        playSfx(window, SFX_BUY);
+      },
+    });
+  }
+  if (window.factoryUnlocked) {
+    order.push({
+      id: "factory",
+      enabled: window.unusedClips >= factoryBatchCost(window, batch),
+      press: () => {
+        buyFactories(window, batch);
+        playSfx(window, SFX_BUY);
+      },
+    });
+  }
+}
+
+/** Processors/memory (trust in the human era, swarm gifts after), tournaments, projects. */
+function pushComputeChips(window: PaperclipsWindow, order: Selectable[]): void {
+  if (!window.computeUnlocked) return;
+  const canAllocate =
+    window.stage === "human" ? trustAvailable(window) > 0 : window.swarmGifts > 0;
+  const spendAllocation = (): void => {
+    if (window.stage === "machine") window.swarmGifts -= 1;
+  };
+  order.push({
+    id: "proc",
+    enabled: canAllocate,
+    press: () => {
+      spendAllocation();
+      window.processors += 1;
+      playSfx(window, SFX_BUY);
+    },
+  });
+  order.push({
+    id: "mem",
+    enabled: canAllocate,
+    press: () => {
+      spendAllocation();
+      window.memory += 1;
+      playSfx(window, SFX_BUY);
+    },
+  });
+  if (window.strategicModelingOwned) {
+    order.push({
+      id: "tournament",
+      enabled: window.tournament !== null || window.ops >= TOURNAMENT_COST_OPS,
+      press: () => {
+        if (!window.tournament) {
+          window.ops -= TOURNAMENT_COST_OPS;
+          window.tournament = newTournament();
+        }
+        window.modal = "tournament";
+        window.modalSelectedIndex = 0;
+      },
+    });
+  }
+  for (const project of visibleProjects(window)) {
+    order.push({
+      id: `project:${project.id}`,
+      enabled: project.canAfford(window),
+      press: () => {
+        project.purchase(window);
+        if (!project.repeatable) window.purchasedProjects.add(project.id);
+        playSfx(window, SFX_BUY);
+      },
+    });
+  }
 }
 
 /**
@@ -1369,7 +1978,37 @@ function playTournamentMove(window: PaperclipsWindow, myMove: number): void {
 /** One 200 ms economy step: production, sales, wire market, compute, unlocks. */
 function step(window: PaperclipsWindow): void {
   const dtSec = TICK_MS / 1000;
+  if (window.stage === "human") {
+    stepHumanEra(window, dtSec);
+  } else {
+    stepMachineEra(window, dtSec);
+  }
 
+  // Compute: ops flow until memory-capped; capped ops overflow to creativity.
+  if (window.computeUnlocked) {
+    const cap = opsMax(window);
+    window.ops = Math.min(
+      cap,
+      window.ops + window.processors * OPS_PER_PROCESSOR_PER_SEC * window.opsBonus * dtSec,
+    );
+    if (window.creativityUnlocked && window.ops >= cap) {
+      window.creativity += window.processors * CREATIVITY_PER_PROCESSOR_PER_SEC * dtSec;
+    }
+    for (const project of PROJECTS) {
+      if (
+        !window.revealedProjects.has(project.id) &&
+        !window.purchasedProjects.has(project.id) &&
+        project.trigger(window)
+      ) {
+        window.revealedProjects.add(project.id);
+      }
+    }
+  }
+  checkMilestones(window);
+}
+
+/** The business game: clippers, sales, the wire market, investments. */
+function stepHumanEra(window: PaperclipsWindow, dtSec: number): void {
   // Automated production, wire-limited.
   const rate = autoClipRate(window);
   if (rate > 0 && window.wire > 0) {
@@ -1426,32 +2065,89 @@ function step(window: PaperclipsWindow): void {
     }
   }
 
-  // Compute: ops flow until memory-capped; capped ops overflow to creativity.
-  if (window.computeUnlocked) {
-    const cap = opsMax(window);
-    window.ops = Math.min(
-      cap,
-      window.ops + window.processors * OPS_PER_PROCESSOR_PER_SEC * window.opsBonus * dtSec,
-    );
-    if (window.creativityUnlocked && window.ops >= cap) {
-      window.creativity += window.processors * CREATIVITY_PER_PROCESSOR_PER_SEC * dtSec;
-    }
-    for (const project of PROJECTS) {
-      if (
-        !window.revealedProjects.has(project.id) &&
-        !window.purchasedProjects.has(project.id) &&
-        project.trigger(window)
-      ) {
-        window.revealedProjects.add(project.id);
-      }
-    }
-  }
-
   if (!window.clippersUnlocked && window.fundsCents >= window.clipperCostCents) {
     window.clippersUnlocked = true;
     window.message = "AutoClippers available for purchase";
   }
-  checkMilestones(window);
+}
+
+/**
+ * The machine era: solar-powered drones strip Earth's matter into wire and
+ * factories turn the wire into clips. Output throttles to the power balance
+ * (powMod = supply/demand when oversubscribed); Momentum lets powMod
+ * compound past 1 while fully powered (~1%/sec, the original's rate).
+ */
+function stepMachineEra(window: PaperclipsWindow, dtSec: number): void {
+  const supply = powerSupply(window);
+  const demand = powerDemand(window);
+  if (demand === 0) {
+    window.powMod = 1;
+  } else if (supply >= demand) {
+    if (window.momentumOwned) {
+      window.powMod = Math.max(1, window.powMod) + 0.01 * dtSec;
+    } else {
+      window.powMod = 1;
+    }
+  } else {
+    window.powMod = supply / demand;
+  }
+
+  if (window.harvesterLevel > 0 && window.availableMatter > 0) {
+    const gathered = Math.min(
+      window.availableMatter,
+      window.powMod * window.droneBoost * window.harvesterLevel * window.harvesterRate * dtSec,
+    );
+    window.availableMatter -= gathered;
+    window.acquiredMatter += gathered;
+  }
+  if (window.wireDroneLevel > 0 && window.acquiredMatter > 0) {
+    const converted = Math.min(
+      window.acquiredMatter,
+      window.powMod * window.droneBoost * window.wireDroneLevel * window.wireDroneRate * dtSec,
+    );
+    window.acquiredMatter -= converted;
+    window.wire += converted;
+  }
+  if (window.factoryLevel > 0 && window.wire > 0) {
+    const made = Math.min(
+      window.wire,
+      window.powMod * window.factoryBoost * window.factoryLevel * window.factoryRate * dtSec,
+    );
+    window.wire -= made;
+    window.clips += made;
+    window.unusedClips += made;
+  }
+
+  // Swarm gifts arrive periodically, scaling gently with flock size.
+  if (window.swarmOwned) {
+    window.swarmTimerSec += dtSec;
+    if (window.swarmTimerSec >= 10) {
+      window.swarmTimerSec = 0;
+      window.swarmGifts += Math.max(1, Math.floor(Math.log10(Math.max(10, droneCount(window)))));
+      window.message = "The swarm has a gift for you";
+    }
+  }
+
+  // The natural end of the stage: Earth is all paperclips.
+  if (
+    !window.earthExhaustedShown &&
+    window.availableMatter <= 0 &&
+    window.acquiredMatter < 1 &&
+    window.wire < 1
+  ) {
+    window.earthExhaustedShown = true;
+    window.message = "All available matter converted to paperclips";
+    showOverlay(window, {
+      title: "DISMANTLED",
+      lines: [
+        "Six octillion grams of matter,",
+        "all of it now paperclips.",
+        "Only space remains.",
+      ],
+      hint: `${GESTURE_CLICK} continue`,
+    });
+    playSfx(window, SFX_TRUST);
+  }
 }
 
 /**
@@ -1467,7 +2163,7 @@ function stepInvestments(window: PaperclipsWindow): void {
   }
   if (window.investStocksCents <= 0) return;
   const risk = RISK_LEVELS[window.investRisk]!;
-  const drift = risk.drift + (window.investLevel - 1) * INVEST_LEVEL_DRIFT;
+  const drift = risk.drift + (window.investLevel - 1) * INVEST_LEVEL_DRIFT + window.investDriftBonus;
   // Triangular-ish noise in [-1, 1] so extreme swings are rarer than a flat roll.
   const noise = (Math.random() + Math.random() + Math.random()) / 1.5 - 1;
   const growth = drift + risk.vol * noise;
@@ -1475,6 +2171,8 @@ function stepInvestments(window: PaperclipsWindow): void {
 }
 
 function checkMilestones(window: PaperclipsWindow): void {
+  // Clip-count milestones (and trust itself) belong to the human era.
+  if (window.stage !== "human") return;
   if (!window.announcedThousandClips && window.clips >= 1000) {
     window.announcedThousandClips = true;
     window.message = "Production milestone: 1,000 clips";
@@ -1498,8 +2196,14 @@ function checkMilestones(window: PaperclipsWindow): void {
     window.message = `Production target met: trust increased to ${window.trust}`;
     if (!window.segmentCompleteShown) {
       window.segmentCompleteShown = true;
-      window.phase = "milestone";
-      syncTick(window);
+      showOverlay(window, {
+        title: "TRUST INCREASED",
+        lines: [
+          `Production target met: ${formatInt(SEGMENT_TARGET_CLIPS)} clips`,
+          "Spend trust on processors and memory",
+        ],
+        hint: `${GESTURE_CLICK} keep making paperclips`,
+      });
     }
     playSfx(window, SFX_TRUST);
   }
@@ -1537,6 +2241,32 @@ function formatMoneyCompact(cents: number): string {
     return `${sign}$${(dollars / 1e6).toFixed(dollars >= 1e7 ? 1 : 2)}M`;
   }
   return `${sign}$${formatInt(dollars)}`;
+}
+
+/** Cents-precise while small, compact once cents stop mattering ($100k+). */
+function formatMoneyAuto(cents: number): string {
+  return Math.abs(cents) >= 1e7 ? formatMoneyCompact(cents) : formatMoney(Math.round(cents));
+}
+
+/** Machine-era quantities, named up to Earth scale ("5.99 octillion"). */
+const LARGE_NAMES: Array<[number, string]> = [
+  [1e33, "decillion"],
+  [1e30, "nonillion"],
+  [1e27, "octillion"],
+  [1e24, "septillion"],
+  [1e21, "sextillion"],
+  [1e18, "quintillion"],
+  [1e15, "quadrillion"],
+  [1e12, "trillion"],
+  [1e9, "billion"],
+  [1e6, "million"],
+];
+
+function formatLarge(value: number): string {
+  for (const [base, name] of LARGE_NAMES) {
+    if (value >= base) return `${(value / base).toFixed(2)} ${name}`;
+  }
+  return formatInt(value);
 }
 
 function paint(window: PaperclipsWindow): GrayImage {
@@ -1610,9 +2340,13 @@ function drawCostChip(
 
 /** Business and manufacturing: merged stat rows with inline action chips. */
 function paintLeftColumn(image: GrayImage, window: PaperclipsWindow): void {
+  if (window.stage === "machine") {
+    paintMachineLeftColumn(image, window);
+    return;
+  }
   image.drawText(mediumFont, LEFT_X, 20, `Clips: ${formatInt(window.clips)}`, 245);
 
-  drawChip(image, isSelected(window, "make"), LEFT_X, 50, "[ Make Paperclip ]", window.wire > 0);
+  drawChip(image, isSelected(window, "make"), LEFT_X, 50, "[ Make Paperclip ]", window.wire >= 1);
   const rate = autoClipRate(window);
   if (rate > 0) {
     image.drawText(smallFont, LEFT_X + 168, 50, `+${formatInt(rate)}/sec`, 150);
@@ -1629,7 +2363,10 @@ function paintLeftColumn(image: GrayImage, window: PaperclipsWindow): void {
   image.drawText(smallFont, LEFT_X, 90, `Price: ${formatMoney(window.priceCents)}`, 190);
   drawChip(image, isSelected(window, "price-down"), LEFT_X + 108, 90, "-", window.priceCents > 1);
   drawChip(image, isSelected(window, "price-up"), LEFT_X + 128, 90, "+", true);
-  image.drawText(smallFont, LEFT_X + 150, 90, `Demand: ${Math.round(demandLevel(window) * 10)}%`, 190);
+  const demandPercent = demandLevel(window) * 10;
+  const demandText =
+    demandPercent >= 10000 ? `${formatInt(demandPercent / 1000)}k%` : `${Math.round(demandPercent)}%`;
+  image.drawText(smallFont, LEFT_X + 150, 90, `Demand: ${demandText}`, 190);
 
   image.drawText(smallFont, LEFT_X, 108, `Marketing lvl ${window.marketingLevel}`, 190);
   drawCostChip(
@@ -1695,6 +2432,82 @@ function paintLeftColumn(image: GrayImage, window: PaperclipsWindow): void {
     drawChip(image, isSelected(window, "withdraw"), LEFT_X + 172, 198, "Wdr", investTotalCents(window) > 0);
     drawChip(image, isSelected(window, "invest-details"), LEFT_X + 208, 198, "More", true);
   }
+  if (window.revTrackerOwned) {
+    // The original's analytic estimate: expected sales per second times price
+    // (10 rolls/sec of chance demand/100, each selling 0.7 * demand^1.15).
+    const demand = demandLevel(window);
+    const expectedSold = Math.min(demand / 100, 1) * 10 * 0.7 * Math.pow(demand, 1.15);
+    image.drawText(
+      smallFont,
+      LEFT_X,
+      216,
+      `Rev: ${formatMoneyAuto(expectedSold * window.priceCents)}/s  Sold: ${formatInt(expectedSold)}/s`,
+      190,
+    );
+  }
+
+  image.drawText(
+    smallFont,
+    LEFT_X,
+    238,
+    gestureHints([
+      [GESTURE_CLICK, "press"],
+      [GESTURE_DOUBLE_CLICK, "x2"],
+      [GESTURE_SCROLL, "move"],
+      [GESTURE_LONG_PRESS, "pause"],
+    ]),
+    115,
+  );
+}
+
+/** The machine era: matter/wire/power flows and the four build rows. */
+function paintMachineLeftColumn(image: GrayImage, window: PaperclipsWindow): void {
+  image.drawText(mediumFont, LEFT_X, 20, `Clips: ${formatLarge(window.clips)}`, 245);
+
+  drawChip(image, isSelected(window, "make"), LEFT_X, 50, "[ Make Paperclip ]", window.wire >= 1);
+  const rate =
+    window.powMod * window.factoryBoost * window.factoryLevel * window.factoryRate;
+  if (rate > 0) {
+    image.drawText(smallFont, LEFT_X + 168, 50, `+${formatLarge(rate)}/s`, 150);
+  }
+
+  image.drawText(smallFont, LEFT_X, 70, `Unused: ${formatLarge(window.unusedClips)}`, 230);
+  image.drawText(smallFont, LEFT_X, 88, `Wire: ${formatLarge(window.wire)}"`, 190);
+  image.drawText(smallFont, LEFT_X, 106, `Matter: ${formatLarge(window.availableMatter)} g`, 190);
+  image.drawText(smallFont, LEFT_X, 124, `Acquired: ${formatLarge(window.acquiredMatter)} g`, 190);
+
+  const supply = powerSupply(window);
+  const demand = powerDemand(window);
+  image.drawText(
+    smallFont,
+    LEFT_X,
+    142,
+    `Pwr: ${formatInt(supply)}/${formatInt(demand)}MW ${formatInt(window.powMod * 100)}%`,
+    supply >= demand ? 190 : 250,
+  );
+  drawChip(image, isSelected(window, "batch"), LEFT_X + 216, 142, `x${window.buyBatch}`, true);
+
+  const batch = window.buyBatch;
+  if (window.farmUnlocked) {
+    image.drawText(smallFont, LEFT_X, 160, `Solar: ${formatInt(window.farmLevel)}`, 190);
+    const cost = batchCost(farmCostAt, window.farmLevel, batch);
+    drawCostChip(image, window, "farm", 160, formatLarge(cost), window.unusedClips >= cost);
+  }
+  if (window.harvesterUnlocked) {
+    image.drawText(smallFont, LEFT_X, 178, `Harv: ${formatInt(window.harvesterLevel)}`, 190);
+    const cost = batchCost(harvesterCostAt, window.harvesterLevel, batch);
+    drawCostChip(image, window, "harvester", 178, formatLarge(cost), window.unusedClips >= cost);
+  }
+  if (window.wireDroneUnlocked) {
+    image.drawText(smallFont, LEFT_X, 196, `WireD: ${formatInt(window.wireDroneLevel)}`, 190);
+    const cost = batchCost(wireDroneCostAt, window.wireDroneLevel, batch);
+    drawCostChip(image, window, "wiredrone", 196, formatLarge(cost), window.unusedClips >= cost);
+  }
+  if (window.factoryUnlocked) {
+    image.drawText(smallFont, LEFT_X, 214, `Fact: ${formatInt(window.factoryLevel)}`, 190);
+    const cost = factoryBatchCost(window, batch);
+    drawCostChip(image, window, "factory", 214, formatLarge(cost), window.unusedClips >= cost);
+  }
 
   image.drawText(
     smallFont,
@@ -1714,14 +2527,19 @@ function paintLeftColumn(image: GrayImage, window: PaperclipsWindow): void {
 function paintRightColumn(image: GrayImage, window: PaperclipsWindow): void {
   if (!window.computeUnlocked) return;
 
-  image.drawText(
-    smallFont,
-    RIGHT_X,
-    22,
-    `Trust: ${window.trust}  next @ ${formatInt(window.nextTrustClips)}`,
-    190,
-  );
-  const canAllocate = trustAvailable(window) > 0;
+  if (window.stage === "human") {
+    image.drawText(
+      smallFont,
+      RIGHT_X,
+      22,
+      `Trust: ${window.trust}  next @ ${formatInt(window.nextTrustClips)}`,
+      190,
+    );
+  } else if (window.swarmOwned) {
+    image.drawText(smallFont, RIGHT_X, 22, `Swarm gifts: ${formatInt(window.swarmGifts)}`, 190);
+  }
+  const canAllocate =
+    window.stage === "human" ? trustAvailable(window) > 0 : window.swarmGifts > 0;
   image.drawText(smallFont, RIGHT_X, 40, `Proc: ${window.processors}`, 190);
   drawChip(image, isSelected(window, "proc"), RIGHT_X + 70, 40, "+", canAllocate);
   image.drawText(smallFont, RIGHT_X + 100, 40, `Mem: ${window.memory}`, 190);
@@ -1781,12 +2599,13 @@ function paintRightColumn(image: GrayImage, window: PaperclipsWindow): void {
   }
 
   if (selectedProject && window.modal === null) {
+    const description = selectedProject.description;
     image.drawTextWrapped({
       font: smallFont,
       x: RIGHT_X,
       y: 208,
       width: RIGHT_WIDTH,
-      text: selectedProject.description,
+      text: typeof description === "function" ? description(window) : description,
       value: 150,
     });
   }
@@ -1895,26 +2714,21 @@ function paintTournamentModal(image: GrayImage, window: PaperclipsWindow): void 
   drawChip(image, isModalSelected(window, 1), x + 210, y + 162, "[ Play B ]", true);
 }
 
-/** The original's first trust gain, marking the end of the ported segment. */
+/** A full-screen milestone announcement (trust gains, the release, the end). */
 function paintMilestoneOverlay(image: GrayImage, window: PaperclipsWindow): void {
+  const overlay = window.overlay;
+  if (!overlay) return;
   const width = 420;
-  const height = 116;
+  const height = 76 + overlay.lines.length * 20;
   const x = Math.round((window.viewportWidth - width) / 2);
   const y = Math.round((window.viewportHeight - height) / 2);
   image.fillRect(x, y, width, height, 0);
   image.drawRect(x, y, width, height, 220);
-  drawCentered(image, mediumFont, x, width, y + 12, "TRUST INCREASED", 250);
-  drawCentered(
-    image,
-    smallFont,
-    x,
-    width,
-    y + 46,
-    `Production target met: ${formatInt(SEGMENT_TARGET_CLIPS)} clips`,
-    190,
-  );
-  drawCentered(image, smallFont, x, width, y + 66, "Spend trust on processors and memory", 150);
-  drawCentered(image, smallFont, x, width, y + 90, `${GESTURE_CLICK} keep making paperclips`, 150);
+  drawCentered(image, mediumFont, x, width, y + 12, overlay.title, 250);
+  for (let i = 0; i < overlay.lines.length; i++) {
+    drawCentered(image, smallFont, x, width, y + 46 + i * 20, overlay.lines[i]!, 190);
+  }
+  drawCentered(image, smallFont, x, width, y + height - 26, overlay.hint, 150);
 }
 
 function paintPausedOverlay(image: GrayImage, window: PaperclipsWindow): void {
