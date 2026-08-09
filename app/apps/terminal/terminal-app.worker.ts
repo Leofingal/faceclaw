@@ -11,6 +11,14 @@
  * window's sidebar attention flag (cleared by the host on foregrounding).
  * Frames are painted here and submitted directly to the Java compositor from
  * this worker's thread.
+ *
+ * Auto-reconnect (Settings > Terminal, default on): while any terminal window
+ * is open, a dropped control connection reconnects with exponential backoff;
+ * the first session list after reconnect delivers bells that rang while
+ * disconnected (attention + wake) via their advanced lastBellAt. A dropped
+ * view connection reconnects immediately while visible, but a hidden view just
+ * marks itself stale and reconnects on its next foreground/screen-on — its
+ * re-attach snapshot resyncs contents and scrollback only once it's needed.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -27,6 +35,7 @@ import { onSettingsStoreChanged } from "../../native/settings-store";
 import { clamp } from "../../util/numeric-util";
 import {
   terminalAuthTokenSetting,
+  terminalAutoReconnectSetting,
   terminalHostSetting,
   terminalLaunchPresetsSetting,
   terminalPortSetting,
@@ -65,6 +74,9 @@ const DEVICE_NAME = "Faceclaw G2";
 const HUB_ROW_HEIGHT = 20;
 const RENDER_COALESCE_MS = 33;
 const HISTORY_PAGE = 200;
+// Auto-reconnect backoff: doubles per failed attempt, resets on success.
+const RECONNECT_MIN_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 60_000;
 
 type BaseWindow = {
   windowId: string;
@@ -123,6 +135,14 @@ type ViewWindow = BaseWindow & {
   archiveStart: number;
   scrollTop: number | null;
   historyFetchInFlight: boolean;
+  /**
+   * The websocket dropped and hasn't been reconnected yet. While the view is
+   * hidden this just sits set (content resync deferred); the next
+   * foreground/screen-on reconnects if auto-reconnect is enabled.
+   */
+  needsReconnect: boolean;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectDelayMs: number;
 };
 
 type TerminalWindow = HubWindow | ViewWindow;
@@ -196,6 +216,8 @@ let screenOn = true;
 let controlClient: G2MirrorClient | null = null;
 let controlState: G2MirrorState | null = null;
 let controlUnsubscribers: Array<() => void> = [];
+let controlReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let controlReconnectDelayMs = RECONNECT_MIN_DELAY_MS;
 
 // When each session (by socket) last "updated", unix epoch ms: bells, title
 // changes, and terminal output from open views. Sessions first seen in the
@@ -249,7 +271,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.foreground = message.foreground;
       window.focused = message.focused;
-      if (window.foreground && window.kind === "view") activeViewId = window.windowId;
+      if (window.foreground && window.kind === "view") {
+        activeViewId = window.windowId;
+        maybeReconnectView(window);
+      }
       if (window.foreground && window.kind === "hub") window.sessionOrder = [];
       if (window.foreground) renderAndSubmit(window, 0);
       break;
@@ -261,6 +286,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
           if (!window.foreground) continue;
           // Waking counts as becoming visible: let the session list re-sort.
           if (window.kind === "hub") window.sessionOrder = [];
+          if (window.kind === "view") maybeReconnectView(window);
           renderAndSubmit(window, 0);
         }
       }
@@ -287,11 +313,30 @@ onSettingsStoreChanged((key) => {
   if (!key.startsWith("terminal.")) return;
   // Settings that don't affect the connection; no reconnect needed.
   if (key === "terminal.launchPresets" || key === "terminal.wakeOnBell") return;
+  if (key === "terminal.autoReconnect") {
+    if (!terminalAutoReconnectSetting.get()) {
+      cancelPendingReconnects();
+    } else if (windows.size > 0 && (controlState?.phase ?? "idle") === "failed") {
+      startControlClient();
+    }
+    return;
+  }
   // (Re)start only once the app has actually been opened.
   if (controlClient || windows.size > 0) {
     startControlClient();
   }
 });
+
+/** Cancel scheduled retries (auto-reconnect turned off); stale views stay marked. */
+function cancelPendingReconnects(): void {
+  cancelControlReconnect();
+  for (const window of windows.values()) {
+    if (window.kind === "view" && window.reconnectTimer) {
+      clearTimeout(window.reconnectTimer);
+      window.reconnectTimer = null;
+    }
+  }
+}
 
 function openWindow(windowId: string, surfaceId: string, viewport: { width: number; height: number }): void {
   const pendingView = pendingViews.get(windowId);
@@ -332,9 +377,15 @@ function closeWindow(windowId: string): void {
     for (const unsubscribe of window.unsubscribers.splice(0)) {
       unsubscribe();
     }
+    if (window.reconnectTimer) {
+      clearTimeout(window.reconnectTimer);
+      window.reconnectTimer = null;
+    }
     window.client.stop();
   }
   windows.delete(windowId);
+  // Auto-reconnect only runs while at least one terminal window is open.
+  if (windows.size === 0) cancelControlReconnect();
   if (activeViewId === windowId) activeViewId = null;
   if (window.kind === "view") {
     renderHubWindows();
@@ -368,6 +419,8 @@ function startControlClient(): void {
     client.onStateChange((state) => {
       noteSessionListRecency(state);
       controlState = state;
+      if (state.phase === "connected") controlReconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+      if (state.phase === "failed") scheduleControlReconnect();
       renderHubWindows();
     }),
     client.onBell((socket, lastBellAtMs) => {
@@ -393,19 +446,50 @@ function noteSessionListRecency(state: G2MirrorState): void {
         Math.max(session.lastBellAt ?? 0, controlSessionsSeeded ? Date.now() : 0),
       );
     } else if ((session.lastBellAt ?? 0) > known) {
-      sessionRecency.set(session.socket, session.lastBellAt!);
+      // A bell rang while we weren't connected to hear it (the live bell
+      // message would have advanced the recency); deliver it late so the
+      // missed attention flag / wake still happens.
+      routeBell(session.socket, session.lastBellAt!);
     }
   }
   if (state.sessions.length) controlSessionsSeeded = true;
 }
 
 function stopControlClient(): void {
+  cancelControlReconnect();
   for (const unsubscribe of controlUnsubscribers.splice(0)) {
     unsubscribe();
   }
   controlClient?.stop();
   controlClient = null;
   controlState = null;
+}
+
+/**
+ * Retry the control connection after a backoff delay. The delay doubles per
+ * scheduled attempt and resets when a connection reaches "connected" (or on
+ * a manual Connect). No-op when auto-reconnect is off, no terminal window is
+ * open, or no host is configured.
+ */
+function scheduleControlReconnect(): void {
+  if (controlReconnectTimer) return;
+  if (!terminalAutoReconnectSetting.get()) return;
+  if (windows.size === 0) return;
+  if (!terminalHostSetting.get().trim()) return;
+  const delayMs = controlReconnectDelayMs;
+  controlReconnectDelayMs = Math.min(controlReconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
+  controlReconnectTimer = setTimeout(() => {
+    controlReconnectTimer = null;
+    if (!terminalAutoReconnectSetting.get() || windows.size === 0) return;
+    if ((controlState?.phase ?? "idle") === "failed") startControlClient();
+  }, delayMs);
+}
+
+function cancelControlReconnect(): void {
+  if (controlReconnectTimer) {
+    clearTimeout(controlReconnectTimer);
+    controlReconnectTimer = null;
+  }
 }
 
 function routeBell(socket: string, lastBellAtMs: number): void {
@@ -470,6 +554,9 @@ function createViewWindow(
     archiveStart: 0,
     scrollTop: null,
     historyFetchInFlight: false,
+    needsReconnect: false,
+    reconnectTimer: null,
+    reconnectDelayMs: RECONNECT_MIN_DELAY_MS,
   };
   window.unsubscribers.push(
     client.onSnapshot((historyNext, historyOldest) => {
@@ -493,6 +580,8 @@ function createViewWindow(
         window.attachRequested = true;
         client.connectSession(socket);
       }
+      if (state.phase === "connected") window.reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+      if (state.phase === "failed") handleViewConnectionLost(window);
       window.status = state.status;
       scheduleRender(window);
     }),
@@ -515,6 +604,54 @@ function createViewWindow(
   );
   client.start();
   return window;
+}
+
+/**
+ * The view's websocket dropped. While visible, retry on the backoff schedule;
+ * while hidden, leave it stale (needsReconnect) so contents and scrollback
+ * only resync once the view is next looked at. Bells still arrive via the
+ * control connection either way.
+ */
+function handleViewConnectionLost(window: ViewWindow): void {
+  window.needsReconnect = true;
+  if (window.foreground && screenOn && terminalAutoReconnectSetting.get()) {
+    scheduleViewReconnect(window);
+  }
+}
+
+function scheduleViewReconnect(window: ViewWindow): void {
+  if (window.reconnectTimer) return;
+  const delayMs = window.reconnectDelayMs;
+  window.reconnectDelayMs = Math.min(window.reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
+  window.reconnectTimer = setTimeout(() => {
+    window.reconnectTimer = null;
+    if (!windows.has(window.windowId) || !window.needsReconnect) return;
+    if (!terminalAutoReconnectSetting.get()) return;
+    // Went invisible while waiting: defer to the next foreground/screen-on.
+    if (!window.foreground || !screenOn) return;
+    reconnectView(window);
+  }, delayMs);
+}
+
+/** A stale view just became visible (foreground/screen-on): reconnect it now. */
+function maybeReconnectView(window: ViewWindow): void {
+  if (!window.needsReconnect || window.reconnectTimer) return;
+  if (!terminalAutoReconnectSetting.get()) return;
+  window.reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+  reconnectView(window);
+}
+
+/**
+ * Restart the view's websocket. On success the connected handler re-attaches
+ * (attachRequested reset here) and the fresh snapshot resets the emulator and
+ * scrollback archive, which is the content resync.
+ */
+function reconnectView(window: ViewWindow): void {
+  window.needsReconnect = false;
+  window.attachRequested = false;
+  window.status = "Reconnecting...";
+  window.client.start();
+  scheduleRender(window);
 }
 
 /** The window's long-press menu, created lazily so window literals stay simple. */
@@ -564,6 +701,20 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
       });
     }
   } else {
+    if (window.client.state().phase === "failed") {
+      items.push({
+        label: "Reconnect",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          if (window.reconnectTimer) {
+            clearTimeout(window.reconnectTimer);
+            window.reconnectTimer = null;
+          }
+          window.reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+          reconnectView(window);
+        },
+      });
+    }
     items.push(
       {
         label: "Send <Enter>",
@@ -719,7 +870,11 @@ function hubItems(window: HubWindow): HubItem[] {
   if (phase === "idle" || phase === "failed") {
     items.push({
       label: terminalHostSetting.get().trim() ? "Connect" : "Connect (host not set)",
-      onSelect: () => startControlClient(),
+      onSelect: () => {
+        // Manual connect: retry now and start the backoff schedule over.
+        controlReconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+        startControlClient();
+      },
     });
   }
   return items;
@@ -879,7 +1034,8 @@ function hubStatusLine(): string {
   if (!terminalHostSetting.get().trim()) {
     return "No host configured.";
   }
-  return controlState?.status ?? "Not connected.";
+  const status = controlState?.status ?? "Not connected.";
+  return controlReconnectTimer ? `${status} Retrying...` : status;
 }
 
 function paintView(window: ViewWindow): GrayImage {
@@ -917,6 +1073,13 @@ function paintView(window: ViewWindow): GrayImage {
 
   if (!following) {
     drawScrollIndicator(image, top, window.archiveStart, bottomTop);
+  }
+  // Stale content stays visible across a disconnect, so flag it: a status
+  // line over the bottom row whenever the session isn't actually attached.
+  if (window.client.state().phase !== "attached") {
+    const y = window.viewportHeight - CELL_HEIGHT;
+    image.fillRect(0, y, window.viewportWidth, CELL_HEIGHT, 0);
+    image.drawText(terminalFont, 0, y, window.status, 170);
   }
   return image;
 }

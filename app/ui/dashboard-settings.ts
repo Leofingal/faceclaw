@@ -525,6 +525,15 @@ export const terminalLaunchPresetsSetting = new ConfigSettingString({
     "Comma-separated names of g2mirror launch presets that can be started from the glasses. Presets are defined in the server's config; the wire protocol has no way to list them, so name them here. The default server config defines \"shell\".",
 });
 
+export const terminalAutoReconnectSetting = new ConfigSettingBoolean({
+  id: "terminal-auto-reconnect",
+  label: "Auto-reconnect",
+  storageKey: "terminal.autoReconnect",
+  defaultValue: true,
+  description:
+    "While at least one Terminal window is open, automatically reconnect to the g2mirror server when the connection drops, retrying with backoff until it succeeds.",
+});
+
 export const terminalWakeOnBellSetting = new ConfigSettingBoolean({
   id: "terminal-wake-on-bell",
   label: "Wake glasses on terminal bell",
