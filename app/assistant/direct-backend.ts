@@ -1,4 +1,5 @@
 import { streamAnthropicMessage } from "../native/anthropic";
+import { streamLocalQwen } from "../native/llama";
 import { streamOpenAiResponse } from "../native/openai";
 import type {
   LlmContentBlock,
@@ -20,6 +21,8 @@ import type { AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
 
 /** Safety caps so a tool-thrashing model can't loop or run forever. */
 const MAX_ITERATIONS = 8;
+/** The on-phone model is slower per step and unreliable on long tool chains. */
+const MAX_ITERATIONS_LOCAL = 4;
 const MAX_TURN_MS = 2 * 60 * 1000;
 
 export type DirectTurnOptions = {
@@ -54,9 +57,10 @@ export class DirectAssistantBackend {
       options.callbacks.onError(message);
     };
 
+    const maxIterations = options.provider === "local" ? MAX_ITERATIONS_LOCAL : MAX_ITERATIONS;
     const runIteration = (iteration: number): void => {
       if (cancelled) return;
-      if (iteration >= MAX_ITERATIONS) {
+      if (iteration >= maxIterations) {
         finishError("Assistant stopped: too many tool steps");
         return;
       }
@@ -115,9 +119,12 @@ export class DirectAssistantBackend {
           finishError(message);
         },
       };
-      streamHandle = options.provider === "openai"
-        ? streamOpenAiResponse(streamOptions)
-        : streamAnthropicMessage(streamOptions);
+      streamHandle =
+        options.provider === "openai"
+          ? streamOpenAiResponse(streamOptions)
+          : options.provider === "local"
+            ? streamLocalQwen(streamOptions)
+            : streamAnthropicMessage(streamOptions);
     };
 
     runIteration(0);

@@ -1,4 +1,8 @@
-import { buildAssistantSystemPrompt } from "../prompts";
+import {
+  ASSISTANT_SYSTEM_PROMPT_BASE,
+  buildAssistantSystemPrompt,
+  describeAssistantContext,
+} from "../prompts";
 import { assistantBridge } from "./bridge-client";
 import { DirectAssistantBackend } from "./direct-backend";
 import type { LlmMessage, LlmToolDefinition } from "./llm-protocol";
@@ -108,15 +112,23 @@ export class AssistantSession {
       return;
     }
 
-    this.messages.push({ role: "user", content: text });
-    this.trimHistory();
     const llm = this.config.llm;
+    // Local provider: keep the system prompt (and thus the tool declarations
+    // that follow it in the rendered prompt) byte-stable so the on-phone
+    // model's KV prefix cache survives across turns; the volatile context
+    // (time, foreground app, battery) rides along with the utterance instead.
+    const isLocal = llm.provider === "local";
+    this.messages.push({
+      role: "user",
+      content: isLocal ? `${text}\n\n(${describeAssistantContext(ctx)})` : text,
+    });
+    this.trimHistory();
     this.turnHandle = this.directBackend.runTurn({
       provider: llm.provider,
       apiKey: llm.apiKey,
       model: llm.model,
       effort: llm.effort,
-      system: buildAssistantSystemPrompt(ctx),
+      system: isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),
       messages: this.messages,
       buildTools: () => this.buildToolDefinitions(),
       registry: this.registry,

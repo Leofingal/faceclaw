@@ -3,8 +3,17 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
+import {
+  cancelLocalModelDownload,
+  deleteLocalModel,
+  LOCAL_MODEL,
+  localModelState,
+  onLocalModelStateChanged,
+  startLocalModelDownload,
+} from "../../native/llama";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
-import type { MenuItem } from "../menu";
+import type { LayerContext } from "../layers";
+import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
@@ -88,6 +97,7 @@ function settingsSections(): SettingsSection[] {
         // On-phone LLM loop vs the user's own agent via the bridge plugin.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
+        localModelMenuItem(),
         // When on, a wakeword utterance goes straight to the assistant with no
         // Send/Type menu step.
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
@@ -159,6 +169,77 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+}
+
+const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;
+
+// While a download is running, re-render on progress updates so the row's
+// percentage stays live; the watch tears itself down when the download ends.
+let localModelRenderUnsub: (() => void) | null = null;
+
+function watchLocalModelDownload(ctx: LayerContext): void {
+  localModelRenderUnsub?.();
+  localModelRenderUnsub = onLocalModelStateChanged((state) => {
+    ctx.actions.requestRender();
+    if (state.status !== "downloading") {
+      localModelRenderUnsub?.();
+      localModelRenderUnsub = null;
+    }
+  });
+}
+
+function localModelStatusText(): string {
+  const state = localModelState();
+  if (state.status === "ready") return "downloaded";
+  if (state.status === "downloading") {
+    const pct = state.totalBytes > 0 ? Math.floor((state.bytesDownloaded / state.totalBytes) * 100) : 0;
+    return `${pct}% of ${LOCAL_MODEL_GB}`;
+  }
+  return "not downloaded";
+}
+
+/** Download/cancel/delete management for the on-phone assistant model. */
+function localModelMenuItem(): MenuItem {
+  return {
+    label: "On-phone model",
+    description:
+      `${LOCAL_MODEL.label} (${LOCAL_MODEL_GB} download over Wi-Fi recommended). ` +
+      "Answers assistant queries on the phone itself, with no API key or cloud service. " +
+      "Slower and simpler than the cloud models, but free and private. " +
+      "Used automatically when no API key is set. An interrupted download resumes where it left off.",
+    onSelect: (ctx) => {
+      const state = localModelState();
+      const action: MenuItem =
+        state.status === "downloading"
+          ? {
+              label: "Cancel download",
+              onSelect: (innerCtx) => {
+                cancelLocalModelDownload();
+                innerCtx.stack.pop();
+              },
+            }
+          : state.status === "ready"
+            ? {
+                label: "Delete model",
+                onSelect: (innerCtx) => {
+                  deleteLocalModel();
+                  innerCtx.stack.pop();
+                },
+              }
+            : {
+                label: `Download (${LOCAL_MODEL_GB})`,
+                onSelect: (innerCtx) => {
+                  startLocalModelDownload();
+                  watchLocalModelDownload(innerCtx);
+                  innerCtx.stack.pop();
+                },
+              };
+      openModalMenu(ctx, "On-phone model", [action], 0);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-phone model", localModelStatusText());
+    },
+  };
 }
 
 /** A row that opens one of the project docs (copied into the bundle under

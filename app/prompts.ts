@@ -15,10 +15,17 @@ export const ASSISTANT_SYSTEM_PROMPT_BASE = [
 
 /** Full assistant system prompt: the base plus the current device context. */
 export function buildAssistantSystemPrompt(ctx: AssistantContext): string {
-  return `${ASSISTANT_SYSTEM_PROMPT_BASE}\n\n${describeContext(ctx)}`;
+  return `${ASSISTANT_SYSTEM_PROMPT_BASE}\n\n${describeAssistantContext(ctx)}`;
 }
 
-function describeContext(ctx: AssistantContext): string {
+/**
+ * The volatile device context on its own. The local provider appends this to
+ * the user message instead of the system prompt: the system prompt + tool
+ * declarations are the bulk of the prompt, and keeping them byte-stable lets
+ * the on-phone model reuse its KV-cache prefix across turns instead of
+ * re-prefilling ~2-3k tokens because the clock changed.
+ */
+export function describeAssistantContext(ctx: AssistantContext): string {
   const parts = [`Current time: ${ctx.localTime}.`];
   parts.push(`The glasses display is currently ${ctx.screenOn ? "on" : "off"}.`);
   if (ctx.foregroundApp) {

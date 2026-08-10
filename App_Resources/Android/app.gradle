@@ -149,6 +149,102 @@ tasks.register("prepareFaceclawNativeLibs") {
   }
 }
 
+// On-phone assistant model: build llama.cpp (pinned release) + our JNI shim
+// into libfaceclaw_llama.so. CPU-only, arm64, armv8.2 dotprod+fp16 baseline
+// (Tensor G2 floor; no i8mm). The first build compiles llama.cpp (~2-4 min);
+// afterwards the cached .so short-circuits everything.
+def faceclawLlamaCppTag = "b10333"
+
+def faceclawFindSdkCmakeDir = {
+  def sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+  if (sdkRoot == null) return null
+  def cmakeRoot = file("$sdkRoot/cmake")
+  if (!cmakeRoot.exists()) return null
+  def installed = cmakeRoot.listFiles()?.findAll { it.isDirectory() }?.sort { a, b -> b.name <=> a.name }
+  return (installed && !installed.isEmpty()) ? installed[0] : null
+}
+
+tasks.register("prepareFaceclawLlama") {
+  def llamaSo = file("$faceclawJniLibsDir/libfaceclaw_llama.so")
+  inputs.files(
+    file("$projectDir/src/main/native/llama/faceclaw_llama.cpp"),
+    file("$projectDir/src/main/native/llama/CMakeLists.txt")
+  )
+  outputs.files(llamaSo)
+
+  doLast {
+    def llamaBuildDir = file("$faceclawNativeBuildDir/llama-build")
+    def builtSo = file("$llamaBuildDir/libfaceclaw_llama.so")
+
+    def downloadsDir = file("$faceclawNativeBuildDir/downloads")
+    def llamaArchive = file("$downloadsDir/llama.cpp-${faceclawLlamaCppTag}.tar.gz")
+    faceclawDownload(
+      "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${faceclawLlamaCppTag}.tar.gz",
+      llamaArchive
+    )
+    def llamaSourceDir = file("$faceclawNativeBuildDir/llama.cpp-${faceclawLlamaCppTag}")
+    if (!file("$llamaSourceDir/CMakeLists.txt").exists()) {
+      copy {
+        from tarTree(resources.gzip(llamaArchive))
+        into faceclawNativeBuildDir
+      }
+    }
+
+    def ndkRoot = faceclawFindNdkRoot()
+    if (ndkRoot == null || !ndkRoot.exists()) {
+      throw new GradleException("Android NDK is required to build libfaceclaw_llama.so")
+    }
+    def cmakeDir = faceclawFindSdkCmakeDir()
+    if (cmakeDir == null) {
+      throw new GradleException("Android SDK cmake package is required to build libfaceclaw_llama.so")
+    }
+    def cmake = file("$cmakeDir/bin/cmake")
+    def ninja = file("$cmakeDir/bin/ninja")
+    def march = "-march=armv8.2-a+dotprod+fp16"
+
+    // Configure once; afterwards the ninja no-op build keeps this cheap while
+    // still picking up JNI source edits.
+    if (!file("$llamaBuildDir/build.ninja").exists()) {
+      exec {
+        commandLine([
+          cmake.absolutePath,
+          "-S", file("$projectDir/src/main/native/llama").absolutePath,
+          "-B", llamaBuildDir.absolutePath,
+          "-G", "Ninja",
+          "-DCMAKE_MAKE_PROGRAM=${ninja.absolutePath}",
+          "-DCMAKE_TOOLCHAIN_FILE=${file("$ndkRoot/build/cmake/android.toolchain.cmake").absolutePath}",
+          "-DANDROID_ABI=arm64-v8a",
+          "-DANDROID_PLATFORM=android-24",
+          "-DCMAKE_BUILD_TYPE=Release",
+          "-DLLAMA_CPP_SOURCE_DIR=${llamaSourceDir.absolutePath}",
+          "-DCMAKE_C_FLAGS=$march",
+          "-DCMAKE_CXX_FLAGS=$march",
+        ])
+      }
+    }
+    exec {
+      commandLine([cmake.absolutePath, "--build", llamaBuildDir.absolutePath, "-j", "8"])
+    }
+
+    faceclawJniLibsDir.mkdirs()
+    copy {
+      from builtSo
+      into faceclawJniLibsDir
+    }
+    // The static-linked lib carries llama.cpp's full debug info (~50MB);
+    // strip it so the APK only pays for the code (~8MB).
+    def ndkRootForStrip = faceclawFindNdkRoot()
+    if (ndkRootForStrip != null) {
+      def llvmStrip = file("$ndkRootForStrip/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/llvm-strip")
+      if (llvmStrip.exists()) {
+        exec {
+          commandLine([llvmStrip.absolutePath, "--strip-unneeded", llamaSo.absolutePath])
+        }
+      }
+    }
+  }
+}
+
 android {
   compileSdkVersion 35
   buildToolsVersion "35"
@@ -179,4 +275,5 @@ android {
 
 tasks.matching { it.name == "preBuild" }.configureEach {
   dependsOn tasks.named("prepareFaceclawNativeLibs")
+  dependsOn tasks.named("prepareFaceclawLlama")
 }

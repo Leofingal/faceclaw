@@ -19,6 +19,7 @@ import {
   assistantModelProvider,
   type AssistantModel,
 } from "~/assistant/models";
+import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
@@ -357,7 +358,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
 export type AssistantBackendKind = "direct" | "external";
 
 const assistantBackendLabels: Record<AssistantBackendKind, string> = {
-  direct: "On-phone (API key)",
+  direct: "On-phone",
   external: "My own agent (bridge)",
 };
 
@@ -369,7 +370,7 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   values: ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    "Who answers assistant queries: an LLM called directly from the phone (needs an API key), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantBridgeHostSetting = new ConfigSettingString({
@@ -468,9 +469,11 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     const provider = assistantModelProvider(value);
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
+    if (provider === "local") return !isLocalModelReady();
     return false;
   },
-  description: "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set.",
+  description:
+    "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({

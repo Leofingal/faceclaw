@@ -801,7 +801,7 @@ class Shell {
       this.showAlert(
         assistantBackendSetting.get() === "external"
           ? "Configure the agent bridge host and token in Settings."
-          : "Set an API key for the selected assistant model in Settings.",
+          : "Set an API key or download the on-phone model in Settings.",
       );
       return;
     }
