@@ -41,6 +41,12 @@ export type G2MirrorState = {
   status: string;
   sessions: G2MirrorSession[];
   attachedCommand: string;
+  /**
+   * server_name from the init success reply: a human-readable name for the
+   * machine the server runs on. "" until the handshake succeeds (or when an
+   * older server omits the field).
+   */
+  serverName: string;
 };
 
 /** A page of archived scrollback lines (see PROTOCOL.md "Scrollback history"). */
@@ -56,6 +62,8 @@ export type G2MirrorHistoryReply = {
 };
 
 export type G2MirrorClientOptions = {
+  /** TLS (g2mirrors:// → wss) vs plain (g2mirror:// → ws). */
+  secure: boolean;
   host: string;
   port: number;
   authToken: string;
@@ -73,6 +81,7 @@ export class G2MirrorClient {
   private status = "Not connected.";
   private sessions: G2MirrorSession[] = [];
   private attachedCommand = "";
+  private serverName = "";
   // Scrollback archive extent: `historyNext` is the splice point (index of the
   // next line to be archived), `historyOldest` the oldest retained index.
   private historyNext = 0;
@@ -104,6 +113,7 @@ export class G2MirrorClient {
       status: this.status,
       sessions: this.sessions.slice(),
       attachedCommand: this.attachedCommand,
+      serverName: this.serverName,
     };
   }
 
@@ -143,7 +153,7 @@ export class G2MirrorClient {
   start(): void {
     if (this.ws) return;
     this.stopped = false;
-    const url = `ws://${this.options.host}:${this.options.port}`;
+    const url = `${this.options.secure ? "wss" : "ws"}://${this.options.host}:${this.options.port}`;
     this.setState("connecting", `Connecting to ${this.options.host}:${this.options.port}...`);
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
@@ -312,6 +322,9 @@ export class G2MirrorClient {
 
     switch (message.type) {
       case "init":
+        if (typeof message.server_name === "string" && message.server_name) {
+          this.serverName = message.server_name;
+        }
         this.setState("connected", "Connected.");
         this.listSessions();
         this.ensureListRefreshTimer();

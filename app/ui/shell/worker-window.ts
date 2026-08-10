@@ -69,6 +69,17 @@ export type WorkerAppReply =
     }
   | {
       /**
+       * Open the phone app's text editor on a string setting (by id, resolved
+       * on the main thread). The worker paints its own "type on the phone"
+       * UI and watches the setting for changes; it must post
+       * end-text-setting-edit when its flow finishes.
+       */
+      type: "start-text-setting-edit";
+      settingId: string;
+    }
+  | { type: "end-text-setting-edit" }
+  | {
+      /**
        * Set or clear the app's top-bar tray icon. Pixels ride the JSON
        * postMessage roundtrip — acceptable because tray icons are small and
        * infrequently updated.
@@ -117,6 +128,10 @@ export type WorkerAppHostOptions = {
   requestShellRender: () => void;
   /** Open or focus the Settings app, optionally selecting a section. */
   openSettings: (section?: string) => void;
+  /** Open the phone app's text editor on a string setting (by id). */
+  startTextSettingEdit: (settingId: string) => void;
+  /** Close the phone text editor opened by startTextSettingEdit. */
+  endTextSettingEdit: () => void;
 };
 
 /**
@@ -199,6 +214,12 @@ export class WorkerAppHost {
           break;
         case "open-settings":
           this.options.openSettings(message.section);
+          break;
+        case "start-text-setting-edit":
+          this.options.startTextSettingEdit(message.settingId);
+          break;
+        case "end-text-setting-edit":
+          this.options.endTextSettingEdit();
           break;
         case "set-tray-icon": {
           let icon: GrayImage | null = null;

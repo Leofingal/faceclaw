@@ -170,6 +170,15 @@ type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<strin
   normalize?: (value: string | null | undefined) => string;
 };
 
+// Every string setting by id, so isolates that can only pass an id over a
+// message channel (e.g. a worker app requesting the phone text editor) can be
+// resolved back to the setting instance on the main thread.
+const stringSettingsById = new Map<string, ConfigSettingString>();
+
+export function getStringSettingById(id: string): ConfigSettingString | null {
+  return stringSettingsById.get(id) ?? null;
+}
+
 export class ConfigSettingString<TId extends string = string> extends ConfigSetting<string, TId> {
   readonly editorTitle: string;
   readonly glassesEditTitle: string;
@@ -180,6 +189,7 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
     this.editorTitle = options.editorTitle ?? options.label;
     this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
     this.normalizer = options.normalize ?? ((value) => value ?? "");
+    stringSettingsById.set(this.id, this);
   }
 
   get(): string {
@@ -487,34 +497,21 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
 });
 
-export const terminalHostSetting = new ConfigSettingString({
-  id: "terminal-host",
-  label: "Host",
-  storageKey: "terminal.host",
+/**
+ * Staging buffer for the Terminal app's "Add connection" flow: the worker
+ * asks the shell to open the phone text editor on this setting, the user
+ * types the g2mirror:// connection string there, and the worker reads (and
+ * clears) the draft when the user confirms on the glasses. Deliberately not
+ * listed in the Settings app; connections are managed inside the Terminal app.
+ */
+export const terminalNewConnectionSetting = new ConfigSettingString({
+  id: "terminal-new-connection",
+  label: "New connection",
+  storageKey: "terminal.newConnectionDraft",
   defaultValue: "",
-  editorTitle: "g2mirror host (tailscale IP)",
-  glassesEditTitle: "Edit terminal host",
-  description: "Hostname or IP address (e.g. a Tailscale address) of the machine running g2mirror, for the Terminal app.",
-});
-
-export const terminalPortSetting = new ConfigSettingString({
-  id: "terminal-port",
-  label: "Port",
-  storageKey: "terminal.port",
-  defaultValue: "8737",
-  editorTitle: "g2mirror port",
-  glassesEditTitle: "Edit terminal port",
-  description: "TCP port the g2mirror server listens on. The default is 8737.",
-});
-
-export const terminalAuthTokenSetting = new ConfigSettingString({
-  id: "terminal-auth-token",
-  label: "Auth token",
-  storageKey: "terminal.authToken",
-  defaultValue: "",
-  editorTitle: "g2mirror auth token",
-  glassesEditTitle: "Edit terminal auth token",
-  description: "Shared secret that must match the g2mirror server's configured auth token.",
+  editorTitle: "g2mirror connection string (g2mirror://token@host)",
+  glassesEditTitle: "Add connection",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
 });
 
 export const terminalLaunchPresetsSetting = new ConfigSettingString({

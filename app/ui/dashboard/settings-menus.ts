@@ -37,11 +37,8 @@ import {
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
   suspendEvenHubWhenScreenOffSetting,
-  terminalAuthTokenSetting,
   terminalAutoReconnectSetting,
-  terminalHostSetting,
   terminalLaunchPresetsSetting,
-  terminalPortSetting,
   terminalWakeOnBellSetting,
   textSettingMenuItem,
   timeFormatSetting,
@@ -119,10 +116,9 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Terminal",
+      // Connections (g2mirror:// strings) are managed inside the Terminal
+      // app's Manage Connections section, not here.
       items: [
-        textSettingMenuItem(terminalHostSetting),
-        textSettingMenuItem(terminalPortSetting),
-        textSettingMenuItem(terminalAuthTokenSetting),
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),
