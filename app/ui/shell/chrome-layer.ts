@@ -12,36 +12,51 @@ import {
   MIN_WINDOW_HEIGHT,
   minWindowTop,
   SHELL_OPAQUE_BLACK,
-  SIDEBAR_COLUMN_WIDTH,
-  SIDEBAR_COLUMNS,
   SIDEBAR_WIDTH,
   TOP_BAR_HEIGHT,
   windowTop,
   type WindowHeightMode,
 } from "./geometry";
 
-const ICON_SIZE = 32;
-const ICON_MARGIN_X = ((SIDEBAR_COLUMN_WIDTH - ICON_SIZE) / 2) | 0;
-/** Column index of the rightmost sidebar column (the one that fills first). */
-const FIRST_COLUMN = SIDEBAR_COLUMNS - 1;
+/**
+ * Sidebar icon layout comes in two variants. Few enough windows for a single
+ * column keeps the roomy 36px slots (32px icons) right-aligned against the
+ * separator; past one column's worth it switches to two 32px slots (28px
+ * icons) that exactly fill the 64px sidebar. In the two-column variant the
+ * right column (against the app area) fills first and windows past that
+ * overflow into the left column, so the common case keeps every icon next to
+ * the content it belongs to.
+ */
+type SidebarVariant = { columns: number; columnWidth: number; iconSize: number };
+const ONE_COLUMN: SidebarVariant = { columns: 1, columnWidth: 36, iconSize: 32 };
+const TWO_COLUMN: SidebarVariant = { columns: 2, columnWidth: 32, iconSize: 28 };
+
 const ICON_SPACING = 8;
-const ICON_STRIDE = ICON_SIZE + ICON_SPACING;
 /** Icon list top/bottom margins within the sidebar band, below the top bar. */
 const LIST_MARGIN = 10;
+const LIST_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+
 /** Icon rows that fit in one sidebar column. */
-const ROWS_PER_COLUMN = Math.max(
-  1,
-  ((MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN + ICON_SPACING) / ICON_STRIDE) | 0,
-);
+function rowsPerColumn(variant: SidebarVariant): number {
+  return Math.max(1, ((LIST_HEIGHT + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
+}
+
+function sidebarVariant(windowCount: number): SidebarVariant {
+  return windowCount > rowsPerColumn(ONE_COLUMN) ? TWO_COLUMN : ONE_COLUMN;
+}
+
+/** Left x of a sidebar column; columns pack rightward against the separator. */
+function columnLeft(variant: SidebarVariant, column: number): number {
+  return SIDEBAR_WIDTH - (variant.columns - column) * variant.columnWidth;
+}
 
 /**
- * Whether the sidebar's left (overflow) column holds any icons. Icons fill
- * the right column first; scrolling never shows fewer than a full right
- * column, so the left column is populated exactly when there are more
- * windows than one column holds.
+ * Left edge of the sidebar region that actually holds icons: the one-column
+ * variant leaves a dead strip left of its single right-aligned column.
+ * Screenshot cropping uses this to trim the unused part.
  */
-export function sidebarLeftColumnUsed(windowCount: number): boolean {
-  return windowCount > ROWS_PER_COLUMN;
+export function sidebarContentLeft(windowCount: number): number {
+  return columnLeft(sidebarVariant(windowCount), 0);
 }
 const NOTIFICATION_ICON_SIZE = 24;
 const BORDER_VALUE = 40;
@@ -146,19 +161,24 @@ export class ShellChromeLayer implements Layer {
     // windows off-screen above/below. Icons fill the right column top to
     // bottom, then overflow into the left one, so a visible slot's column is
     // decided by its position within the scrolled window.
-    const listTop = bandTop + TOP_BAR_HEIGHT + LIST_MARGIN;
-    const itemStride = ICON_STRIDE;
-    const rowsPerColumn = ROWS_PER_COLUMN;
-    const visibleCount = rowsPerColumn * SIDEBAR_COLUMNS;
     const count = state.windows.length;
+    const variant = sidebarVariant(count);
+    const iconSize = variant.iconSize;
+    const iconMarginX = ((variant.columnWidth - iconSize) / 2) | 0;
+    // Column index of the rightmost column (the one that fills first).
+    const firstColumn = variant.columns - 1;
+    const listTop = bandTop + TOP_BAR_HEIGHT + LIST_MARGIN;
+    const itemStride = iconSize + ICON_SPACING;
+    const rows = rowsPerColumn(variant);
+    const visibleCount = rows * variant.columns;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
     const slotOf = (index: number) => {
       const position = index - this.scrollRow;
-      const columnsFromRight = (position / rowsPerColumn) | 0;
+      const columnsFromRight = (position / rows) | 0;
       return {
-        column: FIRST_COLUMN - columnsFromRight,
-        y: listTop + (position % rowsPerColumn) * itemStride,
+        column: firstColumn - columnsFromRight,
+        y: listTop + (position % rows) * itemStride,
       };
     };
 
@@ -171,10 +191,10 @@ export class ShellChromeLayer implements Layer {
     const sep = SIDEBAR_WIDTH - 1;
     const selVisible = state.selectedIndex >= this.scrollRow && state.selectedIndex < lastVisible;
     const selSlot = selVisible ? slotOf(state.selectedIndex) : null;
-    const selTabTop = selSlot && selSlot.column === FIRST_COLUMN ? selSlot.y - 2 : null;
+    const selTabTop = selSlot && selSlot.column === firstColumn ? selSlot.y - 2 : null;
     if (selTabTop !== null) {
       image.drawLine(sep, bandTop, sep, selTabTop, BORDER_VALUE);
-      image.drawLine(sep, selTabTop + ICON_SIZE + 4, sep, bandBottom - 1, BORDER_VALUE);
+      image.drawLine(sep, selTabTop + iconSize + 4, sep, bandBottom - 1, BORDER_VALUE);
     } else {
       image.drawLine(sep, bandTop, sep, bandBottom - 1, BORDER_VALUE);
     }
@@ -182,36 +202,39 @@ export class ShellChromeLayer implements Layer {
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const window = state.windows[index]!;
       const { column, y } = slotOf(index);
-      const columnLeft = column * SIDEBAR_COLUMN_WIDTH;
-      const x = columnLeft + ICON_MARGIN_X;
+      const left = columnLeft(variant, column);
+      const x = left + iconMarginX;
       const selected = index === state.selectedIndex;
       const focused = selected && state.focus === "sidebar";
-      if (selected && column === FIRST_COLUMN) {
-        drawSelectionTab(image, columnLeft, y - 2, y + ICON_SIZE + 2, focused);
+      if (selected && column === firstColumn) {
+        drawSelectionTab(image, left, y - 2, y + iconSize + 2, focused);
       } else if (selected) {
-        // Spans the full column: only 2px of margin flanks a 32px icon in a
-        // 36px column, so anything wider would clip at the screen edge.
-        drawSelectionBox(image, columnLeft, y - 2, SIDEBAR_COLUMN_WIDTH, ICON_SIZE + 4, focused);
+        // Spans the full column: only 2px of margin flanks the icon in its
+        // slot, so anything wider would clip at the screen edge.
+        drawSelectionBox(image, left, y - 2, variant.columnWidth, iconSize + 4, focused);
       }
-      window.drawIcon(image, x, y, ICON_SIZE, focused);
+      window.drawIcon(image, x, y, iconSize, focused);
       if (window.attention) {
         // Black dot on the white focused tab, white dot otherwise.
-        image.fillRoundedRect(x + ICON_SIZE - 7, y - 1, 8, 8, focused ? SHELL_OPAQUE_BLACK : 255, 4);
+        image.fillRoundedRect(x + iconSize - 7, y - 1, 8, 8, focused ? SHELL_OPAQUE_BLACK : 255, 4);
       }
     }
 
+    // Chevrons center over the icon area, which in the one-column variant is
+    // narrower than the sidebar strip.
+    const chevronX = ((columnLeft(variant, 0) + SIDEBAR_WIDTH) / 2) | 0;
     if (this.scrollRow > 0) {
-      drawChevron(image, SIDEBAR_WIDTH / 2, bandTop + TOP_BAR_HEIGHT + 6, -1);
+      drawChevron(image, chevronX, bandTop + TOP_BAR_HEIGHT + 6, -1);
     }
     if (lastVisible < count) {
-      drawChevron(image, SIDEBAR_WIDTH / 2, bandBottom - 6, 1);
+      drawChevron(image, chevronX, bandBottom - 6, 1);
     }
   }
 
   private drawTopBar(image: GrayImage, state: ShellChromeState): void {
     const font = getDefaultMediumFont();
-    // The bar sits at the top edge of the foreground window: the screen top
-    // for a max-height window, the min-height band otherwise. It moves when
+    // The bar sits at the top edge of the foreground window's band, wherever
+    // its height mode puts that (screen top for max height). It moves when
     // the foreground switches to a window of a different height.
     const barTop = windowTop(state.foregroundHeightMode);
     image.fillRect(SIDEBAR_WIDTH, barTop, G2_LENS_WIDTH - SIDEBAR_WIDTH, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);

@@ -24,16 +24,15 @@ import {
   timeFormatSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
-import { ShellChromeLayer, sidebarLeftColumnUsed, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
+import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
-  MIN_WINDOW_HEIGHT,
   minWindowTop,
-  SIDEBAR_COLUMN_WIDTH,
   SIDEBAR_WIDTH,
   TOP_BAR_HEIGHT,
+  windowBandHeight,
   windowTop,
   type WindowHeightMode,
 } from "./geometry";
@@ -584,17 +583,17 @@ class Shell {
   /**
    * Screen rect actually occupied by content, for cropping screenshots: the
    * foreground window's band (full screen for a max-height window, the
-   * vertical-position-dependent 288px band otherwise), minus the sidebar's
-   * left column when no icons have overflowed into it.
+   * vertical-position-dependent 288px band otherwise), minus the sidebar
+   * strip left of the icon columns when the one-column variant is active.
    */
   screenshotCropRect(): { x: number; y: number; width: number; height: number } {
     const heightMode = this.foregroundWindow()?.heightMode ?? "min";
-    const x = sidebarLeftColumnUsed(this.windows.length) ? 0 : SIDEBAR_COLUMN_WIDTH;
+    const x = sidebarContentLeft(this.windows.length);
     return {
       x,
       y: windowTop(heightMode),
       width: G2_LENS_WIDTH - x,
-      height: heightMode === "max" ? G2_LENS_HEIGHT : MIN_WINDOW_HEIGHT,
+      height: windowBandHeight(heightMode),
     };
   }
 
