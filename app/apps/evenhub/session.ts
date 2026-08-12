@@ -19,7 +19,7 @@
  */
 import { ApplicationSettings } from "@nativescript/core";
 import { GrayImage } from "../../graphics/image";
-import { getFont } from "../../graphics/bdffont";
+import { EvenHubFont } from "../../graphics/evenhub-font";
 import { type DashboardInputEvent } from "../../ui/layers";
 import {
   asRecord,
@@ -158,9 +158,9 @@ export class EvenHubSession {
   paint(size: { width: number; height: number }, focused: boolean): GrayImage {
     if (!this.pageCreated || !this.page) {
       const image = new GrayImage(size.width, size.height, 0);
-      const font = getFont("terminus24");
-      image.drawText(font, 16, 16, `Loading ${this.manifest.name}...`, 255);
-      image.drawText(font, 16, 16 + 2 * font.lineHeight, "(waiting for the app to build its page)", 120);
+      const font = EvenHubFont.get();
+      font.drawText(image, 16, 16, `Loading ${this.manifest.name}...`, 255);
+      font.drawText(image, 16, 16 + 2 * font.lineHeight, "(waiting for the app to build its page)", 120);
       return image;
     }
     return compositePage(this.page, size, focused);

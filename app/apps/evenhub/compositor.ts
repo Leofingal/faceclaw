@@ -2,15 +2,16 @@
  * Phone-side reimplementation of the on-glasses EvenHub page compositor:
  * containers render into the 576x288 canvas the stock firmware gives apps.
  *
+ * Text uses Even's extracted 20px firmware font (via EvenHubFont), measured
+ * and wrapped with @evenrealities/pretext, so glyph widths and line breaks
+ * match what apps expect.
+ *
  * Known deviations from stock, acceptable for now:
- *  - Text uses Terminus 24 rather than the firmware's proportional LVGL font,
- *    so grid-aligned/padded layouts won't line up exactly (see
- *    notes/evenhub_compatibility.txt section 6 for the extraction plan).
  *  - List rendering is a plain vertical list; itemWidth-based horizontal
  *    layouts are not implemented yet.
  */
 import { GrayImage } from "../../graphics/image";
-import { getFont } from "../../graphics/bdffont";
+import { EvenHubFont } from "../../graphics/evenhub-font";
 import {
   type EvenHubContainer,
   type EvenHubImageContainer,
@@ -25,24 +26,19 @@ export const EVENHUB_SCREEN_HEIGHT = 288;
 const TEXT_WHITE = 255;
 const LIST_ROW_PADDING = 4;
 
-function containerFont() {
-  return getFont("terminus24");
-}
-
-/** Chars the font lacks are skipped silently on stock (no tofu); drawText
- * already skips unknown glyphs, matching that. */
+/** Chars the font lacks are skipped silently on stock (no tofu); EvenHubFont
+ * skips unknown glyphs, matching that. */
 function paintTextContainer(image: GrayImage, container: EvenHubTextContainer): void {
   paintBorder(image, container);
   const inset = container.borderWidth + container.paddingLength;
-  const font = containerFont();
-  image.drawTextWrapped({
-    font,
-    x: container.x + inset,
-    y: container.y + inset,
-    width: Math.max(1, container.width - 2 * inset),
-    text: container.content,
-    value: TEXT_WHITE,
-  });
+  EvenHubFont.get().drawTextWrapped(
+    image,
+    container.x + inset,
+    container.y + inset,
+    Math.max(1, container.width - 2 * inset),
+    container.content,
+    TEXT_WHITE,
+  );
 }
 
 function paintBorder(
@@ -82,7 +78,7 @@ function paintImageContainer(image: GrayImage, container: EvenHubImageContainer)
 
 function paintListContainer(image: GrayImage, container: EvenHubListContainer, focused: boolean): void {
   paintBorder(image, container);
-  const font = containerFont();
+  const font = EvenHubFont.get();
   const inset = container.borderWidth + container.paddingLength;
   const rowHeight = font.lineHeight + LIST_ROW_PADDING;
   const left = container.x + inset;
@@ -103,7 +99,7 @@ function paintListContainer(image: GrayImage, container: EvenHubListContainer, f
     if (selected && container.selectBorder) {
       image.drawRect(left, y, width, rowHeight - 1, TEXT_WHITE);
     }
-    image.drawText(font, left + 2, y + Math.floor(LIST_ROW_PADDING / 2), container.itemNames[index]!, TEXT_WHITE);
+    font.drawText(image, left + 2, y + Math.floor(LIST_ROW_PADDING / 2), container.itemNames[index]!, TEXT_WHITE);
   }
 }
 

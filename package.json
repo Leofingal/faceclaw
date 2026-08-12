@@ -7,6 +7,7 @@
     "build": "nativescript build android"
   },
   "dependencies": {
+    "@evenrealities/pretext": "^0.1.4",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
     "@xterm/headless": "^6.0.0",
