@@ -87,6 +87,14 @@ export function defaultWindowMenuItems(
 ): MenuItem[] {
   return [
     {
+      // Defocus the app (hand focus to the sidebar) without closing it.
+      label: "Focus app switcher",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        post({ type: "yield-focus", windowId });
+      },
+    },
+    {
       label: "Voice input",
       onSelect: (ctx) => {
         ctx.stack.pop();

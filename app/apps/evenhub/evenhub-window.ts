@@ -5,8 +5,6 @@
  */
 import { GrayImage } from "../../graphics/image";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
-import { MenuLayer } from "../../ui/menu";
-import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
 import {
   createInProcessWindow,
   type InProcessAppOptions,
@@ -31,27 +29,11 @@ class EvenHubAppLayer implements Layer {
   }
 }
 
-/** The stock exit confirm shown for shutDownPageContainer(1). */
-class ExitConfirmLayer extends MenuLayer {
-  constructor(session: EvenHubSession, appName: string) {
-    let answered = false;
-    const answer = (ctx: LayerContext, exit: boolean) => {
-      if (answered) return;
-      answered = true;
-      ctx.stack.pop();
-      session.exitDialogAnswer(exit);
-    };
-    super(`Exit ${appName}?`, [
-      { label: "No", onSelect: (ctx) => answer(ctx, false) },
-      { label: "Yes", onSelect: (ctx) => answer(ctx, true) },
-    ], WINDOW_MENU_LAYOUT);
-  }
-}
-
 export function createEvenHubWindow(
   windowId: string,
   session: EvenHubSession,
   options: InProcessAppOptions,
+  onShowPhone: () => void,
 ): InProcessWindow {
   const created = createInProcessWindow({
     appId: "evenhub",
@@ -60,6 +42,9 @@ export function createEvenHubWindow(
     iconLetter: session.manifest.name.charAt(0).toUpperCase() || "E",
     closeable: true,
     heightMode: "medium",
+    // Glasses-first: the app runs without the phone showing it; this reveals
+    // its phone UI (config pages, etc.) over the dashboard on demand.
+    menuItems: () => [{ label: "Show phone UI", onSelect: (ctx) => { ctx.stack.pop(); onShowPhone(); } }],
     actions: options.actions,
     baseLayer: new EvenHubAppLayer(session),
     submitFrame: options.submitFrame,
@@ -74,11 +59,7 @@ export function createEvenHubWindow(
   session.attachWindow({
     requestRender: created.requestRender,
     closeWindow: () => shell.closeWindow(windowId),
-    openExitDialog: () => {
-      if (!created.stack.topMatches((layer) => layer instanceof ExitConfirmLayer)) {
-        created.stack.push(new ExitConfirmLayer(session, session.manifest.name));
-      }
-    },
+    focusSwitcher: () => shell.yieldFocusToSidebar(),
   });
 
   // FOREGROUND_ENTER/EXIT for the app on shell focus changes.

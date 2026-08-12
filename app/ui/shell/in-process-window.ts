@@ -101,7 +101,19 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   // items act on the shell directly (workers post messages instead).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    const items: MenuItem[] = [...(options.menuItems?.() ?? [])];
+    // "Focus app switcher" first: long-press then tap defocuses the app
+    // (hands focus to the sidebar) without closing it — the reliable way out
+    // for apps that consume double-click.
+    const items: MenuItem[] = [
+      {
+        label: "Focus app switcher",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          shell.yieldFocusToSidebar();
+        },
+      },
+      ...(options.menuItems?.() ?? []),
+    ];
     items.push({
       label: "Voice input",
       onSelect: (ctx) => {

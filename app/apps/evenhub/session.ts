@@ -76,23 +76,21 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
 })();
 `;
 
-/** How long after SYSTEM_EXIT the webview stays alive so the app can save. */
-const EXIT_GRACE_MS = 1500;
 /** Stock blocks a repeated createStartUpPageContainer ~2s before failing it. */
 const DUPLICATE_CREATE_DELAY_MS = 2000;
 
-export type EvenHubPageHandle = {
+export type EvenHubWebViewHandle = {
   /** Run JS inside the app's WebView (must be called on the main thread). */
   evaluateJs: (js: string) => void;
-  /** Tear the phone page down (navigate back if it is current). */
-  closePage: () => void;
+  /** Detach and destroy the WebView (the app is closing). */
+  destroy: () => void;
 };
 
 export type EvenHubWindowHooks = {
   requestRender: () => void;
   closeWindow: () => void;
-  /** Push the on-glasses exit confirm; answers come back via exitDialogAnswer. */
-  openExitDialog: () => void;
+  /** Hand focus to the app switcher (used to decline an app's quit request). */
+  focusSwitcher: () => void;
 };
 
 export class EvenHubSession {
@@ -101,12 +99,13 @@ export class EvenHubSession {
 
   private page: EvenHubPage | null = null;
   private pageCreated = false;
-  private pageHandle: EvenHubPageHandle | null = null;
+  private webViewHandle: EvenHubWebViewHandle | null = null;
   private windowHooks: EvenHubWindowHooks | null = null;
   private closed = false;
   private launchContextPushed = false;
   private systemExitSent = false;
-  private graceCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Shell focus state; true from launch (apps open focused). */
+  private foreground = true;
   private log: (message: string) => void;
 
   constructor(manifest: EvenHubManifest, distDir: string, log: (message: string) => void) {
@@ -115,14 +114,14 @@ export class EvenHubSession {
     this.log = log;
   }
 
-  // ----- phone page wiring -----
+  // ----- webview wiring -----
 
-  attachPage(handle: EvenHubPageHandle): void {
-    this.pageHandle = handle;
+  attachWebView(handle: EvenHubWebViewHandle): void {
+    this.webViewHandle = handle;
   }
 
   /** The WebView finished loading the app: push the one-shot launch context. */
-  pageFinished(): void {
+  webViewLoaded(): void {
     if (this.launchContextPushed) return;
     this.launchContextPushed = true;
     // Launched to drive the glasses (from the on-glasses file browser), so
@@ -136,12 +135,6 @@ export class EvenHubSession {
       isCharging: false,
       isInCase: false,
     });
-  }
-
-  /** The phone page went away (back navigation); the webview is gone too. */
-  pageGone(): void {
-    this.pageHandle = null;
-    this.close();
   }
 
   // ----- glasses window wiring -----
@@ -213,22 +206,16 @@ export class EvenHubSession {
     this.windowHooks?.requestRender();
   }
 
+  /**
+   * Shell focus changes drive foreground/background. The initial ENTER is
+   * deferred until the page exists (a just-launched app is focused before it
+   * has built its page); createStartUpPage emits it then.
+   */
   setForeground(foreground: boolean): void {
+    if (this.foreground === foreground) return;
+    this.foreground = foreground;
     if (!this.pageCreated) return;
     this.emitSysEvent(foreground ? FOREGROUND_ENTER_EVENT : FOREGROUND_EXIT_EVENT, 0);
-  }
-
-  /** The on-glasses exit confirm was answered. */
-  exitDialogAnswer(exit: boolean): void {
-    if (exit) {
-      this.emitSysEvent(SYSTEM_EXIT_EVENT, 0);
-      this.systemExitSent = true;
-      // Give the app a beat to persist state; it usually calls
-      // shutDownPageContainer(0) well before this fires.
-      this.graceCloseTimer = setTimeout(() => this.close(), EXIT_GRACE_MS);
-    } else {
-      this.emitSysEvent(FOREGROUND_EXIT_EVENT, 0);
-    }
   }
 
   // ----- bridge calls (web -> host) -----
@@ -317,6 +304,8 @@ export class EvenHubSession {
     this.warnOnInvalidPage(page);
     this.page = page;
     this.pageCreated = true;
+    // The launch focus arrived before the page existed; deliver the ENTER now.
+    if (this.foreground) this.emitSysEvent(FOREGROUND_ENTER_EVENT, 0);
     this.windowHooks?.requestRender();
     return 0;
   }
@@ -376,10 +365,13 @@ export class EvenHubSession {
 
   private shutDown(exitMode: number): boolean {
     if (exitMode === 1) {
-      // Stock pops an on-glasses confirm and tells the app its page is gone.
-      this.emitSysEvent(FOREGROUND_ENTER_EVENT, 0);
-      this.windowHooks?.openExitDialog();
-      this.windowHooks?.requestRender();
+      // The app asked to quit (stock would pop an on-glasses confirm). We
+      // decline and hand focus to the app switcher instead, leaving the app
+      // running — so an app's double-tap-to-quit becomes double-tap-to-defocus.
+      // No FOREGROUND_EXIT: focusing the sidebar doesn't background the app
+      // (native Faceclaw apps behave the same), and refocusing the same window
+      // wouldn't re-fire ENTER, which would leave a pause-on-exit app stuck.
+      this.windowHooks?.focusSwitcher();
       return true;
     }
     // Immediate exit. Resolve first (the return travels via evaluateJs, and
@@ -395,14 +387,14 @@ export class EvenHubSession {
   // ----- pushes (host -> web) -----
 
   private resolveCall(callId: number, ok: boolean, value: unknown): void {
-    this.pageHandle?.evaluateJs(
+    this.webViewHandle?.evaluateJs(
       `window.__fcResolve && window.__fcResolve(${callId}, ${ok ? "true" : "false"}, ${JSON.stringify(value ?? null)})`,
     );
   }
 
   private pushMessage(method: string, data: unknown): void {
     const message = { type: "listen_even_app_data", method, data };
-    this.pageHandle?.evaluateJs(
+    this.webViewHandle?.evaluateJs(
       `window._listenEvenAppMessage && window._listenEvenAppMessage(${JSON.stringify(message)})`,
     );
   }
@@ -427,14 +419,10 @@ export class EvenHubSession {
 
   // ----- teardown -----
 
-  /** Close everything: glasses window, phone page, session. Idempotent. */
+  /** Close everything: glasses window, WebView, session. Idempotent. */
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    if (this.graceCloseTimer) {
-      clearTimeout(this.graceCloseTimer);
-      this.graceCloseTimer = null;
-    }
     if (!this.systemExitSent) {
       // Best effort: lets the app's teardown handlers run before the webview dies.
       this.emitSysEvent(SYSTEM_EXIT_EVENT, 0);
@@ -443,11 +431,11 @@ export class EvenHubSession {
     const hooks = this.windowHooks;
     this.windowHooks = null;
     hooks?.closeWindow();
-    const page = this.pageHandle;
-    this.pageHandle = null;
-    if (page) {
+    const webView = this.webViewHandle;
+    this.webViewHandle = null;
+    if (webView) {
       // Give in-flight resolves/pushes a beat to reach the webview first.
-      setTimeout(() => page.closePage(), 100);
+      setTimeout(() => webView.destroy(), 100);
     }
   }
 
