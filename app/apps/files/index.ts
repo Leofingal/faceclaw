@@ -1,4 +1,5 @@
 import { type AppContext, type AppDefinition } from "../app-definition";
+import { openEvenHubPackage } from "../evenhub";
 import {
   createFilesAppWindow,
   createImageDocumentWindow,
@@ -43,6 +44,11 @@ const filesApp: AppDefinition = {
         ...options,
         openDocumentWindow: (title, text) => openTextDocumentWindow(ctx, title, text),
         openImageWindow: (title, path) => openImageDocumentWindow(ctx, title, path),
+        openEhpkApp: (path) => {
+          void openEvenHubPackage(ctx, path).catch((error) => {
+            ctx.appendLog(`evenhub launch failed: ${error}`);
+          });
+        },
       }),
     ),
   // A document arriving via Android's Share intent opens as its own window.

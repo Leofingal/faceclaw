@@ -1,0 +1,7 @@
+<Page
+    xmlns="http://schemas.nativescript.org/tns.xsd"
+    navigatingTo="navigatingTo"
+    navigatedFrom="navigatedFrom">
+    <ActionBar title="{{ title }}" />
+    <Placeholder creatingView="creatingWebView" />
+</Page>

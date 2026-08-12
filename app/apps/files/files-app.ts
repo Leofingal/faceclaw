@@ -16,12 +16,15 @@ export const FILES_WINDOW_ID = "files";
 export const FILES_SURFACE_ID = "window:files";
 
 const TEXT_FILE = /\.(txt|md|log)$/i;
+const EHPK_FILE = /\.ehpk$/i;
 
 export type FilesAppOptions = InProcessAppOptions & {
   /** Open a text document as its own shell window (also used by the share intent). */
   openDocumentWindow: (title: string, text: string) => void;
   /** Open an image file as its own shell window. */
   openImageWindow: (title: string, path: string) => void;
+  /** Launch an EvenHub app package (.ehpk) through the EvenHub host. */
+  openEhpkApp: (path: string) => void;
 };
 
 /**
@@ -32,7 +35,7 @@ export type FilesAppOptions = InProcessAppOptions & {
 export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow {
   let created: InProcessWindow | null = null;
   const browser = new FileBrowserLayer({
-    isSupportedFile: (name) => TEXT_FILE.test(name) || isDecodableImageFile(name),
+    isSupportedFile: (name) => TEXT_FILE.test(name) || EHPK_FILE.test(name) || isDecodableImageFile(name),
     // The browser handles double-click itself (up a level), so it is not
     // wrapped in YieldAtRootLayer; it yields explicitly from the top level.
     onLeave: () => shell.yieldFocusToSidebar(),
@@ -127,6 +130,17 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
           const text = readTextFile(entry.path);
           ctx.stack.pop();
           options.openDocumentWindow(entry.name, text ?? "(could not read file)");
+        },
+      },
+    ];
+  }
+  if (EHPK_FILE.test(entry.name)) {
+    return [
+      {
+        label: "Run app",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          options.openEhpkApp(entry.path);
         },
       },
     ];
