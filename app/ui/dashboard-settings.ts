@@ -497,6 +497,44 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
 });
 
+export const evenHubEmailSetting = new ConfigSettingString({
+  id: "evenhub-email",
+  label: "Even account email",
+  storageKey: "integrations.evenhub.email",
+  defaultValue: "",
+  editorTitle: "Even Realities account email",
+  glassesEditTitle: "Edit Even email",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
+  formatValue: emptySettingDisplay,
+  description: "Email for the Even account used to browse and download public EvenHub apps.",
+});
+
+export const evenHubPasswordSetting = new ConfigSettingString({
+  id: "evenhub-password",
+  label: "Even account password",
+  storageKey: "integrations.evenhub.password",
+  defaultValue: "",
+  editorTitle: "Even Realities account password",
+  glassesEditTitle: "Edit Even password",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, ""),
+  formatValue: (value) => (value ? "(set)" : "(not set)"),
+  description:
+    "Password used to mint a short-lived Even API session. Faceclaw stores it in the same private settings store as other API credentials and never logs it.",
+});
+
+export const evenHubOpenUdidSetting = new ConfigSettingString({
+  id: "evenhub-openudid",
+  label: "Even phone openUdid",
+  storageKey: "integrations.evenhub.openUdid",
+  defaultValue: "",
+  editorTitle: "Official Even app Android openUdid",
+  glassesEditTitle: "Edit Even openUdid",
+  normalize: (value) => (value ?? "").replace(/[^A-Za-z0-9_-]+/g, "").trim(),
+  formatValue: maskToken,
+  description:
+    "Android ID already bound to this account by the official Even app. The private API rejects a valid login token when this value is missing or belongs to another app/device.",
+});
+
 /**
  * Staging buffer for the Terminal app's "Add connection" flow: the worker
  * asks the shell to open the phone text editor on this setting, the user

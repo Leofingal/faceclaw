@@ -26,6 +26,9 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  evenHubEmailSetting,
+  evenHubOpenUdidSetting,
+  evenHubPasswordSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   openAiApiKeySetting,
@@ -129,6 +132,14 @@ function settingsSections(): SettingsSection[] {
       items: [
         textSettingMenuItem(roamGraphNameSetting),
         textSettingMenuItem(roamApiTokenSetting),
+      ],
+    },
+    {
+      label: "EvenHub",
+      items: [
+        textSettingMenuItem(evenHubEmailSetting),
+        textSettingMenuItem(evenHubPasswordSetting),
+        textSettingMenuItem(evenHubOpenUdidSetting),
       ],
     },
     {

@@ -19,8 +19,12 @@ import {
 import { parseEhpk, parseManifest, utf8Decode } from "./ehpk";
 import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
+import { EvenHubStoreLayer } from "./store-layer";
+import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
 
 const EVENHUB_WINDOW_ID = "evenhub:app";
+const EVENHUB_STORE_WINDOW_ID = "evenhub:store";
+const EVENHUB_STORE_SURFACE_ID = "window:evenhub:store";
 
 let activeSession: EvenHubSession | null = null;
 
@@ -77,17 +81,37 @@ const evenhubApp: AppDefinition = {
   appId: "evenhub",
   title: "EvenHub",
   icon: "package",
-  // Launching happens by opening an .ehpk in Files; the grid entry would
-  // have nothing to open.
-  showInLauncher: false,
   launch: async (ctx) => {
-    const existing = shell.getWindows().find((window) => window.appId === "evenhub");
+    const existing = shell.getWindows().find((window) => window.windowId === EVENHUB_STORE_WINDOW_ID);
     if (existing) {
       shell.focusWindow(existing.windowId);
       ctx.requestShellRender();
-    } else {
-      ctx.appendLog("EvenHub apps launch from .ehpk files in the Files app");
+      return;
     }
+    let created: InProcessWindow | null = null;
+    const store = new EvenHubStoreLayer({
+      openPackage: (path) => openEvenHubPackage(ctx, path),
+      openSettings: () => ctx.launchApp("settings", { section: "EvenHub" }),
+      appendLog: ctx.appendLog,
+    });
+    await ctx.launchInProcessApp(EVENHUB_STORE_WINDOW_ID, EVENHUB_STORE_SURFACE_ID, (options) => {
+      created = createInProcessWindow({
+        appId: "evenhub",
+        windowId: EVENHUB_STORE_WINDOW_ID,
+        title: "EvenHub",
+        iconLetter: "EH",
+        icon: "package",
+        closeable: true,
+        menuItems: () => (created?.stack.isAtBase() ? store.buildMenuItems() : []),
+        actions: options.actions,
+        baseLayer: store,
+        submitFrame: options.submitFrame,
+        setSurfaceVisible: options.setSurfaceVisible,
+        removeSurface: options.removeSurface,
+        onClosed: options.onClosed,
+      });
+      return created;
+    });
   },
 };
 
