@@ -195,7 +195,8 @@ export class EvenHubSession {
   }
 
   private scrollList(list: EvenHubListContainer, eventType: number): void {
-    const delta = eventType === SCROLL_TOP_EVENT ? 1 : -1;
+    // Swipe up selects the previous item, swipe down the next (stock direction).
+    const delta = eventType === SCROLL_TOP_EVENT ? -1 : 1;
     const next = list.selectedIndex + delta;
     if (next < 0 || next >= list.itemNames.length) {
       // At a boundary the selection stays put and the app hears about it.

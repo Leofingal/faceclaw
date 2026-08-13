@@ -76,6 +76,10 @@ function paintImageContainer(image: GrayImage, container: EvenHubImageContainer)
   }
 }
 
+/** Horizontal padding between the selection outline and the item text. */
+const LIST_SELECT_PADDING = 8;
+const LIST_SELECT_RADIUS = 8;
+
 function paintListContainer(image: GrayImage, container: EvenHubListContainer, focused: boolean): void {
   paintBorder(image, container);
   const font = EvenHubFont.get();
@@ -83,7 +87,9 @@ function paintListContainer(image: GrayImage, container: EvenHubListContainer, f
   const rowHeight = font.lineHeight + LIST_ROW_PADDING;
   const left = container.x + inset;
   const top = container.y + inset;
-  const width = Math.max(1, container.width - 2 * inset);
+  const innerWidth = Math.max(1, container.width - 2 * inset);
+  // Text is indented by the selection padding so the outline sits inside the list.
+  const textX = left + LIST_SELECT_PADDING;
   const visibleRows = Math.max(1, Math.floor((container.height - 2 * inset) / rowHeight));
   // Keep the selection in view.
   let firstRow = 0;
@@ -91,23 +97,39 @@ function paintListContainer(image: GrayImage, container: EvenHubListContainer, f
   for (let row = 0; row < visibleRows; row++) {
     const index = firstRow + row;
     if (index >= container.itemNames.length) break;
+    const name = container.itemNames[index]!;
     const y = top + row * rowHeight;
-    const selected = index === container.selectedIndex;
-    if (selected && focused) {
-      image.fillRect(left, y, width, rowHeight - 1, 40);
+    if (index === container.selectedIndex) {
+      // Selection: a rounded outline sized to the text (not the full row width),
+      // with padding on each side and no fill — matching stock's appearance.
+      const textWidth = font.measureLine(name);
+      image.drawRoundedRect(
+        left,
+        y,
+        Math.min(textWidth + 2 * LIST_SELECT_PADDING, innerWidth),
+        rowHeight - 1,
+        focused ? TEXT_WHITE : 130,
+        LIST_SELECT_RADIUS,
+      );
     }
-    if (selected && container.selectBorder) {
-      image.drawRect(left, y, width, rowHeight - 1, TEXT_WHITE);
-    }
-    font.drawText(image, left + 2, y + Math.floor(LIST_ROW_PADDING / 2), container.itemNames[index]!, TEXT_WHITE);
+    font.drawText(image, textX, y + Math.floor(LIST_ROW_PADDING / 2), name, TEXT_WHITE);
   }
 }
 
-/** Containers with a zOrderIndex sort by it; the rest keep declaration order. */
+/** Bottom-to-top paint order for a page's containers. */
 function paintOrder(containers: EvenHubContainer[]): EvenHubContainer[] {
   const anyZ = containers.some((c) => c.zOrderIndex !== undefined);
-  if (!anyZ) return containers;
-  return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
+  if (anyZ) {
+    // Explicit z-order: larger zOrderIndex renders closer to the front, i.e.
+    // painted later. (Stock requires all-or-nothing + unique values.)
+    return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
+  }
+  // Default (no z-order): image containers sit below lists and text. Cross-type
+  // order isn't defined by the wire format (separate object arrays), so this is
+  // our choice, matching stock. Order within each group is preserved.
+  const images = containers.filter((c) => c.kind === "image");
+  const rest = containers.filter((c) => c.kind !== "image");
+  return [...images, ...rest];
 }
 
 /** Render a page into a fresh app-viewport image (positioned by the shell). */
