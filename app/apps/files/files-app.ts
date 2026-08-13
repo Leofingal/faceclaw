@@ -1,7 +1,9 @@
 import { readTextFile, type DirectoryEntry } from "../../native/file-access";
+import { isFontFile } from "../../native/font-files";
 import { isDecodableImageFile } from "../../native/image-files";
 import { FileBrowserLayer } from "./file-browser";
 import { FileInfoDialogLayer, type FileInfoAction } from "./file-info-dialog";
+import { FontPreviewerLayer } from "./font-previewer";
 import { ImageViewerLayer } from "./image-viewer";
 import { TextViewerLayer } from "./text-viewer";
 import {
@@ -22,6 +24,8 @@ export type FilesAppOptions = InProcessAppOptions & {
   openDocumentWindow: (title: string, text: string) => void;
   /** Open an image file as its own shell window. */
   openImageWindow: (title: string, path: string) => void;
+  /** Open a font file's previewer as its own shell window. */
+  openFontWindow: (title: string, path: string) => void;
 };
 
 /**
@@ -32,7 +36,7 @@ export type FilesAppOptions = InProcessAppOptions & {
 export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow {
   let created: InProcessWindow | null = null;
   const browser = new FileBrowserLayer({
-    isSupportedFile: (name) => TEXT_FILE.test(name) || isDecodableImageFile(name),
+    isSupportedFile: (name) => TEXT_FILE.test(name) || isDecodableImageFile(name) || isFontFile(name),
     // The browser handles double-click itself (up a level), so it is not
     // wrapped in YieldAtRootLayer; it yields explicitly from the top level.
     onLeave: () => shell.yieldFocusToSidebar(),
@@ -76,6 +80,29 @@ export function createTextDocumentWindow(
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new TextViewerLayer(text, title)),
+    submitFrame: options.submitFrame,
+    setSurfaceVisible: options.setSurfaceVisible,
+    removeSurface: options.removeSurface,
+    onClosed: options.onClosed,
+  });
+}
+
+/** One opened font file's previewer as its own window. */
+export function createFontDocumentWindow(
+  windowId: string,
+  title: string,
+  path: string,
+  options: InProcessAppOptions,
+): InProcessWindow {
+  return createInProcessWindow({
+    appId: "files",
+    windowId,
+    title,
+    iconLetter: "F",
+    icon: "type",
+    closeable: true,
+    actions: options.actions,
+    baseLayer: new YieldAtRootLayer(new FontPreviewerLayer(path, title)),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
@@ -145,6 +172,24 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         onSelect: (ctx) => {
           ctx.stack.pop();
           options.openImageWindow(entry.name, entry.path);
+        },
+      },
+    ];
+  }
+  if (isFontFile(entry.name)) {
+    return [
+      {
+        label: "Preview here",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          ctx.stack.push(new FontPreviewerLayer(entry.path, entry.name));
+        },
+      },
+      {
+        label: "Open in new window",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          options.openFontWindow(entry.name, entry.path);
         },
       },
     ];

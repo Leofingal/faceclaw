@@ -65,12 +65,14 @@ const TEXT_EXT = /\.(txt|md|markdown|log|json|xml|csv|ini|conf|cfg|yaml|yml|ts|j
 const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|heic|heif|svg)$/i;
 const VIDEO_EXT = /\.(mp4|mkv|webm|avi|mov|3gp|m4v)$/i;
 const AUDIO_EXT = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|mid)$/i;
+const FONT_EXT = /\.(ttf|otf|ttc|bdf|woff2?)$/i;
 
 function fileIconName(name: string): IconName {
   if (TEXT_EXT.test(name)) return "file-text";
   if (IMAGE_EXT.test(name)) return "image";
   if (VIDEO_EXT.test(name)) return "film";
   if (AUDIO_EXT.test(name)) return "music";
+  if (FONT_EXT.test(name)) return "type";
   return "file";
 }
 
