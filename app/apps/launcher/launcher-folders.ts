@@ -88,6 +88,19 @@ export function disbandFolder(folder: string): number {
 }
 
 /**
+ * An unused name for a ring-created folder ("New folder", "New folder 2", …).
+ * Ring input has no text entry, so new folders start with a generated name;
+ * the assistant's folder tools can regroup the apps under a better one.
+ */
+export function unusedNewFolderName(): string {
+  const existing = new Set(Array.from(getFolders().keys()).map((name) => name.toLowerCase()));
+  for (let i = 1; ; i++) {
+    const candidate = i === 1 ? "New folder" : `New folder ${i}`;
+    if (!existing.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/**
  * Match an existing folder name case-insensitively (so "games" reuses
  * "Games" instead of creating a near-duplicate), else the trimmed input.
  */

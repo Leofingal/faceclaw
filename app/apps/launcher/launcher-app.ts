@@ -9,10 +9,17 @@ import {
   GESTURE_SCROLL,
 } from "../../ui/gestures";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
+import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { createInProcessWindow } from "../../ui/shell/in-process-window";
-import { getFolderAssignments, getFolders, getFolderStateFingerprint } from "./launcher-folders";
+import {
+  getFolderAssignments,
+  getFolders,
+  getFolderStateFingerprint,
+  setAppFolder,
+  unusedNewFolderName,
+} from "./launcher-folders";
 import { shell, type ShellWindow } from "../../ui/shell/shell";
 
 export type LauncherAppEntry = {
@@ -127,6 +134,65 @@ class LauncherGridLayer implements Layer {
     this.mode = "row";
     const index = this.entries().findIndex((entry) => entry.kind === "folder" && entry.name === folder);
     this.selectedRow = index >= 0 ? Math.floor(index / COLS) : 0;
+  }
+
+  /**
+   * App-specific entries for the window's long-press menu. Only item mode
+   * pins the selection to a single cell, and only apps can move to folders,
+   * so anywhere else the menu falls back to just the defaults.
+   */
+  menuItems(): MenuItem[] {
+    if (this.mode !== "item") return [];
+    const entry = this.entries()[this.selectedRow * COLS + this.selectedCol];
+    if (!entry || entry.kind !== "app") return [];
+    return [
+      {
+        label: "Move to folder",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          ctx.stack.push(
+            new MenuLayer("Move to folder", this.moveToFolderItems(entry.appId), WINDOW_MENU_LAYOUT),
+          );
+        },
+      },
+    ];
+  }
+
+  /**
+   * The folder-picker submenu: every existing folder except the app's own,
+   * plus a generated-name "New folder" (ring input has no text entry) and,
+   * when the app is in a folder, an escape back to the top level.
+   */
+  private moveToFolderItems(appId: string): MenuItem[] {
+    const currentFolder = getFolderAssignments()[appId] ?? null;
+    const items: MenuItem[] = [];
+    for (const name of getFolders().keys()) {
+      if (name === currentFolder) continue;
+      items.push({
+        label: name,
+        onSelect: (ctx) => {
+          setAppFolder(appId, name);
+          ctx.stack.pop();
+        },
+      });
+    }
+    items.push({
+      label: "New folder",
+      onSelect: (ctx) => {
+        setAppFolder(appId, unusedNewFolderName());
+        ctx.stack.pop();
+      },
+    });
+    if (currentFolder !== null) {
+      items.push({
+        label: "Remove from folder",
+        onSelect: (ctx) => {
+          setAppFolder(appId, null);
+          ctx.stack.pop();
+        },
+      });
+    }
+    return items;
   }
 
   paint(ctx: LayerContext): GrayImage {
@@ -270,6 +336,7 @@ class LauncherGridLayer implements Layer {
  * new window.
  */
 export function createLauncherWindow(options: LauncherOptions): ShellWindow {
+  const gridLayer = new LauncherGridLayer(options);
   const created = createInProcessWindow({
     appId: "launcher",
     windowId: LAUNCHER_WINDOW_ID,
@@ -277,10 +344,11 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     iconLetter: "A",
     icon: "layout-grid",
     closeable: false,
+    menuItems: () => gridLayer.menuItems(),
     actions: options.actions,
     // Not wrapped in YieldAtRootLayer: the grid handles double-click itself to
     // back out of item selection before yielding to the sidebar.
-    baseLayer: new LauncherGridLayer(options),
+    baseLayer: gridLayer,
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
   });
