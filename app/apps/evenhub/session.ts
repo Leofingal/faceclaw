@@ -48,9 +48,11 @@ const SYSTEM_EXIT_EVENT = 7;
 
 /**
  * Injected into every served HTML document at document start (before any app
- * JS): the promise-returning flutter_inappwebview.callHandler the EvenHub
- * SDK expects, backed by the FaceclawEvenHubJsBridge Java object. Kept in
- * ES5 so it runs on any webview.
+ * JS): (1) the promise-returning flutter_inappwebview.callHandler the EvenHub
+ * SDK expects, backed by the FaceclawEvenHubJsBridge Java object; and (2) a
+ * host-driven setTimeout/setInterval/requestAnimationFrame replacement that
+ * survives the screen-off throttle (fired by the native ticker in
+ * FaceclawEvenHubWebViewHost). Kept in ES5 so it runs on any webview.
  */
 export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
 (function () {
@@ -72,6 +74,77 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
         window.__faceclawEvenHub.postMessage(String(name), JSON.stringify(args), id);
       });
     }
+  };
+})();
+(function () {
+  // Host-driven timers. Chromium heavily throttles a page's own
+  // setTimeout/setInterval when the phone screen is off, which slows
+  // timer-driven apps to a crawl. Replace them with a queue fired by
+  // window.__fcTimerTick(), which the native host calls at ~60Hz regardless of
+  // screen state (host-initiated evaluateJavascript escapes the throttle).
+  if (window.__fcTimerTick) return;
+  var timers = new Map();
+  var nextId = 1;
+  window.setTimeout = function (cb, delay) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    var id = nextId++;
+    timers.set(id, { cb: cb, args: args, due: Date.now() + (+delay || 0), interval: 0 });
+    return id;
+  };
+  window.setInterval = function (cb, delay) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    var id = nextId++;
+    var d = +delay || 0;
+    timers.set(id, { cb: cb, args: args, due: Date.now() + d, interval: d });
+    return id;
+  };
+  window.clearTimeout = function (id) { timers.delete(id); };
+  window.clearInterval = function (id) { timers.delete(id); };
+  window.__fcTimerTick = function () {
+    var now = Date.now();
+    var dueIds = [];
+    timers.forEach(function (entry, id) { if (entry.due <= now) dueIds.push(id); });
+    dueIds.sort(function (a, b) { return timers.get(a).due - timers.get(b).due; });
+    for (var i = 0; i < dueIds.length; i++) {
+      var entry = timers.get(dueIds[i]);
+      if (!entry) continue; // cleared by an earlier callback this tick
+      if (entry.interval > 0) {
+        // Advance one period (keeps cadence); if we've fallen behind, skip the
+        // missed periods rather than fast-forwarding a burst of catch-up fires.
+        entry.due += entry.interval;
+        if (entry.due <= now) entry.due = now + entry.interval;
+      } else {
+        timers.delete(dueIds[i]);
+      }
+      try { entry.cb.apply(null, entry.args); } catch (e) { if (window.console) console.error(e); }
+    }
+  };
+})();
+(function () {
+  // Host-driven requestAnimationFrame, same idea as the timers above: a hidden
+  // page's rAF is paused/throttled with the screen off, stalling canvas apps
+  // that render on a rAF loop. Drive it from window.__fcRafTick(), called by the
+  // native ticker each frame. (The glasses render via BLE, not the phone's
+  // display, so vsync alignment doesn't matter — a steady frame rate does.)
+  if (window.__fcRafTick) return;
+  var rafs = new Map();
+  var nextRafId = 1;
+  window.requestAnimationFrame = function (cb) {
+    var id = nextRafId++;
+    rafs.set(id, cb);
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) { rafs.delete(id); };
+  window.__fcRafTick = function () {
+    if (rafs.size === 0) return;
+    var ts = window.performance && performance.now ? performance.now() : Date.now();
+    // Snapshot and clear: callbacks that re-request during this frame run on
+    // the NEXT frame, matching rAF semantics (so a loop doesn't spin forever).
+    var current = rafs;
+    rafs = new Map();
+    current.forEach(function (cb) {
+      try { cb(ts); } catch (e) { if (window.console) console.error(e); }
+    });
   };
 })();
 `;

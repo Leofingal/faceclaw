@@ -1,10 +1,15 @@
 package com.faceclaw.app;
 
 import android.app.Activity;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Keeps EvenHub app WebViews alive and rendering while the phone shows the
@@ -27,15 +32,40 @@ import android.widget.FrameLayout;
  * the chosen WebView to the top of the overlay); hiding sends it back behind.
  * All view work happens on the main thread (callers are on the NS/JS thread).
  *
- * Backgrounding note: when the whole activity is not resumed (phone asleep /
- * Faceclaw not foregrounded) the platform stops producing frames for these
- * WebViews regardless — true screen-off rendering is a separate, harder problem.
+ * Timer keep-alive: when the phone screen turns off, Chromium heavily throttles
+ * the page's own setTimeout/setInterval (intensive background throttling clamps
+ * them to ~1/sec), so timer-driven apps (e.g. snake's game loop) slow to a
+ * crawl even though the renderer is still alive. Host-initiated
+ * evaluateJavascript is NOT subject to that throttle, so we drive the app's
+ * timers ourselves: a document-start shim replaces setTimeout/setInterval (and
+ * requestAnimationFrame) with JS queues fired by window.__fcTimerTick() /
+ * __fcRafTick(), and this host ticks those on the main thread at a fixed rate
+ * regardless of screen state. The main Looper keeps running under the
+ * foreground service, so the tick survives the screen turning off. (Matches the
+ * official Even app's approach.)
  */
 public class FaceclawEvenHubWebViewHost {
     private static FaceclawEvenHubWebViewHost instance;
 
+    /** How often the host fires the JS timer queue. 60Hz keeps games smooth. */
+    private static final long TICK_MS = 16;
+
     private FrameLayout overlay;
     private boolean shown = false;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final List<WebView> webViews = new ArrayList<>();
+    private boolean ticking = false;
+    private final Runnable ticker = new Runnable() {
+        @Override
+        public void run() {
+            for (int i = 0; i < webViews.size(); i++) {
+                webViews.get(i).evaluateJavascript(
+                        "window.__fcTimerTick&&__fcTimerTick();window.__fcRafTick&&__fcRafTick()", null);
+            }
+            if (ticking) mainHandler.postDelayed(this, TICK_MS);
+        }
+    };
 
     public static synchronized FaceclawEvenHubWebViewHost getInstance() {
         if (instance == null) instance = new FaceclawEvenHubWebViewHost();
@@ -62,6 +92,11 @@ public class FaceclawEvenHubWebViewHost {
         }
         // resumeTimers() is process-global; make sure nothing left timers paused.
         web.resumeTimers();
+        if (!webViews.contains(web)) webViews.add(web);
+        if (!ticking) {
+            ticking = true;
+            mainHandler.postDelayed(ticker, TICK_MS);
+        }
     }
 
     /** Bring an app's WebView to the front so it is visible on the phone. */
@@ -89,6 +124,11 @@ public class FaceclawEvenHubWebViewHost {
 
     /** Remove and destroy a WebView (its app is closing). */
     public void detach(WebView web) {
+        webViews.remove(web);
+        if (webViews.isEmpty() && ticking) {
+            ticking = false;
+            mainHandler.removeCallbacks(ticker);
+        }
         if (overlay != null) overlay.removeView(web);
         web.destroy();
     }
