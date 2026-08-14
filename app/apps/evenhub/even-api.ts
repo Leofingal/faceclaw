@@ -14,6 +14,7 @@ import {
 declare const android: any;
 
 const API_HOST = "https://api.evenrealities.com";
+const PUBLIC_CDN_HOST = "https://cdn-pub.evenhub.evenrealities.com";
 const SIGN_KEY = "a7964f42c39200cfa25c258b7a311b106e20232173667e543c34ced91d63b404";
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -28,6 +29,11 @@ export type EvenHubStoreApp = {
   installCount: number;
   likeCount: number;
   firstPublishedAt: string;
+  /** Public-CDN-relative SVG/raster artwork path. */
+  iconPath: string;
+  version: string;
+  changelog: string;
+  fileSize: number;
 };
 
 export type EvenHubStorePage = {
@@ -82,6 +88,10 @@ export class EvenHubApiClient {
     return asRecord(data);
   }
 
+  async getStoreAppDetail(packageId: string): Promise<EvenHubStoreApp | null> {
+    return parseStoreApp(await this.getAppDetail(packageId));
+  }
+
   /** Resolve the signed download URL, then fetch and sanity-check its EHPK. */
   async downloadApp(packageId: string): Promise<Uint8Array> {
     const data = await this.authenticatedRequest("POST", "/v2/evenhub/app/download", {
@@ -102,6 +112,22 @@ export class EvenHubApiClient {
       throw new Error("EvenHub download is not an EHPK package.");
     }
     return bytes;
+  }
+
+  /** Download one public storefront asset, constrained to Even's CDN path. */
+  async downloadPublicAsset(path: string): Promise<{ bytes: Uint8Array; extension: string }> {
+    const cleanPath = path.replace(/^\/+/, "");
+    if (!/^prod\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+\.(?:svg|png|webp|jpe?g)$/i.test(cleanPath) || cleanPath.includes("..")) {
+      throw new Error("EvenHub returned an invalid public asset path.");
+    }
+    const response = await fetchWithTimeout(`${PUBLIC_CDN_HOST}/${cleanPath}`, {}, 30_000);
+    if (!response.ok) throw new Error(`EvenHub icon download failed (HTTP ${response.status}).`);
+    const contentLength = Number(response.headers.get("Content-Length") ?? 0);
+    if (contentLength > 1_000_000) throw new Error("EvenHub icon is unexpectedly large.");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > 1_000_000) throw new Error("EvenHub icon is empty or too large.");
+    const extension = cleanPath.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+    return { bytes, extension: extension === "jpeg" ? "jpg" : extension };
   }
 
   clearSession(): void {
@@ -297,6 +323,7 @@ function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknow
 
 function parseStoreApp(value: unknown): EvenHubStoreApp | null {
   const item = asRecord(value);
+  const version = asRecord(item.version);
   const packageId = stringValue(item.package_id);
   if (!packageId) return null;
   return {
@@ -309,7 +336,11 @@ function parseStoreApp(value: unknown): EvenHubStoreApp | null {
     categories: Array.isArray(item.category) ? item.category.map(stringValue).filter(Boolean) : [],
     installCount: finiteNumber(item.install_count),
     likeCount: finiteNumber(item.like_count),
-    firstPublishedAt: stringValue(item.first_published_at),
+    firstPublishedAt: stringValue(item.first_published_at || item.created_at),
+    iconPath: stringValue(item.icon),
+    version: stringValue(version.version || item.latest_version),
+    changelog: stringValue(version.changelog),
+    fileSize: finiteNumber(version.file_size),
   };
 }
 

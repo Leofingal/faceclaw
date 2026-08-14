@@ -11,7 +11,9 @@ import {
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
+import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
 import { EvenHubSession } from "./session";
+import { renderInstalledEvenHubIcon } from "./installed-apps";
 
 class EvenHubAppLayer implements Layer {
   constructor(private readonly session: EvenHubSession) {}
@@ -31,16 +33,22 @@ class EvenHubAppLayer implements Layer {
 
 export function createEvenHubWindow(
   windowId: string,
+  appId: string,
   session: EvenHubSession,
   options: InProcessAppOptions,
   onShowPhone: () => void,
 ): InProcessWindow {
+  const fallbackIcon = windowIcon("package", session.manifest.name.charAt(0).toUpperCase() || "E");
   const created = createInProcessWindow({
-    appId: "evenhub",
+    appId,
     windowId,
     title: session.manifest.name,
     iconLetter: session.manifest.name.charAt(0).toUpperCase() || "E",
     closeable: true,
+    drawIcon: makeImageWindowIcon(
+      (size) => renderInstalledEvenHubIcon(session.manifest.packageId, size),
+      fallbackIcon,
+    ),
     heightMode: "medium",
     // Glasses-first: the app runs without the phone showing it; this reveals
     // its phone UI (config pages, etc.) over the dashboard on demand.

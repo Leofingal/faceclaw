@@ -23,6 +23,8 @@ export type InProcessWindowOptions = {
   iconLetter: string;
   /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
   icon?: IconName;
+  /** App-supplied sidebar icon renderer; takes precedence over icon/iconLetter. */
+  drawIcon?: ShellWindow["drawIcon"];
   closeable: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
@@ -148,7 +150,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.onClosed?.();
       options.removeSurface?.();
     },
-    drawIcon: windowIcon(options.icon, options.iconLetter),
+    drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
       // The default long-press response: the window menu. Handled here (not
       // per-layer) so it works over submenus and app content alike.

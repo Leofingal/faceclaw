@@ -22,9 +22,17 @@ import { parseEhpk, parseManifest, utf8Decode } from "./ehpk";
 import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
 import { createEvenHubWebView, type EvenHubWebView } from "./webview";
+import { shell } from "../../ui/shell/shell";
+import {
+  installedEvenHubAppId,
+  installedEvenHubPackagePath,
+  type InstalledEvenHubApp,
+} from "./installed-apps";
 
 type RunningApp = {
   windowId: string;
+  appId: string;
+  packageId: string;
   session: EvenHubSession;
   webView: EvenHubWebView;
 };
@@ -50,7 +58,11 @@ function ensureBackHandler(): void {
  * Unpack an .ehpk and launch it as a new concurrent app: a glasses window plus
  * a persistent WebView. Does not disturb other running apps or the phone screen.
  */
-export async function launchPackage(ctx: AppContext, ehpkPath: string): Promise<void> {
+export async function launchPackage(
+  ctx: AppContext,
+  ehpkPath: string,
+  options: { appId?: string; singleton?: boolean } = {},
+): Promise<void> {
   const data = readBinaryFile(ehpkPath);
   if (!data) {
     ctx.appendLog(`evenhub: could not read ${ehpkPath}`);
@@ -63,6 +75,15 @@ export async function launchPackage(ctx: AppContext, ehpkPath: string): Promise<
     return;
   }
   const manifest = parseManifest(utf8Decode(appJson));
+  const appId = options.appId ?? "evenhub";
+  if (options.singleton) {
+    const existing = Array.from(running.values()).find((app) => app.appId === appId);
+    if (existing) {
+      shell.focusWindow(existing.windowId);
+      ctx.requestShellRender();
+      return;
+    }
+  }
 
   // Unpack fresh into app-private storage, keyed by package id.
   const safeId = manifest.packageId.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -89,13 +110,29 @@ export async function launchPackage(ctx: AppContext, ehpkPath: string): Promise<
       running.delete(windowId);
     },
   });
-  running.set(windowId, { windowId, session, webView });
+  running.set(windowId, { windowId, appId, packageId: manifest.packageId, session, webView });
   ensureBackHandler();
   ctx.appendLog(`evenhub: launching ${manifest.name} ${manifest.version} (${manifest.packageId})`);
 
   await ctx.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-    createEvenHubWindow(windowId, session, options, () => showOnPhone(windowId)),
+    createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId)),
   );
+}
+
+/** Launch an installed app as a launcher-addressable singleton. */
+export function launchInstalledPackage(ctx: AppContext, app: InstalledEvenHubApp): Promise<void> {
+  return launchPackage(ctx, installedEvenHubPackagePath(app.packageId), {
+    appId: installedEvenHubAppId(app.packageId),
+    singleton: true,
+  });
+}
+
+/** Close every running instance before an installed package is removed. */
+export function closeRunningPackage(packageId: string): void {
+  const windowIds = Array.from(running.values())
+    .filter((app) => app.packageId === packageId)
+    .map((app) => app.windowId);
+  for (const windowId of windowIds) shell.closeWindow(windowId);
 }
 
 /** Overlay one app's phone UI over the dashboard (from its window menu). */

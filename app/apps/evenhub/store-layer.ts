@@ -11,8 +11,8 @@ import {
   type MenuItem,
 } from "../../ui/menu";
 import { shell } from "../../ui/shell/shell";
-import { appFilesDirPath, writeBinaryFile } from "../../native/file-access";
 import { evenHubApi, isEvenHubStoreConfigured, type EvenHubStoreApp } from "./even-api";
+import { EvenHubStoreDetailLayer } from "./store-detail-layer";
 
 const HEADER_HEIGHT = 34;
 const FOOTER_HEIGHT = 22;
@@ -20,7 +20,7 @@ const ROW_HEIGHT = 30;
 const LIST_X = 18;
 
 export type EvenHubStoreLayerOptions = {
-  openPackage: (path: string) => Promise<void> | void;
+  launchApp: (appId: string) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
   appendLog: (message: string) => void;
 };
@@ -34,7 +34,6 @@ export class EvenHubStoreLayer implements Layer {
   private nextPage = 1;
   private started = false;
   private loading = false;
-  private downloadingPackageId = "";
   private status = "";
 
   constructor(private readonly options: EvenHubStoreLayerOptions) {}
@@ -75,9 +74,7 @@ export class EvenHubStoreLayer implements Layer {
         if (selected) {
           drawSelectionHighlight(image, LIST_X - 6, y, width - LIST_X * 2 + 12, ROW_HEIGHT - 2, ctx.stack.isFocused(), 5);
         }
-        const pending = app.packageId === this.downloadingPackageId;
-        const title = pending ? `${app.name}  (downloading...)` : app.name;
-        image.drawText(font, LIST_X, y + 2, truncateText(font, title, width - LIST_X * 2), pending ? 255 : 215);
+        image.drawText(font, LIST_X, y + 2, truncateText(font, app.name, width - LIST_X * 2), 215);
         const detail = app.tagline || `${app.creatorName} · ${formatCount(app.installCount)} installs`;
         image.drawText(font, LIST_X, y + 16, truncateText(font, detail, width - LIST_X * 2), 115);
       }
@@ -88,7 +85,7 @@ export class EvenHubStoreLayer implements Layer {
 
     const hint = !isEvenHubStoreConfigured()
       ? `${GESTURE_CLICK} settings   ${GESTURE_DOUBLE_CLICK} back`
-      : `${GESTURE_SCROLL} select   ${GESTURE_CLICK} download & run   ${GESTURE_DOUBLE_CLICK} back`;
+      : `${GESTURE_SCROLL} select   ${GESTURE_CLICK} details   ${GESTURE_DOUBLE_CLICK} back`;
     image.drawText(font, LIST_X, height - 16, truncateText(font, hint, width - LIST_X * 2), 105);
     return image;
   }
@@ -109,9 +106,16 @@ export class EvenHubStoreLayer implements Layer {
           await this.options.openSettings();
           return;
         }
-        if (!this.loading && !this.downloadingPackageId) {
+        if (!this.loading) {
           const app = this.apps[this.selectedIndex];
-          if (app) await this.downloadAndRun(app, ctx);
+          if (app) {
+            ctx.stack.push(
+              new EvenHubStoreDetailLayer(app, {
+                launchApp: this.options.launchApp,
+                appendLog: this.options.appendLog,
+              }),
+            );
+          }
         }
         return;
       case "double-click":
@@ -178,28 +182,6 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  private async downloadAndRun(app: EvenHubStoreApp, ctx: LayerContext): Promise<void> {
-    this.downloadingPackageId = app.packageId;
-    this.status = `Downloading ${app.name}...`;
-    ctx.actions.requestRender();
-    try {
-      const bytes = await evenHubApi.downloadApp(app.packageId);
-      const safeId = app.packageId.replace(/[^A-Za-z0-9._-]/g, "_");
-      const path = `${appFilesDirPath()}/evenhub-downloads/${safeId}.ehpk`;
-      if (!writeBinaryFile(path, bytes)) throw new Error("Could not save the downloaded EHPK package.");
-      this.options.appendLog(`evenhub store: downloaded ${app.packageId} (${bytes.length} bytes)`);
-      this.status = `Launching ${app.name}...`;
-      ctx.actions.requestRender();
-      await this.options.openPackage(path);
-      this.status = "";
-    } catch (error) {
-      this.status = cleanError(error);
-      this.options.appendLog(`evenhub store: ${this.status}`);
-    } finally {
-      this.downloadingPackageId = "";
-      ctx.actions.requestRender();
-    }
-  }
 }
 
 function cleanError(error: unknown): string {

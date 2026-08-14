@@ -34,6 +34,12 @@ import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
+import {
+  getInstalledEvenHubAppById,
+  installedEvenHubPackageId,
+  uninstallEvenHubPackage,
+} from "../apps/evenhub/installed-apps";
+import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -1416,6 +1422,7 @@ class DashboardController {
       apps: ALL_APPS,
       actions: this.sharedActions,
       launchApp: (appId, params) => this.launchApp(appId, params),
+      uninstallApp: (appId) => this.uninstallApp(appId),
       launchInProcessApp: (windowId, surfaceId, create) => this.launchInProcessApp(windowId, surfaceId, create),
       ensureWorkerHost: (createWorker) => this.ensureWorkerHost(app.appId, createWorker),
       submitWindowFrame: (surfaceId, image, paintMs, frameId) =>
@@ -1456,7 +1463,7 @@ class DashboardController {
     this.suppressOpenAppsPersist = true;
     try {
       for (const appId of saved.open) {
-        if (!known.has(appId)) continue;
+        if (!known.has(appId) && !getInstalledEvenHubAppById(appId)) continue;
         try {
           await this.launchApp(appId);
         } catch (error) {
@@ -1482,11 +1489,29 @@ class DashboardController {
    */
   private async launchApp(appId: string, params?: AppLaunchParams): Promise<void> {
     const app = ALL_APPS.find((entry) => entry.appId === appId);
-    if (!app) {
-      this.appendLog(`unknown app: ${appId}`);
+    if (app) {
+      await app.launch(this.buildAppContext(app), params);
       return;
     }
-    await app.launch(this.buildAppContext(app), params);
+    const installed = getInstalledEvenHubAppById(appId);
+    if (installed) {
+      const host = ALL_APPS.find((entry) => entry.appId === "evenhub")!;
+      await launchInstalledPackage(this.buildAppContext({ ...host, appId }), installed);
+      return;
+    }
+    this.appendLog(`unknown app: ${appId}`);
+  }
+
+  private async uninstallApp(appId: string): Promise<void> {
+    const packageId = installedEvenHubPackageId(appId);
+    if (!packageId) {
+      this.appendLog(`app is not uninstallable: ${appId}`);
+      return;
+    }
+    closeRunningPackage(packageId);
+    if (uninstallEvenHubPackage(packageId)) {
+      this.appendLog(`evenhub: uninstalled ${packageId}`);
+    }
   }
 
   /** Create/refresh a window surface on the compositor, if connected. */

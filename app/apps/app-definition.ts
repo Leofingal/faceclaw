@@ -50,6 +50,8 @@ export type AppContext = {
   actions: Omit<LayerActions, "requestRender">;
   /** Launch (or focus) any app by id through the shell. */
   launchApp: (appId: string, params?: AppLaunchParams) => Promise<void>;
+  /** Uninstall a dynamically registered app, if the app id supports it. */
+  uninstallApp: (appId: string) => Promise<void>;
   /** Launch-or-focus a main-thread singleton window keyed by windowId. */
   launchInProcessApp: (
     windowId: string,

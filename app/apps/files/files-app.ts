@@ -27,6 +27,8 @@ export type FilesAppOptions = InProcessAppOptions & {
   openImageWindow: (title: string, path: string) => void;
   /** Launch an EvenHub app package (.ehpk) through the EvenHub host. */
   openEhpkApp: (path: string) => void;
+  /** Copy an EHPK into the installed-app store, register it, and launch it. */
+  installEhpkApp: (path: string) => Promise<void> | void;
   /** Open a font file's previewer as its own shell window. */
   openFontWindow: (title: string, path: string) => void;
 };
@@ -168,6 +170,13 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         onSelect: (ctx) => {
           ctx.stack.pop();
           options.openEhpkApp(entry.path);
+        },
+      },
+      {
+        label: "Install",
+        onSelect: async (ctx) => {
+          ctx.stack.pop();
+          await options.installEhpkApp(entry.path);
         },
       },
     ];

@@ -143,6 +143,11 @@ export function renderIcon(name: IconName, size: number): GrayImage | null {
   return renderSvgCached(name, ICON_SVGS[name], size);
 }
 
+/** Render an app-provided SVG using the same small renderer and cache. */
+export function renderSvgIcon(cacheName: string, svg: string, size: number): GrayImage | null {
+  return renderSvgCached(`custom:${cacheName}`, svg, size);
+}
+
 /**
  * Render an icon with a glyph character substituted in — currently only the
  * terminal icon, whose "_" becomes the glyph (">3" instead of ">_"). Falls

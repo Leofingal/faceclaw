@@ -37,7 +37,7 @@ const evenhubApp: AppDefinition = {
     }
     let created: InProcessWindow | null = null;
     const store = new EvenHubStoreLayer({
-      openPackage: (path) => openEvenHubPackage(ctx, path),
+      launchApp: (appId) => ctx.launchApp(appId),
       openSettings: () => ctx.launchApp("settings", { section: "EvenHub" }),
       appendLog: ctx.appendLog,
     });

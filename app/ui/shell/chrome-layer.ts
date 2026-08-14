@@ -125,6 +125,34 @@ export function windowIcon(icon: IconName | undefined, letter: string, glyph?: s
   return icon ? makeSvgWindowIcon(icon, glyph) : makeLetterWindowIcon(letter);
 }
 
+/** Window icon backed by an arbitrary cached grayscale image renderer. */
+export function makeImageWindowIcon(
+  render: (size: number) => GrayImage | null,
+  fallback: ShellChromeWindow["drawIcon"],
+): ShellChromeWindow["drawIcon"] {
+  return (image, x, y, size, inverted) => {
+    const icon = render(size);
+    if (!icon) {
+      fallback(image, x, y, size, inverted);
+      return;
+    }
+    const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
+    const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
+    if (!inverted) {
+      image.bitBlt(icon, dx, dy, { transparentZero: true });
+      return;
+    }
+    for (let row = 0; row < icon.height; row++) {
+      for (let col = 0; col < icon.width; col++) {
+        const coverage = icon.pixels[row * icon.width + col] ?? 0;
+        if (coverage > 0) {
+          image.setPixel(dx + col, dy + row, Math.max(SHELL_OPAQUE_BLACK, 255 - coverage));
+        }
+      }
+    }
+  };
+}
+
 /**
  * Base layer of the shell surface: the window sidebar on the left and the
  * status top bar. Everything not explicitly painted stays 0 (transparent on
