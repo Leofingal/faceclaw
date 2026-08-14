@@ -77,5 +77,12 @@ export function createEvenHubWindow(
     session.setForeground(foreground);
   };
 
+  // Screen on/off gates the app's microphone (silent while the screen is off).
+  const baseSetScreenOn = created.window.setScreenOn;
+  created.window.setScreenOn = (on) => {
+    baseSetScreenOn?.(on);
+    session.setScreenOn(on);
+  };
+
   return created;
 }

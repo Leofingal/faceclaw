@@ -1,8 +1,11 @@
 import { readTextFile, type DirectoryEntry } from "../../native/file-access";
 import { isFontFile } from "../../native/font-files";
 import { isDecodableImageFile } from "../../native/image-files";
+import { readEvenHubPackageManifest } from "../evenhub/installed-apps";
+import { EvenHubPermissionDialogLayer } from "../evenhub/permission-dialog";
 import { FileBrowserLayer } from "./file-browser";
 import { FileInfoDialogLayer, type FileInfoAction } from "./file-info-dialog";
+import { type LayerContext } from "../../ui/layers";
 import { FontPreviewerLayer } from "./font-previewer";
 import { ImageViewerLayer } from "./image-viewer";
 import { TextViewerLayer } from "./text-viewer";
@@ -139,6 +142,22 @@ export function createImageDocumentWindow(
 }
 
 /**
+ * Show the permission-confirmation dialog for an .ehpk before install/run,
+ * then run `proceed` if the user allows. Packages that declare no permissions
+ * skip the dialog and proceed immediately.
+ */
+function confirmEhpkPermissions(ctx: LayerContext, entry: DirectoryEntry, proceed: () => void): void {
+  const manifest = readEvenHubPackageManifest(entry.path);
+  if (!manifest || manifest.permissions.length === 0) {
+    proceed();
+    return;
+  }
+  ctx.stack.push(
+    new EvenHubPermissionDialogLayer(manifest.name, manifest.permissions, proceed, () => {}),
+  );
+}
+
+/**
  * The open actions for the picked-file dialog: View here / Open in new
  * window for viewable types, empty for everything else (metadata only).
  */
@@ -169,14 +188,16 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         label: "Run app",
         onSelect: (ctx) => {
           ctx.stack.pop();
-          options.openEhpkApp(entry.path);
+          confirmEhpkPermissions(ctx, entry, () => options.openEhpkApp(entry.path));
         },
       },
       {
         label: "Install",
-        onSelect: async (ctx) => {
+        onSelect: (ctx) => {
           ctx.stack.pop();
-          await options.installEhpkApp(entry.path);
+          confirmEhpkPermissions(ctx, entry, () => {
+            void options.installEhpkApp(entry.path);
+          });
         },
       },
     ];

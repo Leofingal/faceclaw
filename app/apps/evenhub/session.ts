@@ -34,6 +34,8 @@ import {
 } from "./containers";
 import { compositePage } from "./compositor";
 import { type EvenHubManifest } from "./ehpk";
+import { permissionsIncludeMicrophone } from "./permissions";
+import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
 
 const UPNG = require("upng-js");
 
@@ -166,7 +168,7 @@ export type EvenHubWindowHooks = {
   focusSwitcher: () => void;
 };
 
-export class EvenHubSession {
+export class EvenHubSession implements EvenHubMicClient {
   readonly manifest: EvenHubManifest;
   readonly distDir: string;
 
@@ -179,6 +181,10 @@ export class EvenHubSession {
   private systemExitSent = false;
   /** Shell focus state; true from launch (apps open focused). */
   private foreground = true;
+  /** Phone screen state; the mic goes silent while the screen is off. */
+  private screenOn = true;
+  /** The app has enabled its microphone via audioControl(true). */
+  private micRequested = false;
   private log: (message: string) => void;
 
   constructor(manifest: EvenHubManifest, distDir: string, log: (message: string) => void) {
@@ -288,8 +294,64 @@ export class EvenHubSession {
   setForeground(foreground: boolean): void {
     if (this.foreground === foreground) return;
     this.foreground = foreground;
+    // Foreground gates mic eligibility (an app only hears audio while visible).
+    if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
     if (!this.pageCreated) return;
     this.emitSysEvent(foreground ? FOREGROUND_ENTER_EVENT : FOREGROUND_EXIT_EVENT, 0);
+  }
+
+  /** Screen turned on/off (forwarded from the shell); mutes the mic when off. */
+  setScreenOn(on: boolean): void {
+    if (this.screenOn === on) return;
+    this.screenOn = on;
+    if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
+  }
+
+  // ----- microphone (EvenHubMicClient) -----
+
+  get windowId(): string {
+    return this.manifest.packageId;
+  }
+
+  isForeground(): boolean {
+    return this.foreground;
+  }
+
+  isScreenOn(): boolean {
+    return this.screenOn;
+  }
+
+  /** A decoded mic frame from the router: hand it to the app as an audioEvent. */
+  deliverAudioPcm(pcm: Uint8Array): void {
+    const audioPcm = Array.from(pcm);
+    this.pushMessage("evenHubEvent", { type: "audioEvent", jsonData: { audioPcm } });
+  }
+
+  /**
+   * audioControl(enable, source?): open or close the microphone for this app.
+   * Gated on a declared microphone permission (confirmed at install/first run).
+   * Enabling only registers intent — the router decides when audio actually
+   * flows (foreground + screen on + no assistant modal).
+   */
+  private audioControl(data: Record<string, unknown>): boolean {
+    if (!permissionsIncludeMicrophone(this.manifest.permissions)) {
+      this.log("evenhub: audioControl denied (app declares no microphone permission)");
+      return false;
+    }
+    const enable = readAudioEnable(data);
+    // The 0.0.12 payload shape isn't captured; log it once per toggle so the
+    // real field names can be confirmed from hardware.
+    this.log(`evenhub: audioControl enable=${enable} data=${JSON.stringify(data)}`);
+    if (enable) {
+      if (!this.micRequested) {
+        this.micRequested = true;
+        evenHubMicRouter.requestMic(this);
+      }
+    } else if (this.micRequested) {
+      this.micRequested = false;
+      evenHubMicRouter.releaseMic(this);
+    }
+    return true;
   }
 
   // ----- bridge calls (web -> host) -----
@@ -351,8 +413,9 @@ export class EvenHubSession {
             isInCase: false,
           },
         };
-      // Unsupported surface (mic, IMU, location, pickers): fail politely.
       case "audioControl":
+        return this.audioControl(data);
+      // Unsupported surface (IMU, location, pickers): fail politely.
       case "imuControl":
       case "startAppLocationUpdates":
       case "stopAppLocationUpdates":
@@ -497,6 +560,10 @@ export class EvenHubSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.micRequested) {
+      this.micRequested = false;
+      evenHubMicRouter.releaseMic(this);
+    }
     if (!this.systemExitSent) {
       // Best effort: lets the app's teardown handlers run before the webview dies.
       this.emitSysEvent(SYSTEM_EXIT_EVENT, 0);
@@ -520,6 +587,22 @@ export class EvenHubSession {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Read the enable flag from an audioControl payload. The exact wire field name
+ * for SDK 0.0.12 isn't captured, so accept the plausible spellings; default to
+ * enabling (the common intent) when the payload is opaque, and log it so the
+ * real shape can be pinned from hardware.
+ */
+function readAudioEnable(data: Record<string, unknown>): boolean {
+  for (const key of ["enable", "open", "isOpen", "on", "status", "value", "start"]) {
+    const value = data[key];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") return value === "true" || value === "1" || value === "on" || value === "open";
+  }
+  return true;
 }
 
 /** ring/left-arm/right-arm -> PB EventSourceType. */

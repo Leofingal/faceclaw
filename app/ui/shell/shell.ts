@@ -5,6 +5,7 @@ import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
 import { resolveAssistantModel } from "../../assistant/models";
@@ -675,6 +676,7 @@ class Shell {
       onClosed: () => {
         if (this.activeVoiceLayer === layer) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           // The idle countdown restarts in full once voice input ends.
           this.noteUserActivity();
         }
@@ -689,6 +691,7 @@ class Shell {
       autoSend,
     });
     this.activeVoiceLayer = layer;
+    voiceActivity.setActive(true);
     this.stack.push(layer);
     layer.startCapture();
   }
@@ -850,6 +853,7 @@ class Shell {
       onClosed: () => {
         if (this.activeVoiceLayer === voice) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           this.noteUserActivity();
         }
       },
@@ -864,6 +868,7 @@ class Shell {
       autoSend: handsFree && assistantSkipConfirmationSetting.get(),
     });
     this.activeVoiceLayer = voice;
+    voiceActivity.setActive(true);
     this.stack.push(voice);
     voice.startCapture();
     this.config.requestShellRender();

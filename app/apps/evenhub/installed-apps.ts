@@ -142,6 +142,21 @@ export function installEvenHubPackageFile(path: string): InstalledEvenHubApp {
   return installEvenHubPackageBytes(bytes);
 }
 
+/**
+ * Read an .ehpk's manifest without installing it — used by the Files app to
+ * show the permission-confirmation dialog before install/run. Returns null if
+ * the file can't be read or parsed.
+ */
+export function readEvenHubPackageManifest(path: string): EvenHubManifest | null {
+  const bytes = readBinaryFile(path);
+  if (!bytes) return null;
+  try {
+    return inspectEhpk(bytes).manifest;
+  } catch {
+    return null;
+  }
+}
+
 /** Remove the stored EHPK, unpacked runtime files, and registry entry. */
 export function uninstallEvenHubPackage(packageId: string): boolean {
   const apps = getInstalledEvenHubApps();

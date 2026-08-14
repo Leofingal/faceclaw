@@ -10,6 +10,7 @@
  * an integrity check only, not a signature; we skip verifying it.
  */
 import { decompress } from "fzstd";
+import { parsePermissions, type EvenHubPermission } from "./permissions";
 
 const XOR_KEY = "EVEN REALITIES";
 
@@ -31,6 +32,8 @@ export type EvenHubManifest = {
   entrypoint: string;
   /** Hosts the app declares it will reach; not yet enforced. */
   networkWhitelist: string[];
+  /** Normalized declared permissions (both manifest shapes). */
+  permissions: EvenHubPermission[];
   raw: Record<string, unknown>;
 };
 
@@ -115,19 +118,13 @@ export function parseManifest(appJsonText: string): EvenHubManifest {
   const version = String(raw.version ?? "0");
   const entrypoint = String(raw.entrypoint ?? "index.html");
 
+  const permissions = parsePermissions(raw.permissions);
   const networkWhitelist: string[] = [];
-  const permissions = raw.permissions;
-  if (Array.isArray(permissions)) {
-    for (const perm of permissions) {
-      if (perm && typeof perm === "object" && (perm as Record<string, unknown>).name === "network") {
-        const whitelist = (perm as Record<string, unknown>).whitelist;
-        if (Array.isArray(whitelist)) networkWhitelist.push(...whitelist.map(String));
-      }
+  for (const permission of permissions) {
+    if (permission.name === "network" && permission.whitelist) {
+      networkWhitelist.push(...permission.whitelist);
     }
-  } else if (permissions && typeof permissions === "object") {
-    const network = (permissions as Record<string, unknown>).network;
-    if (Array.isArray(network)) networkWhitelist.push(...network.map(String));
   }
 
-  return { packageId, name, version, entrypoint, networkWhitelist, raw };
+  return { packageId, name, version, entrypoint, networkWhitelist, permissions, raw };
 }

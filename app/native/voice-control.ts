@@ -41,6 +41,8 @@ export type PushToTalkOptions = {
 /** Who currently wants the mic running. */
 type CaptureHolder = "ptt" | "continuous";
 
+export type RawPcmListener = (pcm: Uint8Array) => void;
+
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
   private readonly wakeWordListeners = new Set<(keyword: string) => void>();
@@ -57,6 +59,12 @@ export class FaceclawVoiceControlBridge {
   private readonly captureHolders = new Set<CaptureHolder>();
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: CloudSttClient | null = null;
+  // Raw-PCM tap (EvenHub mic apps): when active, the controller runs in the
+  // decode-only "cloud" mode and every decoded PCM frame is broadcast to these
+  // listeners. STT capture preempts it — a live assistant/transcribe session
+  // owns the single G2 mic and the raw tap is stopped for its duration.
+  private readonly rawPcmListeners = new Set<RawPcmListener>();
+  private rawActive = false;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -102,8 +110,46 @@ export class FaceclawVoiceControlBridge {
     this.releaseCapture("continuous", false);
   }
 
+  /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
+  onRawPcm(listener: RawPcmListener): () => void {
+    this.rawPcmListeners.add(listener);
+    return () => this.rawPcmListeners.delete(listener);
+  }
+
+  /**
+   * Start the decode-only raw-PCM tap for an EvenHub mic app. Fails (returns
+   * false) if an STT capture already owns the mic; the caller re-tries when its
+   * eligibility is re-evaluated. Idempotent while already running.
+   */
+  startRawCapture(options: { communicator: any }): boolean {
+    if (!global.isAndroid) return false;
+    if (this.rawActive) return true;
+    if (this.captureHolders.size > 0 || this.started) return false;
+    this.ensureController();
+    this.controller?.setCommunicator(options.communicator);
+    this.controller?.setSaveRecordings(false);
+    this.controller?.setEndpointing(false);
+    this.cloudClient = null;
+    this.rawActive = true;
+    this.started = true;
+    // "cloud" mode decodes LC3 to PCM and emits it via onPcm without loading
+    // any recognizer; with no cloudClient the frames reach only the raw tap.
+    this.controller?.start("cloud");
+    return true;
+  }
+
+  stopRawCapture(): void {
+    if (!this.rawActive) return;
+    this.rawActive = false;
+    this.started = false;
+    if (global.isAndroid) this.controller?.stop();
+  }
+
   private acquireCapture(holder: CaptureHolder, options: PushToTalkOptions): void {
     if (!global.isAndroid) return;
+    // STT preempts the raw-PCM tap: a live transcription session owns the mic,
+    // and an EvenHub app gets no audio for its duration.
+    if (this.rawActive) this.stopRawCapture();
     const wasIdle = this.captureHolders.size === 0;
     this.captureHolders.add(holder);
     if (!wasIdle) {
@@ -196,6 +242,7 @@ export class FaceclawVoiceControlBridge {
 
   stop(): void {
     this.captureHolders.clear();
+    this.rawActive = false;
     if (global.isAndroid) {
       this.controller?.stop();
     }
@@ -214,6 +261,9 @@ export class FaceclawVoiceControlBridge {
     this.controller = new com.faceclaw.app.FaceclawVoiceController(context);
     this.listenerProxy = new com.faceclaw.app.FaceclawVoiceControllerListener({
       onStatus: (status: string) => {
+        // The raw tap runs silently; its "Listening (cloud)..." chatter must
+        // not surface on the glasses voice status.
+        if (this.rawActive) return;
         this.setStatus(String(status));
       },
       onWakeWord: (keyword: string) => {
@@ -225,7 +275,11 @@ export class FaceclawVoiceControlBridge {
         this.emitTranscript(String(text), Boolean(isFinal));
       },
       onPcm: (pcm: any) => {
-        this.cloudClient?.acceptPcm(toUint8Array(pcm));
+        const bytes = toUint8Array(pcm);
+        this.cloudClient?.acceptPcm(bytes);
+        if (this.rawPcmListeners.size > 0) {
+          this.rawPcmListeners.forEach((listener) => listener(bytes));
+        }
       },
       onSpeechEnd: () => {
         for (const listener of this.speechEndListeners) {
