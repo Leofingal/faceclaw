@@ -34,8 +34,11 @@ import {
 } from "./containers";
 import { compositePage } from "./compositor";
 import { type EvenHubManifest } from "./ehpk";
-import { permissionsIncludeMicrophone } from "./permissions";
+import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
+import { getCurrentLocation } from "../../native/location";
+import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
+import { ensureFineLocationPermission } from "../../g2/android-permissions";
 
 const UPNG = require("upng-js");
 
@@ -185,6 +188,8 @@ export class EvenHubSession implements EvenHubMicClient {
   private screenOn = true;
   /** The app has enabled its microphone via audioControl(true). */
   private micRequested = false;
+  /** Non-null while the app has an active location subscription. */
+  private locationTracker: LocationTracker | null = null;
   private log: (message: string) => void;
 
   constructor(manifest: EvenHubManifest, distDir: string, log: (message: string) => void) {
@@ -354,6 +359,62 @@ export class EvenHubSession implements EvenHubMicClient {
     return true;
   }
 
+  // ----- location -----
+
+  private declaresLocation(): boolean {
+    if (permissionsInclude(this.manifest.permissions, "location")) return true;
+    this.log("evenhub: location denied (app declares no location permission)");
+    return false;
+  }
+
+  /** getAppLocation(): one-shot fix, or null on denial/error (SDK contract). */
+  private async getAppLocation(): Promise<AppLocation | null> {
+    if (!this.declaresLocation()) return null;
+    if (!(await ensureFineLocationPermission())) return null;
+    try {
+      const location = await getCurrentLocation();
+      return {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        ...(location.accuracyMeters != null ? { accuracy: location.accuracyMeters } : {}),
+        timestamp: location.timestampMs,
+      };
+    } catch (error) {
+      this.log(`evenhub: getAppLocation failed: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * startAppLocationUpdates(options?): begin a location subscription. Fixes are
+   * pushed to the app as `appLocationChanged`. Continues in the background (the
+   * subscription ends only on stopAppLocationUpdates or app close), matching the
+   * Navigate app's foreground-service-backed tracking.
+   */
+  private async startLocationUpdates(data: Record<string, unknown>): Promise<boolean> {
+    if (!this.declaresLocation()) return false;
+    if (!(await ensureFineLocationPermission())) return false;
+    if (this.closed) return false;
+    if (this.locationTracker) return true;
+    const intervalMs = readOptionalNumber(data, "intervalMs") ?? 1000;
+    const tracker = new LocationTracker({
+      onLocation: (location) => {
+        if (this.closed) return;
+        this.pushMessage("appLocationChanged", toAppLocation(location));
+      },
+      onError: (message) => this.log(`evenhub: location update error: ${message}`),
+    });
+    this.locationTracker = tracker;
+    tracker.start(Math.max(200, Math.round(intervalMs)));
+    return true;
+  }
+
+  private stopLocationUpdates(): boolean {
+    this.locationTracker?.stop();
+    this.locationTracker = null;
+    return true;
+  }
+
   // ----- bridge calls (web -> host) -----
 
   /**
@@ -415,12 +476,15 @@ export class EvenHubSession implements EvenHubMicClient {
         };
       case "audioControl":
         return this.audioControl(data);
-      // Unsupported surface (IMU, location, pickers): fail politely.
-      case "imuControl":
-      case "startAppLocationUpdates":
-      case "stopAppLocationUpdates":
-        return false;
       case "getAppLocation":
+        return this.getAppLocation();
+      case "startAppLocationUpdates":
+        return this.startLocationUpdates(data);
+      case "stopAppLocationUpdates":
+        return this.stopLocationUpdates();
+      // Unsupported surface (IMU, pickers): fail politely.
+      case "imuControl":
+        return false;
       case "pickImageFromAlbum":
       case "captureImageFromCamera":
         return null;
@@ -564,6 +628,8 @@ export class EvenHubSession implements EvenHubMicClient {
       this.micRequested = false;
       evenHubMicRouter.releaseMic(this);
     }
+    this.locationTracker?.stop();
+    this.locationTracker = null;
     if (!this.systemExitSent) {
       // Best effort: lets the app's teardown handlers run before the webview dies.
       this.emitSysEvent(SYSTEM_EXIT_EVENT, 0);
@@ -587,6 +653,27 @@ export class EvenHubSession implements EvenHubMicClient {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The SDK's AppLocation shape (even_hub_sdk 0.0.12+), all fields camelCase. */
+type AppLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+  altitude?: number;
+  speed?: number;
+  heading?: number;
+  timestamp?: number;
+};
+
+/** Map a continuous GPS fix to the SDK's AppLocation (omitting absent fields). */
+function toAppLocation(location: TrackedLocation): AppLocation {
+  const out: AppLocation = { latitude: location.latitude, longitude: location.longitude };
+  if (location.accuracyMeters != null) out.accuracy = location.accuracyMeters;
+  if (location.speedMps != null) out.speed = location.speedMps;
+  if (location.bearingDeg != null) out.heading = location.bearingDeg;
+  out.timestamp = location.timestampMs;
+  return out;
 }
 
 /**

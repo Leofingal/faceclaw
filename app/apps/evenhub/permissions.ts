@@ -91,6 +91,11 @@ export function isMicrophonePermission(name: EvenHubPermissionName): boolean {
   return MICROPHONE_PERMISSIONS.has(name);
 }
 
+/** Whether the declared set includes a permission by name. */
+export function permissionsInclude(permissions: EvenHubPermission[], name: EvenHubPermissionName): boolean {
+  return permissions.some((permission) => permission.name === name);
+}
+
 /** Whether the declared set includes any microphone permission. */
 export function permissionsIncludeMicrophone(permissions: EvenHubPermission[]): boolean {
   return permissions.some((permission) => isMicrophonePermission(permission.name));
