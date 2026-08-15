@@ -42,6 +42,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String G2_SCREEN_WAKE_LOCK_TAG = "Faceclaw:G2Screen";
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
+    private static final long CFW_CLEANUP_WAIT_MS = 4_000;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -102,6 +103,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawFramebufferControlGeneration;
     private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
+    private boolean cfwCleanupSupported;
+    private boolean cfwCleanupDelivered;
+    private int lastCfwCleanupAckMagic;
 
     private long reconnectAfterMs;
     private long ringReconnectAfterMs;
@@ -226,7 +230,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public void disconnect() {
-        releaseFaceclawFramebufferLease();
+        /* On the normal path DashboardController already sent mode 11 after
+         * quiescing its producers. Also cover direct/early close callers here;
+         * a successful cleanup must remain the final BLE message. Older CFWs
+         * fall back to the standalone framebuffer-lease release. */
+        if (!cfwCleanupDelivered && !sendCfwCleanup()) {
+            releaseFaceclawFramebufferLease();
+        }
         Thread threadToJoin;
         synchronized (lock) {
             userDisconnectRequested = true;
@@ -761,6 +771,98 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Send CFW image-handler mode 11 after quiescing normal traffic. A successful
+     * return means the cleanup was ACKed and no later Faceclaw message should be
+     * emitted before closing BLE. Unsupported/older CFWs return false so callers
+     * can use the legacy shutdown-and-lease-release path.
+     */
+    public boolean sendCfwCleanup() {
+        int magic;
+        synchronized (lock) {
+            if (cfwCleanupDelivered) {
+                return true;
+            }
+            if (!cfwCleanupSupported || !running || !sessionReady
+                    || shutdownRequested || !fixedLayoutCreated || !warmedUp) {
+                logLine("skip CFW cleanup; mode 11 unavailable or image path not ready");
+                return false;
+            }
+
+            /* Stop auto-renewals, heartbeats, image generation, and control
+             * retries, then discard everything that has not reached BLE yet. */
+            shutdownRequested = true;
+            lastCfwCleanupAckMagic = 0;
+            clearPendingMessagesLocked("CFW cleanup requested");
+            logLine("quiescing transport for CFW cleanup");
+        }
+        interruptibleSleep.interrupt();
+
+        /* WINDOW_SIZE can exceed one, so merely appending cleanup would allow it
+         * to overlap previously-written image fragments. Wait until all of those
+         * ACK or time out; shutdownRequested prevents the drive loop from adding
+         * any fresh automatic traffic meanwhile. */
+        long drainDeadline = SystemClock.elapsedRealtime() + CFW_CLEANUP_WAIT_MS;
+        synchronized (lock) {
+            while (running && sessionReady && !inFlightMessages.isEmpty()) {
+                long remaining = drainDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) break;
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            if (!running || !sessionReady || !inFlightMessages.isEmpty()) {
+                shutdownRequested = false;
+                logLine("CFW cleanup could not drain prior traffic");
+                return false;
+            }
+
+            /* External producers are expected to be stopped by the caller, but
+             * clear once more at the barrier so cleanup is definitely last. */
+            clearPendingMessagesLocked("CFW cleanup barrier");
+            OutboundMessage message = messageBuilder.cfwCleanup(
+                DASHBOARD_TILE,
+                nextMapSessionId(),
+                connectionOptions.sendImagesToLeft
+            );
+            magic = message.magic;
+            message.onAck = () -> {
+                lastCfwCleanupAckMagic = message.magic;
+                cfwCleanupDelivered = true;
+                compassMaybeOn = false;
+                faceclawWakeLeaseEnabled = false;
+                logLine("CFW cleanup completed");
+            };
+            message.onTimeout = () -> logLine("CFW cleanup ack timeout");
+            pendingMessages.addLast(message);
+            logLine("queue CFW cleanup");
+        }
+        interruptibleSleep.interrupt();
+
+        long deadline = SystemClock.elapsedRealtime() + CFW_CLEANUP_WAIT_MS;
+        synchronized (lock) {
+            while (running
+                    && sessionReady
+                    && lastCfwCleanupAckMagic != magic
+                    && hasPendingOrInflightMagicLocked(magic)) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) break;
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            boolean acked = lastCfwCleanupAckMagic == magic;
+            if (!acked) shutdownRequested = false;
+            return acked;
+        }
+    }
+
+    /**
      * End the EvenHub page while retaining both arm GATT connections and all
      * notification subscriptions. A missed ACK is intentionally non-fatal:
      * reconnecting Bluetooth here would defeat the power-saving mode.
@@ -1253,6 +1355,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastAudioControlAckMagic = 0;
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
+                cfwCleanupDelivered = false;
+                lastCfwCleanupAckMagic = 0;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0;
                 enqueueFaceclawFramebufferControlLocked(
@@ -1456,6 +1560,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                if (cfwCleanupDelivered) {
+                    /* Successful mode 11 must be the last Faceclaw write. Drop
+                     * anything a late external producer attempted to enqueue
+                     * while DashboardController was closing the transport. */
+                    clearPendingMessagesLocked("after CFW cleanup");
+                    return 250;
+                }
                 if (sessionReady
                         && now - lastFaceclawFramebufferLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                         && !hasPendingOrInflightKindLocked("framebuffer-lease-control")) {
@@ -2221,6 +2332,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
+                cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
                 emitFirmwareInfo(firmwareInfo);
             }
         };
@@ -2656,11 +2768,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
+        cfwCleanupDelivered = false;
+        lastCfwCleanupAckMagic = 0;
         wearState = -1;
         displayedFingerprint = "";
         // Deliberately not clearing silentMode: it is a property of the glasses,
         // not of our session, and silent mode blocks app launches, so it can be
         // the very cause of the session teardown that got us here.
+    }
+
+    private static boolean hasCapability(String capabilities, String token) {
+        if (capabilities == null || token == null || token.isEmpty()) return false;
+        for (String capability : capabilities.trim().split("\\s+")) {
+            if (token.equals(capability)) return true;
+        }
+        return false;
     }
 
     private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {

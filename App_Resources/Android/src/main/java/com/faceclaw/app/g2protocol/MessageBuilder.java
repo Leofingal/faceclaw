@@ -103,6 +103,22 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage cfwCleanup(
+        BleProtocol.ImageTileOptions tile,
+        int sessionId,
+        boolean leftArm
+    ) {
+        byte[] payload = new byte[] { (byte) BleProtocol.CFW_IMAGE_MODE_CLEANUP };
+        return imagePayload(
+            "cfw-cleanup",
+            tile,
+            sessionId,
+            payload,
+            "CFW cleanup",
+            leftArm
+        );
+    }
+
     public OutboundMessage enableOrDisableMic(boolean enable) {
         int magic = magicPool.allocate();
         return new OutboundMessage(

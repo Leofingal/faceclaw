@@ -1112,18 +1112,33 @@ class DashboardController {
       if (leaseReleased === true) {
         this.faceclawWakeLeaseState = false;
       }
-      const shutdownAcked = await communicator?.sendShutdown(0).catch((error) => {
-        this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
-        return false;
-      });
-      if (shutdownAcked === true) {
-        this.appendLog("Shutdown command completed.");
-      } else if (communicator) {
-        this.appendLog("Shutdown command did not complete before disconnect.");
-      }
+
+      // Quiesce every producer that can enqueue a glasses command before the
+      // firmware cleanup barrier. On cleanup-capable CFW this leaves mode 11 as
+      // Faceclaw's final BLE message before the transport closes.
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
+
+      const cleanupAcked = await communicator?.sendCfwCleanup().catch((error) => {
+        this.appendLog(`CFW cleanup failed: ${this.formatError(error)}`);
+        return false;
+      });
+      if (cleanupAcked === true) {
+        this.appendLog("CFW cleanup completed.");
+      } else if (communicator) {
+        // Older CFWs do not advertise cleanup11. Preserve their established
+        // teardown behavior; close() will also send the legacy FB lease release.
+        const shutdownAcked = await communicator.sendShutdown(0).catch((error) => {
+          this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
+          return false;
+        });
+        if (shutdownAcked) {
+          this.appendLog("Shutdown command completed (legacy cleanup fallback).");
+        } else {
+          this.appendLog("Cleanup did not complete before disconnect.");
+        }
+      }
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();

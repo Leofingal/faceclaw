@@ -544,6 +544,15 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
+   * Ask CFW mode 11 to release all custom-session state. On success this must
+   * remain the final Faceclaw message before close(); false requests the legacy
+   * shutdown/release fallback for older firmware.
+   */
+  async sendCfwCleanup(): Promise<boolean> {
+    return this.enqueueJavaCall(() => Boolean(this.communicator.sendCfwCleanup()));
+  }
+
+  /**
    * End only the EvenHub page/session, leaving both arm BLE connections and
    * their async notification subscriptions alive.
    */
