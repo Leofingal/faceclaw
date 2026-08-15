@@ -36,6 +36,8 @@ import { compositePage } from "./compositor";
 import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
+import { evenHubImuRouter, type EvenHubImuClient } from "./imu-router";
+import { type ImuReading } from "../../native/imu";
 import { getCurrentLocation } from "../../native/location";
 import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
 import { ensureFineLocationPermission } from "../../g2/android-permissions";
@@ -50,6 +52,7 @@ const DOUBLE_CLICK_EVENT = 3;
 const FOREGROUND_ENTER_EVENT = 4;
 const FOREGROUND_EXIT_EVENT = 5;
 const SYSTEM_EXIT_EVENT = 7;
+const IMU_DATA_REPORT_EVENT = 8;
 
 /**
  * Injected into every served HTML document at document start (before any app
@@ -171,7 +174,7 @@ export type EvenHubWindowHooks = {
   focusSwitcher: () => void;
 };
 
-export class EvenHubSession implements EvenHubMicClient {
+export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   readonly manifest: EvenHubManifest;
   readonly distDir: string;
 
@@ -188,6 +191,8 @@ export class EvenHubSession implements EvenHubMicClient {
   private screenOn = true;
   /** The app has enabled its microphone via audioControl(true). */
   private micRequested = false;
+  /** The app has enabled the accelerometer via imuControl(true). */
+  private imuRequested = false;
   /** Non-null while the app has an active location subscription. */
   private locationTracker: LocationTracker | null = null;
   private log: (message: string) => void;
@@ -299,8 +304,10 @@ export class EvenHubSession implements EvenHubMicClient {
   setForeground(foreground: boolean): void {
     if (this.foreground === foreground) return;
     this.foreground = foreground;
-    // Foreground gates mic eligibility (an app only hears audio while visible).
+    // Foreground gates mic + IMU eligibility (only the visible app hears audio /
+    // reads the accelerometer).
     if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
+    if (this.imuRequested) evenHubImuRouter.notifyEligibilityChanged();
     if (!this.pageCreated) return;
     this.emitSysEvent(foreground ? FOREGROUND_ENTER_EVENT : FOREGROUND_EXIT_EVENT, 0);
   }
@@ -343,7 +350,7 @@ export class EvenHubSession implements EvenHubMicClient {
       this.log("evenhub: audioControl denied (app declares no microphone permission)");
       return false;
     }
-    const enable = readAudioEnable(data);
+    const enable = readEnableFlag(data);
     // The 0.0.12 payload shape isn't captured; log it once per toggle so the
     // real field names can be confirmed from hardware.
     this.log(`evenhub: audioControl enable=${enable} data=${JSON.stringify(data)}`);
@@ -415,6 +422,37 @@ export class EvenHubSession implements EvenHubMicClient {
     return true;
   }
 
+  // ----- accelerometer / IMU (EvenHubImuClient) -----
+
+  /** A shared IMU reading from the router: hand it to the app as a sysEvent. */
+  deliverImu(reading: ImuReading): void {
+    this.pushEvenHubEvent("sysEvent", {
+      eventType: IMU_DATA_REPORT_EVENT,
+      imuData: { x: reading.x, y: reading.y, z: reading.z },
+    });
+  }
+
+  /**
+   * imuControl(isOpen, reportFrq): enable/disable the accelerometer report
+   * stream. There is no EvenHub IMU permission (nor an Android one), so no
+   * consent gate. Enabling registers intent; the router only actually streams
+   * to the foreground app. reportFrq is one of 100..1000 (step 100).
+   */
+  private imuControl(data: Record<string, unknown>): boolean {
+    const enable = readEnableFlag(data);
+    const freq = clampImuFreq(readOptionalNumber(data, "reportFrq") ?? readOptionalNumber(data, "reportFreq") ?? 100);
+    // Payload field spelling isn't fully captured; log once per toggle.
+    this.log(`evenhub: imuControl enable=${enable} freq=${freq} data=${JSON.stringify(data)}`);
+    if (enable) {
+      this.imuRequested = true;
+      evenHubImuRouter.requestImu(this, freq);
+    } else if (this.imuRequested) {
+      this.imuRequested = false;
+      evenHubImuRouter.releaseImu(this);
+    }
+    return true;
+  }
+
   // ----- bridge calls (web -> host) -----
 
   /**
@@ -482,9 +520,9 @@ export class EvenHubSession implements EvenHubMicClient {
         return this.startLocationUpdates(data);
       case "stopAppLocationUpdates":
         return this.stopLocationUpdates();
-      // Unsupported surface (IMU, pickers): fail politely.
       case "imuControl":
-        return false;
+        return this.imuControl(data);
+      // Unsupported surface (album/camera pickers): fail politely.
       case "pickImageFromAlbum":
       case "captureImageFromCamera":
         return null;
@@ -628,6 +666,10 @@ export class EvenHubSession implements EvenHubMicClient {
       this.micRequested = false;
       evenHubMicRouter.releaseMic(this);
     }
+    if (this.imuRequested) {
+      this.imuRequested = false;
+      evenHubImuRouter.releaseImu(this);
+    }
     this.locationTracker?.stop();
     this.locationTracker = null;
     if (!this.systemExitSent) {
@@ -677,19 +719,26 @@ function toAppLocation(location: TrackedLocation): AppLocation {
 }
 
 /**
- * Read the enable flag from an audioControl payload. The exact wire field name
- * for SDK 0.0.12 isn't captured, so accept the plausible spellings; default to
- * enabling (the common intent) when the payload is opaque, and log it so the
- * real shape can be pinned from hardware.
+ * Read the enable flag from an audioControl / imuControl payload. The exact
+ * wire field name for SDK 0.0.12 isn't captured, so accept the plausible
+ * spellings (the mock bridge reads `isOpen`; IMU's PB field is `iMUReportEn`);
+ * default to enabling (the common intent) when the payload is opaque, and log
+ * it so the real shape can be pinned from hardware.
  */
-function readAudioEnable(data: Record<string, unknown>): boolean {
-  for (const key of ["enable", "open", "isOpen", "on", "status", "value", "start"]) {
+function readEnableFlag(data: Record<string, unknown>): boolean {
+  for (const key of ["enable", "open", "isOpen", "on", "status", "value", "start", "iMUReportEn", "IMU_ReportEn"]) {
     const value = data[key];
     if (typeof value === "boolean") return value;
     if (typeof value === "number") return value !== 0;
     if (typeof value === "string") return value === "true" || value === "1" || value === "on" || value === "open";
   }
   return true;
+}
+
+/** Snap a requested IMU report rate to the SDK's 100..1000 (step 100) grid. */
+function clampImuFreq(freq: number): number {
+  const snapped = Math.round(freq / 100) * 100;
+  return Math.min(1000, Math.max(100, snapped));
 }
 
 /** ring/left-arm/right-arm -> PB EventSourceType. */
