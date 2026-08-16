@@ -741,6 +741,82 @@ function clampImuFreq(freq: number): number {
   return Math.min(1000, Math.max(100, snapped));
 }
 
+/**
+ * Decode an uncompressed Windows BMP ('BM', BI_RGB) to 8bpp grayscale. Handles
+ * 1/4/8-bit paletted and 24/32-bit BGR(A), top-down or bottom-up. Returns null
+ * for compressed or unsupported variants. Apps like EvenChess send 1-bit BMPs
+ * (black/white palette) for full-board refreshes.
+ */
+function decodeBmp(bytes: Uint8Array): { pixels: Uint8Array; width: number; height: number } | null {
+  if (bytes.length < 54 || bytes[0] !== 0x42 || bytes[1] !== 0x4d) return null;
+  const u16 = (o: number) => bytes[o]! | (bytes[o + 1]! << 8);
+  const u32 = (o: number) => (bytes[o]! | (bytes[o + 1]! << 8) | (bytes[o + 2]! << 16) | (bytes[o + 3]! << 24)) >>> 0;
+  const i32 = (o: number) => bytes[o]! | (bytes[o + 1]! << 8) | (bytes[o + 2]! << 16) | (bytes[o + 3]! << 24);
+
+  const pixelOffset = u32(10);
+  const dibSize = u32(14);
+  const width = i32(18);
+  const heightRaw = i32(22);
+  const bitCount = u16(28);
+  const compression = u32(30);
+  if (compression !== 0) return null; // only BI_RGB (uncompressed)
+  if (width <= 0 || width > 4096) return null;
+  const topDown = heightRaw < 0;
+  const height = Math.abs(heightRaw);
+  if (height === 0 || height > 4096) return null;
+
+  // Palette (grayscale per index) for <=8bpp; each entry is 4 bytes BGRA.
+  let palette: Uint8Array | null = null;
+  if (bitCount <= 8) {
+    let numColors = u32(46);
+    if (numColors === 0 || numColors > (1 << bitCount)) numColors = 1 << bitCount;
+    const palOffset = 14 + dibSize;
+    palette = new Uint8Array(numColors);
+    for (let i = 0; i < numColors; i++) {
+      const o = palOffset + i * 4;
+      if (o + 2 >= bytes.length) break;
+      palette[i] = luminance(bytes[o + 2]!, bytes[o + 1]!, bytes[o]!);
+    }
+  }
+
+  const stride = (((width * bitCount + 31) >> 5) << 2); // rows are 4-byte aligned
+  const pixels = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const srcY = topDown ? y : height - 1 - y;
+    const rowStart = pixelOffset + srcY * stride;
+    if (rowStart >= bytes.length) break;
+    const dstRow = y * width;
+    for (let x = 0; x < width; x++) {
+      let gray: number;
+      if (bitCount === 1) {
+        const bit = ((bytes[rowStart + (x >> 3)] ?? 0) >> (7 - (x & 7))) & 1;
+        gray = palette?.[bit] ?? (bit ? 255 : 0);
+      } else if (bitCount === 4) {
+        const byte = bytes[rowStart + (x >> 1)] ?? 0;
+        const nib = (x & 1) === 0 ? byte >> 4 : byte & 0x0f;
+        gray = palette?.[nib] ?? nib * 17;
+      } else if (bitCount === 8) {
+        const idx = bytes[rowStart + x] ?? 0;
+        gray = palette?.[idx] ?? idx;
+      } else if (bitCount === 24) {
+        const o = rowStart + x * 3;
+        gray = luminance(bytes[o + 2] ?? 0, bytes[o + 1] ?? 0, bytes[o] ?? 0);
+      } else if (bitCount === 32) {
+        const o = rowStart + x * 4;
+        gray = luminance(bytes[o + 2] ?? 0, bytes[o + 1] ?? 0, bytes[o] ?? 0);
+      } else {
+        return null;
+      }
+      pixels[dstRow + x] = gray;
+    }
+  }
+  return { pixels, width, height };
+}
+
+function luminance(r: number, g: number, b: number): number {
+  return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+}
+
 /** ring/left-arm/right-arm -> PB EventSourceType. */
 function gestureSource(source: "ring" | "left-arm" | "right-arm"): number {
   switch (source) {
@@ -811,14 +887,19 @@ function base64Decode(text: string): Uint8Array | null {
 }
 
 /**
- * Decode an image payload: PNG (what the SDK-era apps send — the host does
- * the gray conversion), or raw grayscale sized to the container (8bpp, or
- * 4bpp packed two pixels per byte, high nibble first).
+ * Decode an image payload: PNG or BMP (both are sent by real apps — EvenChess
+ * force-refreshes as 1-bit BMP but streams live moves as PNG, so a host that
+ * only did PNG dropped the initial board), or raw grayscale sized to the
+ * container (8bpp, or 4bpp packed two pixels per byte, high nibble first).
  */
 function decodeImageBytes(
   bytes: Uint8Array,
   container: EvenHubImageContainer,
 ): { pixels: Uint8Array; width: number; height: number } | null {
+  if (bytes.length > 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    const bmp = decodeBmp(bytes);
+    if (bmp) return bmp;
+  }
   if (bytes.length > 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
     try {
       const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
