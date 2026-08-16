@@ -1,6 +1,7 @@
 package com.faceclaw.app;
 
 import android.app.Activity;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
@@ -43,6 +44,17 @@ import java.util.List;
  * regardless of screen state. The main Looper keeps running under the
  * foreground service, so the tick survives the screen turning off. (Matches the
  * official Even app's approach.)
+ *
+ * Background keep-alive: the occluded-overlay trick only works while the
+ * activity is foreground. When Faceclaw itself is backgrounded, the window goes
+ * invisible and Chromium freezes the renderer — the timer/rAF ticks and pushed
+ * input events then queue up and only run once foregrounded again. Two things
+ * prevent that: the WebViews are {@link FaceclawEvenHubWebView}, which lies to
+ * Chromium about window visibility so the page never goes hidden; and each is
+ * pinned to IMPORTANT renderer priority (not waived when not visible) with
+ * timers/onResume asserted on attach. The main Looper keeps ticking under the
+ * foreground service, so apps keep driving their glasses windows in the
+ * background.
  */
 public class FaceclawEvenHubWebViewHost {
     private static FaceclawEvenHubWebViewHost instance;
@@ -91,7 +103,17 @@ public class FaceclawEvenHubWebViewHost {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
         // resumeTimers() is process-global; make sure nothing left timers paused.
+        // onResume() undoes any per-WebView pause. Together with
+        // FaceclawEvenHubWebView faking window visibility, this keeps the page
+        // running JS while Faceclaw is backgrounded.
         web.resumeTimers();
+        web.onResume();
+        // Keep the renderer process at IMPORTANT priority even when the WebView
+        // isn't visible (waivedWhenNotVisible=false), so Android doesn't
+        // deprioritize/kill it in the background.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         if (!webViews.contains(web)) webViews.add(web);
         if (!ticking) {
             ticking = true;

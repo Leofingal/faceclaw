@@ -5,9 +5,11 @@
  * glasses window closes — it renders the app to the glasses whether or not the
  * phone is currently showing it (see the host for the off-screen-render trick).
  *
- * A raw android.webkit.WebView (not the NativeScript component) is used so we
- * fully own the WebViewClient: offline asset serving from a fake per-app origin
- * plus document-start injection of the flutter_inappwebview bridge shim.
+ * A raw WebView subclass (FaceclawEvenHubWebView, not the NativeScript
+ * component) is used so we fully own the WebViewClient (offline asset serving
+ * from a fake per-app origin plus document-start injection of the
+ * flutter_inappwebview bridge shim) and so the page keeps running JS while the
+ * host app is backgrounded (see FaceclawEvenHubWebView / the host).
  */
 import { Application, Utils } from "@nativescript/core";
 import { EVENHUB_BRIDGE_INJECT_SCRIPT, type EvenHubSession } from "./session";
@@ -37,7 +39,7 @@ function originHost(session: EvenHubSession): string {
 export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   const activity = Application.android?.foregroundActivity ?? Application.android?.startActivity;
   const context = activity ?? Utils.android.getApplicationContext();
-  const webView = new android.webkit.WebView(context);
+  const webView = new com.faceclaw.app.FaceclawEvenHubWebView(context);
   const settings = webView.getSettings();
   settings.setJavaScriptEnabled(true);
   settings.setDomStorageEnabled(true);
