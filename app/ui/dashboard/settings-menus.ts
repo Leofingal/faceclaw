@@ -27,7 +27,6 @@ import {
   batteryDisplayModeSetting,
   brightnessSetting,
   evenHubEmailSetting,
-  evenHubOpenUdidSetting,
   evenHubPasswordSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
@@ -139,7 +138,6 @@ function settingsSections(): SettingsSection[] {
       items: [
         textSettingMenuItem(evenHubEmailSetting),
         textSettingMenuItem(evenHubPasswordSetting),
-        textSettingMenuItem(evenHubOpenUdidSetting),
       ],
     },
     {

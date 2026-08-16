@@ -5,11 +5,8 @@
  * it only discovers and downloads public .ehpk packages. Authentication is
  * the same signed-header scheme used by the firmware API.
  */
-import {
-  evenHubEmailSetting,
-  evenHubOpenUdidSetting,
-  evenHubPasswordSetting,
-} from "../../ui/dashboard-settings";
+import { Application } from "@nativescript/core";
+import { evenHubEmailSetting, evenHubPasswordSetting } from "../../ui/dashboard-settings";
 
 declare const android: any;
 
@@ -56,11 +53,7 @@ type DownloadMetadata = {
 };
 
 export function isEvenHubStoreConfigured(): boolean {
-  return Boolean(
-    evenHubEmailSetting.get().trim() &&
-      evenHubPasswordSetting.get() &&
-      evenHubOpenUdidSetting.get().trim(),
-  );
+  return Boolean(evenHubEmailSetting.get().trim() && evenHubPasswordSetting.get());
 }
 
 export class EvenHubApiClient {
@@ -153,7 +146,7 @@ export class EvenHubApiClient {
   private ensureLogin(): Promise<string> {
     if (this.token) return Promise.resolve(this.token);
     if (!isEvenHubStoreConfigured()) {
-      return Promise.reject(new Error("Set the EvenHub email, password, and phone openUdid in Settings > EvenHub."));
+      return Promise.reject(new Error("Set the EvenHub email and password in Settings > EvenHub."));
     }
     if (!this.loginPromise) {
       this.loginPromise = this.login().finally(() => {
@@ -243,7 +236,10 @@ function buildCommon(version: 1 | 3): string {
     buildTime: "26060821",
     appId: "1001",
     v: version,
-    openUdid: evenHubOpenUdidSetting.get().trim(),
+    // This is Android's app-scoped SSAID. Even's login endpoint registers a
+    // previously unseen value as a terminal, so Faceclaw does not need the
+    // official Even app's differently-scoped ID.
+    openUdid: getPhoneOpenUdid(),
     os: "1",
     sn: "",
     verL: "",
@@ -309,7 +305,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQU
 
 function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknown {
   if (httpStatus === 401) {
-    throw new Error("Even rejected the login session or phone openUdid. Check Settings > EvenHub.");
+    throw new Error("Even rejected the login session. Check Settings > EvenHub.");
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`EvenHub request failed (HTTP ${httpStatus}, ${path}).`);
@@ -319,6 +315,17 @@ function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknow
     throw new Error(`EvenHub API error ${envelope.code ?? "unknown"}${detail}`);
   }
   return envelope.data;
+}
+
+/** Return this installation's Android ID, which Even calls `openUdid`. */
+export function getPhoneOpenUdid(): string {
+  if (!global.isAndroid) throw new Error("The EvenHub storefront is currently available only on Android.");
+  const resolver = Application.android.context?.getContentResolver();
+  const openUdid = resolver
+    ? String(android.provider.Settings.Secure.getString(resolver, android.provider.Settings.Secure.ANDROID_ID) ?? "")
+    : "";
+  if (!openUdid) throw new Error("Android did not provide a device ID for EvenHub authentication.");
+  return openUdid;
 }
 
 function parseStoreApp(value: unknown): EvenHubStoreApp | null {

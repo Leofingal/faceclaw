@@ -522,19 +522,6 @@ export const evenHubPasswordSetting = new ConfigSettingString({
     "Password used to mint a short-lived Even API session. Faceclaw stores it in the same private settings store as other API credentials and never logs it.",
 });
 
-export const evenHubOpenUdidSetting = new ConfigSettingString({
-  id: "evenhub-openudid",
-  label: "Even phone openUdid",
-  storageKey: "integrations.evenhub.openUdid",
-  defaultValue: "",
-  editorTitle: "Official Even app Android openUdid",
-  glassesEditTitle: "Edit Even openUdid",
-  normalize: (value) => (value ?? "").replace(/[^A-Za-z0-9_-]+/g, "").trim(),
-  formatValue: maskToken,
-  description:
-    "Android ID already bound to this account by the official Even app. The private API rejects a valid login token when this value is missing or belongs to another app/device.",
-});
-
 /**
  * Staging buffer for the Terminal app's "Add connection" flow: the worker
  * asks the shell to open the phone text editor on this setting, the user
