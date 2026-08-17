@@ -1,19 +1,23 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
+import { TextViewerLayer } from "../files/text-viewer";
 import { evenHubApi, type EvenHubStoreApp } from "./even-api";
 import {
   getInstalledEvenHubApp,
   installEvenHubPackageBytes,
   installedEvenHubAppId,
+  readEvenHubPackageManifestBytes,
   setInstalledEvenHubIcon,
+  type EvenHubInstallIcon,
 } from "./installed-apps";
+import { EvenHubPermissionDialogLayer } from "./permission-dialog";
 
 const X = 18;
-const BUTTON_HEIGHT = 24;
+const ACTION_HEIGHT = 24;
 
 export type EvenHubStoreDetailOptions = {
   launchApp: (appId: string) => Promise<void> | void;
@@ -22,6 +26,8 @@ export type EvenHubStoreDetailOptions = {
 
 /** Storefront metadata and the Install/Launch action for one public app. */
 export class EvenHubStoreDetailLayer implements Layer {
+  /** About, What's New, Install/Launch. */
+  private selectedIndex = 2;
   private working = false;
   private detailPromise: Promise<void> | null = null;
   private status = "";
@@ -64,22 +70,28 @@ export class EvenHubStoreDetailLayer implements Layer {
     }
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
-    if (installed) {
+    const actions = ["About", "What's New", this.working ? "Installing..." : installed ? "Launch" : "Install"];
+    const actionTop = height - 22 - actions.length * ACTION_HEIGHT;
+    if (installed && !this.status) {
       image.drawText(font, X, y + 2, `Installed version ${installed.version}`, 155);
     }
     if (this.status) {
-      image.drawText(font, X, Math.min(height - 58, y + 18), truncateText(font, this.status, textWidth), 180);
+      image.drawText(font, X, Math.min(actionTop - 14, y + 2), truncateText(font, this.status, textWidth), 180);
     }
 
-    const buttonY = height - 48;
-    drawSelectionHighlight(image, X - 5, buttonY, textWidth + 10, BUTTON_HEIGHT, ctx.stack.isFocused(), 8);
-    const label = this.working ? "Installing..." : installed ? "Launch" : "Install";
-    image.drawText(font, X + 6, buttonY + 5, label, this.working ? 145 : 245);
+    for (let index = 0; index < actions.length; index++) {
+      const actionY = actionTop + index * ACTION_HEIGHT;
+      const selected = index === this.selectedIndex;
+      if (selected) {
+        drawSelectionHighlight(image, X - 5, actionY, textWidth + 10, ACTION_HEIGHT - 1, ctx.stack.isFocused(), 8);
+      }
+      image.drawText(font, X + 6, actionY + 5, actions[index]!, this.working && index === 2 ? 145 : selected ? 245 : 190);
+    }
     image.drawText(
       font,
       X,
       height - 16,
-      `${GESTURE_CLICK} ${installed ? "launch" : "install"}   ${GESTURE_DOUBLE_CLICK} back`,
+      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} back`,
       105,
     );
     return image;
@@ -90,9 +102,27 @@ export class EvenHubStoreDetailLayer implements Layer {
       if (!this.working) ctx.stack.pop();
       return;
     }
-    if (event.type !== "click" || this.working) return;
+    if (this.working) return;
+    if (event.type === "scroll-up") {
+      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+      return;
+    }
+    if (event.type === "scroll-down") {
+      this.selectedIndex = Math.min(2, this.selectedIndex + 1);
+      return;
+    }
+    if (event.type !== "click") return;
 
     await this.ensureDetail(ctx);
+
+    if (this.selectedIndex === 0) {
+      ctx.stack.push(new TextViewerLayer(this.app.description || "No description supplied.", "About"));
+      return;
+    }
+    if (this.selectedIndex === 1) {
+      ctx.stack.push(new TextViewerLayer(this.app.changelog || "No release notes supplied.", "What's New"));
+      return;
+    }
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
     if (installed) {
@@ -100,11 +130,15 @@ export class EvenHubStoreDetailLayer implements Layer {
       return;
     }
 
+    await this.prepareInstall(ctx);
+  }
+
+  private async prepareInstall(ctx: LayerContext): Promise<void> {
     this.working = true;
     this.status = `Downloading ${this.app.name}...`;
     ctx.actions.requestRender();
     try {
-      const [bytes, icon] = await Promise.all([
+      const [download, icon] = await Promise.all([
         evenHubApi.downloadApp(this.app.packageId),
         this.app.iconPath
           ? evenHubApi.downloadPublicAsset(this.app.iconPath).catch((error) => {
@@ -113,8 +147,47 @@ export class EvenHubStoreDetailLayer implements Layer {
             })
           : Promise.resolve(undefined),
       ]);
-      this.status = "Installing...";
+      const manifest = readEvenHubPackageManifestBytes(download.bytes);
+      if (!manifest) throw new Error("The downloaded EHPK manifest could not be read.");
+      const privacyPolicyUrl = download.privacyPolicyUrl || manifest.privacyPolicyUrl;
+      this.working = false;
+      this.status = "";
       ctx.actions.requestRender();
+      if (manifest.permissions.length > 0 || privacyPolicyUrl) {
+        ctx.stack.push(
+          new EvenHubPermissionDialogLayer(
+            manifest.name,
+            manifest.permissions,
+            privacyPolicyUrl,
+            () => {
+              void this.installAndLaunch(ctx, download.bytes, icon);
+            },
+            () => {
+              this.status = "Installation canceled.";
+              ctx.actions.requestRender();
+            },
+          ),
+        );
+        return;
+      }
+      await this.installAndLaunch(ctx, download.bytes, icon);
+    } catch (error) {
+      this.working = false;
+      this.status = cleanError(error);
+      this.options.appendLog(`evenhub store: ${this.status}`);
+      ctx.actions.requestRender();
+    }
+  }
+
+  private async installAndLaunch(
+    ctx: LayerContext,
+    bytes: Uint8Array,
+    icon: EvenHubInstallIcon | undefined,
+  ): Promise<void> {
+    this.working = true;
+    this.status = "Installing...";
+    ctx.actions.requestRender();
+    try {
       const result = installEvenHubPackageBytes(bytes, {
         expectedPackageId: this.app.packageId,
         icon,

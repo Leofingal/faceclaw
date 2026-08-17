@@ -34,6 +34,8 @@ export type EvenHubManifest = {
   networkWhitelist: string[];
   /** Normalized declared permissions (both manifest shapes). */
   permissions: EvenHubPermission[];
+  /** App privacy policy, when a locally supplied manifest declares one. */
+  privacyPolicyUrl: string;
   raw: Record<string, unknown>;
 };
 
@@ -119,6 +121,12 @@ export function parseManifest(appJsonText: string): EvenHubManifest {
   const entrypoint = String(raw.entrypoint ?? "index.html");
 
   const permissions = parsePermissions(raw.permissions);
+  const privacyPolicyUrl = firstSafeHttpsUrl(
+    raw.privacy_link,
+    raw.privacyLink,
+    raw.privacy_policy_url,
+    raw.privacyPolicyUrl,
+  );
   const networkWhitelist: string[] = [];
   for (const permission of permissions) {
     if (permission.name === "network" && permission.whitelist) {
@@ -126,5 +134,18 @@ export function parseManifest(appJsonText: string): EvenHubManifest {
     }
   }
 
-  return { packageId, name, version, entrypoint, networkWhitelist, permissions, raw };
+  return { packageId, name, version, entrypoint, networkWhitelist, permissions, privacyPolicyUrl, raw };
+}
+
+function firstSafeHttpsUrl(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value !== "string" || value.length > 2048) continue;
+    try {
+      const url = new URL(value.trim());
+      if (url.protocol === "https:") return url.toString();
+    } catch {
+      // Try the next supported manifest spelling.
+    }
+  }
+  return "";
 }

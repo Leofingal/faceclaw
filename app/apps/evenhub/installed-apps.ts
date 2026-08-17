@@ -157,6 +157,15 @@ export function readEvenHubPackageManifest(path: string): EvenHubManifest | null
   }
 }
 
+/** Inspect already-loaded package bytes before installation/first-run approval. */
+export function readEvenHubPackageManifestBytes(bytes: Uint8Array): EvenHubManifest | null {
+  try {
+    return inspectEhpk(bytes).manifest;
+  } catch {
+    return null;
+  }
+}
+
 /** Remove the stored EHPK, unpacked runtime files, and registry entry. */
 export function uninstallEvenHubPackage(packageId: string): boolean {
   const apps = getInstalledEvenHubApps();

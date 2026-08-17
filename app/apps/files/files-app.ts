@@ -143,17 +143,23 @@ export function createImageDocumentWindow(
 
 /**
  * Show the permission-confirmation dialog for an .ehpk before install/run,
- * then run `proceed` if the user allows. Packages that declare no permissions
- * skip the dialog and proceed immediately.
+ * then run `proceed` if the user allows. Packages with neither permissions nor
+ * a privacy policy skip the dialog and proceed immediately.
  */
 function confirmEhpkPermissions(ctx: LayerContext, entry: DirectoryEntry, proceed: () => void): void {
   const manifest = readEvenHubPackageManifest(entry.path);
-  if (!manifest || manifest.permissions.length === 0) {
+  if (!manifest || (manifest.permissions.length === 0 && !manifest.privacyPolicyUrl)) {
     proceed();
     return;
   }
   ctx.stack.push(
-    new EvenHubPermissionDialogLayer(manifest.name, manifest.permissions, proceed, () => {}),
+    new EvenHubPermissionDialogLayer(
+      manifest.name,
+      manifest.permissions,
+      manifest.privacyPolicyUrl,
+      proceed,
+      () => {},
+    ),
   );
 }
 

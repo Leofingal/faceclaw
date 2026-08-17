@@ -50,6 +50,13 @@ type DownloadMetadata = {
   url?: unknown;
   size?: unknown;
   public_key?: unknown;
+  privacy_link?: unknown;
+  meta?: unknown;
+};
+
+export type EvenHubAppDownload = {
+  bytes: Uint8Array;
+  privacyPolicyUrl: string;
 };
 
 export function isEvenHubStoreConfigured(): boolean {
@@ -86,7 +93,7 @@ export class EvenHubApiClient {
   }
 
   /** Resolve the signed download URL, then fetch and sanity-check its EHPK. */
-  async downloadApp(packageId: string): Promise<Uint8Array> {
+  async downloadApp(packageId: string): Promise<EvenHubAppDownload> {
     const data = await this.authenticatedRequest("POST", "/v2/evenhub/app/download", {
       body: { package_id: packageId, branch: "public" },
     });
@@ -104,7 +111,16 @@ export class EvenHubApiClient {
     if (bytes.length < 20 || bytes[0] !== 0x45 || bytes[1] !== 0x48 || bytes[2] !== 0x50 || bytes[3] !== 0x4b) {
       throw new Error("EvenHub download is not an EHPK package.");
     }
-    return bytes;
+    return {
+      bytes,
+      // The production API currently returns a CDN-relative `privacy_link`
+      // at the response root. Accept the nested serialization shape too.
+      privacyPolicyUrl: resolvePrivacyPolicyUrl(
+        stringValue(metadata.privacy_link).trim()
+          ? metadata.privacy_link
+          : asRecord(metadata.meta).privacy_link,
+      ),
+    };
   }
 
   /** Download one public storefront asset, constrained to Even's CDN path. */
@@ -362,4 +378,27 @@ function stringValue(value: unknown): string {
 function finiteNumber(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function resolvePrivacyPolicyUrl(value: unknown): string {
+  if (typeof value !== "string" || value.length > 2048) return "";
+  const candidate = value.trim();
+  if (!candidate) return "";
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    // Even stores uploaded policies as public-CDN-relative paths, just like
+    // app icons. Keep relative resolution constrained to that CDN namespace.
+    const cleanPath = candidate.replace(/^\/+/, "");
+    if (
+      !/^prod\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/i.test(cleanPath)
+      || cleanPath.includes("..")
+      || candidate.startsWith("//")
+      || candidate.includes("\\")
+    ) {
+      return "";
+    }
+    return `${PUBLIC_CDN_HOST}/${cleanPath}`;
+  }
 }
