@@ -1,4 +1,5 @@
 import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import * as frameTimings from "../../native/frame-timings";
 import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
@@ -37,7 +38,7 @@ export type InProcessWindowOptions = {
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
   baseLayer: Layer;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface?: () => void;
   onClosed?: () => void;
@@ -52,7 +53,7 @@ export type InProcessWindow = {
 /** The controller-provided plumbing common to every in-process app window. */
 export type InProcessAppOptions = {
   actions: LayerActions;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface: () => void;
   onClosed: () => void;
@@ -89,9 +90,9 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     nextRenderWantsFreshData = false;
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const image = stack.paint();
+    const planes = stack.paint();
     const paintUsedStaleData = endRenderPass();
-    await options.submitFrame(image, Date.now() - paintStartedAtMs, frameId);
+    await options.submitFrame(planes, Date.now() - paintStartedAtMs, frameId);
     if (paintUsedStaleData) {
       nextRenderWantsFreshData = true;
       requestRender();

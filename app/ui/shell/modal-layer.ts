@@ -1,4 +1,5 @@
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes } from "../../graphics/plane";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
 import { appViewportRect, appViewportSize, SHELL_OPAQUE_BLACK } from "./geometry";
 
@@ -43,7 +44,9 @@ export class ShellModalLayer implements Layer {
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const image = paintBelow();
-    const inner = this.stack.paint();
+    // Flattening bakes the inner stack's planes (glyphs included) so the blit
+    // below transplants the finished modal content into this layer's plane.
+    const inner = flattenPlanes(this.stack.paint(), MODAL_INTERIOR);
     const rect = modalRect();
     image.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK, 8);
     image.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 110, 8);

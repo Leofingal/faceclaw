@@ -7,6 +7,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import * as frameTimings from "../../native/frame-timings";
@@ -513,9 +514,9 @@ async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
 // ---------------------------------------------------------------------------
 // Painting
 
-function paint(win: RoamWindow): GrayImage {
+function paint(win: RoamWindow): Plane[] {
   if (win.menu?.isOpen()) return win.menu.paint();
-  return paintContent(win);
+  return singlePlane(paintContent(win));
 }
 
 function paintContent(win: RoamWindow): GrayImage {
@@ -578,11 +579,11 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${win.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(win)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === win.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: roam content unchanged");
       return;
@@ -592,6 +593,7 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,

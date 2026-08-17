@@ -1,4 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
@@ -470,9 +471,9 @@ class Shell {
   }
 
   /** Paint the shell surface: transparent chrome, or all-transparent when asleep. */
-  paintSurface(): GrayImage {
+  paintSurface(): Plane[] {
     if (!this.screenOn) {
-      return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
     }
     return this.stack.paint();
   }

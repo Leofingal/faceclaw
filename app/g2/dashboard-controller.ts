@@ -16,6 +16,7 @@ import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboa
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { flattenPlanes, planesFingerprint, type Plane } from "../graphics/plane";
 import { getDefaultMediumFont } from "../graphics/bdffont";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
@@ -1384,7 +1385,7 @@ class DashboardController {
         ...this.sharedActions,
         requestRender: () => {}, // rebound by createInProcessWindow
       },
-      submitFrame: (image, paintMs, frameId) => this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      submitFrame: (planes, paintMs, frameId) => this.submitWindowFrame(surfaceId, planes, paintMs, frameId),
       setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: () => this.removeWindowSurface(surfaceId),
       onClosed: () => {
@@ -1440,8 +1441,8 @@ class DashboardController {
       uninstallApp: (appId) => this.uninstallApp(appId),
       launchInProcessApp: (windowId, surfaceId, create) => this.launchInProcessApp(windowId, surfaceId, create),
       ensureWorkerHost: (createWorker) => this.ensureWorkerHost(app.appId, createWorker),
-      submitWindowFrame: (surfaceId, image, paintMs, frameId) =>
-        this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      submitWindowFrame: (surfaceId, planes, paintMs, frameId) =>
+        this.submitWindowFrame(surfaceId, planes, paintMs, frameId),
       setWindowSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       requestShellRender: () => this.requestShellRender(),
       appendLog: (message) => this.appendLog(message),
@@ -1554,13 +1555,14 @@ class DashboardController {
   }
 
   /** Submit a painted frame for an in-process window (e.g. the launcher). */
-  private async submitWindowFrame(surfaceId: string, image: GrayImage, paintMs: number, frameId: number): Promise<void> {
+  private async submitWindowFrame(surfaceId: string, planes: Plane[], paintMs: number, frameId: number): Promise<void> {
     const communicator = this.communicator;
     if (!communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: window frame with no active connection");
       return;
     }
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     await communicator.submitSurfaceFrame(
       surfaceId,
@@ -1612,7 +1614,7 @@ class DashboardController {
     this.nextShellRenderWantsFreshData = false;
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
@@ -1627,7 +1629,8 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
       return;
     }
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     await this.communicator.submitSurfaceFrame(
       SHELL_SURFACE_ID,

@@ -1,6 +1,7 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -37,8 +38,8 @@ export type LauncherOptions = {
   apps: () => LauncherAppEntry[];
   launchApp: (appId: string) => Promise<void> | void;
   uninstallApp: (appId: string) => Promise<void> | void;
-  /** Submit a painted viewport-sized frame to this window's surface. */
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  /** Submit a painted viewport-sized frame (as planes) to this window's surface. */
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   /** Flip the launcher's compositor surface visibility on foreground changes. */
   setSurfaceVisible: (visible: boolean) => void;
 };

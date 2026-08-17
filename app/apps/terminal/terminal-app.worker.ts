@@ -32,6 +32,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { getFont } from "../../graphics/bdffont";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
@@ -1367,11 +1368,11 @@ async function launchAndOpenView(control: ControlConnection, preset: string): Pr
   return socket;
 }
 
-function paint(window: TerminalWindow): GrayImage {
+function paint(window: TerminalWindow): Plane[] {
   if (window.menu?.isOpen()) {
     return window.menu.paint();
   }
-  return paintContent(window);
+  return singlePlane(paintContent(window));
 }
 
 function paintContent(window: TerminalWindow): GrayImage {
@@ -1486,7 +1487,17 @@ function paintView(window: ViewWindow): GrayImage {
     image.fillRect(window.emulator.cursorCol() * CELL_WIDTH, cursorScreenRow * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT, 70);
   }
 
+  // Stale content stays visible across a disconnect, so flag it: a status
+  // line over the bottom row whenever the session isn't actually attached.
+  // Text is deferred glyphs (always on top of raster), so the covered rows
+  // must be suppressed rather than painted over.
+  const statusBannerY = window.client.state().phase !== "attached"
+    ? window.viewportHeight - CELL_HEIGHT
+    : null;
+
   for (let row = 0; row < rows; row++) {
+    const rowY = row * CELL_HEIGHT;
+    if (statusBannerY !== null && rowY + CELL_HEIGHT > statusBannerY) continue;
     const absolute = top + row;
     let text = "";
     if (absolute >= historyNext) {
@@ -1495,18 +1506,15 @@ function paintView(window: ViewWindow): GrayImage {
     } else if (absolute >= window.archiveStart) {
       text = window.archive[absolute - window.archiveStart] ?? "";
     }
-    if (text.length) image.drawText(terminalFont, 0, row * CELL_HEIGHT, text, 200);
+    if (text.length) image.drawText(terminalFont, 0, rowY, text, 200);
   }
 
   if (!following) {
     drawScrollIndicator(image, top, window.archiveStart, bottomTop);
   }
-  // Stale content stays visible across a disconnect, so flag it: a status
-  // line over the bottom row whenever the session isn't actually attached.
-  if (window.client.state().phase !== "attached") {
-    const y = window.viewportHeight - CELL_HEIGHT;
-    image.fillRect(0, y, window.viewportWidth, CELL_HEIGHT, 0);
-    image.drawText(terminalFont, 0, y, window.status, 170);
+  if (statusBannerY !== null) {
+    image.fillRect(0, statusBannerY, window.viewportWidth, CELL_HEIGHT, 0);
+    image.drawText(terminalFont, 0, statusBannerY, window.status, 170);
   }
   return image;
 }
@@ -1539,11 +1547,11 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: terminal content unchanged");
       return;
@@ -1553,6 +1561,7 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,

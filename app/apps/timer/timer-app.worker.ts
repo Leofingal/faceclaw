@@ -5,6 +5,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
 import * as frameTimings from "../../native/frame-timings";
 import {
@@ -498,11 +499,11 @@ function updateRenderTimer(window: TimerWindow): void {
   }
 }
 
-function paint(window: TimerWindow): GrayImage {
+function paint(window: TimerWindow): Plane[] {
   if (window.menu?.isOpen()) {
     return window.menu.paint();
   }
-  return paintContent(window);
+  return singlePlane(paintContent(window));
 }
 
 function paintContent(window: TimerWindow): GrayImage {
@@ -645,11 +646,11 @@ function renderAndSubmit(window: TimerWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: timer content unchanged");
       return;
@@ -659,6 +660,7 @@ function renderAndSubmit(window: TimerWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,

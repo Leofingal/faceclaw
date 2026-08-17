@@ -8,6 +8,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
 import * as frameTimings from "../../native/frame-timings";
 import type { DashboardInputEvent } from "../../ui/layers";
@@ -667,9 +668,9 @@ function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number
 // ---------------------------------------------------------------------------
 // Painting
 
-function paint(win: NavWindow): GrayImage {
+function paint(win: NavWindow): Plane[] {
   if (win.menu?.isOpen()) return win.menu.paint();
-  return paintContent(win);
+  return singlePlane(paintContent(win));
 }
 
 function paintContent(win: NavWindow): GrayImage {
@@ -858,11 +859,11 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${win.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(win)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === win.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: navigate content unchanged");
       return;
@@ -872,6 +873,7 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,

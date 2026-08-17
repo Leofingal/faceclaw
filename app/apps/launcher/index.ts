@@ -37,7 +37,7 @@ const launcherApp: AppDefinition = {
         ],
         launchApp: (appId) => ctx.launchApp(appId),
         uninstallApp: (appId) => ctx.uninstallApp(appId),
-        submitFrame: (image, paintMs, frameId) => ctx.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
+        submitFrame: (planes, paintMs, frameId) => ctx.submitWindowFrame(LAUNCHER_SURFACE_ID, planes, paintMs, frameId),
         setSurfaceVisible: (visible) => ctx.setWindowSurfaceVisible(LAUNCHER_SURFACE_ID, visible),
       }),
     );

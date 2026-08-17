@@ -13,6 +13,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
+import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
 import * as frameTimings from "../../native/frame-timings";
 import type { DashboardInputEvent } from "../../ui/layers";
@@ -598,11 +599,20 @@ function layoutFor(window: FreecellWindow): Layout {
   };
 }
 
-function paint(window: FreecellWindow): GrayImage {
+function paint(window: FreecellWindow): Plane[] {
   if (window.menu?.isOpen()) {
     return window.menu.paint();
   }
-  return paintContent(window);
+  const planes = singlePlane(paintContent(window));
+  if (window.phase === "won") {
+    // The win box goes on its own plane: card labels are deferred glyphs that
+    // render above their own image's raster, so an overlay drawn into the
+    // board image could not cover them.
+    const overlay = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+    paintWinOverlay(overlay, window);
+    planes.push({ image: overlay, x: 0, y: 0 });
+  }
+  return planes;
 }
 
 function paintContent(window: FreecellWindow): GrayImage {
@@ -635,7 +645,7 @@ function paintContent(window: FreecellWindow): GrayImage {
     paintCascade(image, window, layout, i);
   }
   paintCursor(image, window, layout);
-  if (window.phase === "won") paintWinOverlay(image, window);
+  // The win overlay is painted onto its own plane by paint(), not here.
   return image;
 }
 
@@ -702,7 +712,9 @@ function paintWinOverlay(image: GrayImage, window: FreecellWindow): void {
   const height = 120;
   const x = Math.round((window.viewportWidth - width) / 2);
   const y = Math.round((window.viewportHeight - height) / 2);
-  image.fillRoundedRect(x, y, width, height, 0, 8);
+  // Fill 1, not 0: identical after 4bpp quantization, but 0 is transparent
+  // when this overlay composites as its own plane over the board.
+  image.fillRoundedRect(x, y, width, height, 1, 8);
   image.drawRoundedRect(x, y, width, height, 200, 8);
   drawCenteredIn(image, largeFont, x, width, y + 14, "You win!", 255);
   drawCenteredIn(image, smallFont, x, width, y + 56, `${window.moves} moves`, 170);
@@ -726,11 +738,11 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: freecell content unchanged");
       return;
@@ -740,6 +752,7 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
+    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,

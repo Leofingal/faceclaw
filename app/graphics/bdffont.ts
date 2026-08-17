@@ -11,7 +11,15 @@ export type Glyph = {
   bitmapRows: number[];
 };
 
+let nextFontFingerprintId = 1;
+
 export class BdfFont {
+  /**
+   * Process-local identity for content fingerprints (fonts are cached
+   * singletons, so two draws with the same id + encoding are the same glyph
+   * bitmap). Only meaningful within one JS context; never persist it.
+   */
+  readonly fingerprintId = nextFontFingerprintId++;
   readonly ascent: number;
   readonly descent: number;
   readonly lineHeight: number;

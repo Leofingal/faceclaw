@@ -1,4 +1,5 @@
 import { GrayImage } from "../graphics/image";
+import { singlePlane, type Plane } from "../graphics/plane";
 import {
   noopLayerActions,
   LayerStack,
@@ -61,8 +62,8 @@ export class WindowMenu {
   }
 
   /** Paint the window content with the menu over it (content alone if closed). */
-  paint(): GrayImage {
-    return this.stack ? this.stack.paint() : this.options.paintBase();
+  paint(): Plane[] {
+    return this.stack ? this.stack.paint() : singlePlane(this.options.paintBase());
   }
 
   /** Route an input event to the menu; the menu closes by popping itself. */

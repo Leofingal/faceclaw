@@ -1,4 +1,4 @@
-import { GrayImage } from "../graphics/image";
+import { type Plane } from "../graphics/plane";
 import { type IconName } from "../graphics/icons";
 import { type LayerActions } from "../ui/layers";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
@@ -60,8 +60,8 @@ export type AppContext = {
   ) => Promise<void>;
   /** Get this app's shared worker host, spawning the worker on first use. */
   ensureWorkerHost: (createWorker: () => Worker) => WorkerAppHost;
-  /** Submit a painted frame for a window surface (windows created outside launchInProcessApp). */
-  submitWindowFrame: (surfaceId: string, image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  /** Submit a window surface's painted frame, as planes (windows created outside launchInProcessApp). */
+  submitWindowFrame: (surfaceId: string, planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setWindowSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   requestShellRender: () => void;
   appendLog: (message: string) => void;

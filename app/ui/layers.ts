@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { BdfFont } from "../graphics/bdffont";
+import { type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingString } from "./dashboard-settings";
 
@@ -58,6 +58,18 @@ export const noopLayerActions: LayerActions = {
   playBuzzerSequence: () => {},
 };
 
+/**
+ * Hands a layer its paint canvas: a fresh transparent (0-filled) image the
+ * size of the stack. Calling it also declares that the layers below should
+ * stay visible beneath this layer — each layer becomes its own plane, so a
+ * layer that never calls paintBelow fully replaces what is under it (its
+ * plane is submitted alone), while one that does gets composited above the
+ * planes below. Repeat calls return the same canvas.
+ *
+ * Note the plane model's occlusion rule: raster painted onto the canvas
+ * covers lower planes entirely (including their text), but glyphs drawn into
+ * the *same* image always render above that image's own raster.
+ */
 export type PaintBelow = () => GrayImage;
 
 function notifyRemoved(layer: Layer | undefined): void {
@@ -153,7 +165,12 @@ export class LayerStack {
     Object.assign(this.ctx.actions, actions);
   }
 
-  paint(): GrayImage {
+  /**
+   * Paint the stack as planes, bottom to top: the top layer's plane last,
+   * preceded by the planes of the layers it asked to remain visible (see
+   * PaintBelow). All planes share the stack's base size at offset (0, 0).
+   */
+  paint(): Plane[] {
     return this.paintLayer(this.layers.length - 1);
   }
 
@@ -161,23 +178,24 @@ export class LayerStack {
     await this.layers[this.layers.length - 1]!.handleInput(event, this.ctx);
   }
 
-  private paintLayer(index: number): GrayImage {
+  private paintLayer(index: number): Plane[] {
     const layer = this.layers[index]!;
-    let cachedBelow: GrayImage | null = null;
-    return spanCurrent(`paint[${index}]:${layer.constructor.name}`, () =>
+    let canvas: GrayImage | null = null;
+    let belowRequested = false;
+    const image = spanCurrent(`paint[${index}]:${layer.constructor.name}`, () =>
       layer.paint(this.ctx, () => {
-        if (cachedBelow) {
-          return cachedBelow;
+        belowRequested = true;
+        if (!canvas) {
+          canvas = new GrayImage(this.baseWidth, this.baseHeight, 0);
         }
-        if (index <= 0) {
-          cachedBelow = new GrayImage(this.baseWidth, this.baseHeight, 0);
-        } else if (layer.paintOverBase) {
-          cachedBelow = this.paintLayer(0);
-        } else {
-          cachedBelow = this.paintLayer(index - 1);
-        }
-        return cachedBelow;
+        return canvas;
       }),
     );
+    const ownPlane: Plane = { image, x: 0, y: 0 };
+    if (index <= 0 || !belowRequested) {
+      return [ownPlane];
+    }
+    const below = layer.paintOverBase ? this.paintLayer(0) : this.paintLayer(index - 1);
+    return [...below, ownPlane];
   }
 }
