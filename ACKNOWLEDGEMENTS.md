@@ -15,3 +15,8 @@ The TerminusV proportional font is by ohnonot, derived from Terminus:
 https://framagit.org/ohnonot/terv-terc. It is also distributed under the SIL
 Open Font License; see app/fonts/terminusv/LICENSE.
 
+The CJK font used for EvenHub compatibility is Source Han Sans SC Light by
+Adobe: https://github.com/adobe-fonts/source-han-sans. It is distributed under
+the SIL Open Font License, Version 1.1; see app/fonts/source-han-sans/LICENSE.txt.
+Faceclaw includes the G2's serialized 20 px LVGL build of the font so phone-side
+rendering matches the glasses.

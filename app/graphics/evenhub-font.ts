@@ -1,10 +1,12 @@
 /**
  * Even's on-glasses 20px UI font, for the EvenHub compatibility layer.
  *
- * Two halves, from two sources:
- *  - Glyph BITMAPS + boxes: preprocessed from the firmware's extracted LVGL
- *    fonts (latin + greek/cyrillic + emoji, merged in the EvenHub fallback
- *    order) into fonts/evenhub/evenhub-20.json by scripts/build-evenhub-font.mjs.
+ * Three pieces:
+ *  - Latin + Greek/Cyrillic + emoji glyphs are extracted from the stock G2
+ *    firmware into app-private storage while Faceclaw prepares custom firmware.
+ *    They are not distributed with Faceclaw.
+ *  - The final fallback is the G2's serialized Source Han Sans SC Light font,
+ *    which Faceclaw can bundle under the SIL Open Font License.
  *  - Text SIZING / KERNING / WRAPPING: @evenrealities/pretext, whose advance
  *    tables the bitmaps were validated against. Using pretext for measurement
  *    means our line breaks match exactly where EvenHub apps (which measure
@@ -15,11 +17,15 @@
  * any anti-aliasing survives. Codepoints with no glyph are skipped silently,
  * matching stock firmware (no tofu boxes).
  */
-import { knownFolders } from "@nativescript/core";
+import { File, knownFolders } from "@nativescript/core";
 import { getTextWidth } from "@evenrealities/pretext";
+import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
+import { toUint8Array } from "../util/array-util";
 import { GrayImage } from "./image";
 
-const ASSET_PATH = "fonts/evenhub/evenhub-20.json";
+declare const com: any;
+
+const CJK_ASSET_PATH = "fonts/source-han-sans/SourceHanSansSC-Light-20.lvgl.bin";
 
 /** [boxW, boxH, ofsX, ofsY, bitmapOffset, bitmapLen] */
 type GlyphRecord = [number, number, number, number, number, number];
@@ -29,6 +35,11 @@ type FontAsset = {
   baseline: number;
   glyphs: Record<string, GlyphRecord>;
   bitmapBase64: string;
+};
+
+type CjkGlyph = {
+  record: GlyphRecord;
+  bitmap: Uint8Array;
 };
 
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -55,6 +66,9 @@ export class EvenHubFont {
   readonly baseline: number;
   private readonly glyphs: Map<number, GlyphRecord>;
   private readonly bitmap: Uint8Array;
+  private readonly cjkPath: string;
+  private readonly cjkBaseline: number;
+  private readonly cjkGlyphs = new Map<number, CjkGlyph | null>();
 
   private constructor(asset: FontAsset) {
     this.lineHeight = asset.lineHeight;
@@ -64,20 +78,43 @@ export class EvenHubFont {
     for (const key of Object.keys(asset.glyphs)) {
       this.glyphs.set(Number(key), asset.glyphs[key]!);
     }
+    this.cjkPath = knownFolders.currentApp().getFile(CJK_ASSET_PATH).path;
+    const metrics = toUint8Array(com.faceclaw.app.LvglFontFile.getMetrics(this.cjkPath));
+    if (metrics.length < 2) {
+      throw new Error("The bundled Source Han Sans font could not be loaded.");
+    }
+    this.cjkBaseline = metrics[1]!;
   }
 
   private static cached: EvenHubFont | null = null;
 
   static get(): EvenHubFont {
     if (!EvenHubFont.cached) {
-      const text = knownFolders.currentApp().getFile(ASSET_PATH).readTextSync();
-      EvenHubFont.cached = new EvenHubFont(JSON.parse(text) as FontAsset);
+      const path = `${knownFolders.documents().path}/${EVENHUB_RUNTIME_FONT_FILENAME}`;
+      let asset: FontAsset | null = null;
+      if (File.exists(path)) {
+        try {
+          const parsed: unknown = JSON.parse(File.fromPath(path).readTextSync());
+          if (!isEvenHubFontAsset(parsed)) throw new Error("invalid font asset structure");
+          asset = parsed;
+        } catch (error) {
+          console.warn(`Could not load the extracted G2 fonts; using Source Han Sans only: ${error}`);
+        }
+      } else {
+        console.warn(
+          "The G2 fonts have not been extracted yet; using Source Han Sans only. " +
+            "Reinstall Faceclaw's custom firmware to prepare the exact fallback chain.",
+        );
+      }
+      EvenHubFont.cached = new EvenHubFont(
+        asset ?? { lineHeight: 27, baseline: 22, glyphs: {}, bitmapBase64: "" },
+      );
     }
     return EvenHubFont.cached;
   }
 
   hasGlyph(codePoint: number): boolean {
-    return this.glyphs.has(codePoint);
+    return this.glyphs.has(codePoint) || this.getCjkGlyph(codePoint) !== null;
   }
 
   /**
@@ -166,7 +203,12 @@ export class EvenHubFont {
     for (let i = 0; i < cps.length; i++) {
       const cp = cps[i]!;
       const glyph = this.glyphs.get(cp);
-      if (glyph) this.drawGlyph(image, glyph, penX, baselineY, value);
+      if (glyph) {
+        this.drawGlyph(image, glyph, this.bitmap, penX, baselineY, value);
+      } else {
+        const cjk = this.getCjkGlyph(cp);
+        if (cjk) this.drawGlyph(image, cjk.record, cjk.bitmap, penX, y + this.cjkBaseline, value);
+      }
       penX += this.advanceOf(cp, cps[i + 1] ?? 0);
     }
   }
@@ -180,7 +222,36 @@ export class EvenHubFont {
     return lines.length;
   }
 
-  private drawGlyph(image: GrayImage, glyph: GlyphRecord, penX: number, baselineY: number, value: number): void {
+  private getCjkGlyph(codePoint: number): CjkGlyph | null {
+    const cached = this.cjkGlyphs.get(codePoint);
+    if (cached !== undefined) return cached;
+    const bytes = toUint8Array(com.faceclaw.app.LvglFontFile.getGlyph(this.cjkPath, codePoint));
+    if (bytes.length < 8) {
+      this.cjkGlyphs.set(codePoint, null);
+      return null;
+    }
+    const u16 = (offset: number) => bytes[offset]! | (bytes[offset + 1]! << 8);
+    const i16 = (offset: number) => {
+      const value = u16(offset);
+      return value & 0x8000 ? value - 0x10000 : value;
+    };
+    const bitmap = bytes.subarray(8);
+    const glyph: CjkGlyph = {
+      record: [u16(0), u16(2), i16(4), i16(6), 0, bitmap.length],
+      bitmap,
+    };
+    this.cjkGlyphs.set(codePoint, glyph);
+    return glyph;
+  }
+
+  private drawGlyph(
+    image: GrayImage,
+    glyph: GlyphRecord,
+    bitmap: Uint8Array,
+    penX: number,
+    baselineY: number,
+    value: number,
+  ): void {
     const [boxW, boxH, ofsX, ofsY, off, len] = glyph;
     if (boxW <= 0 || boxH <= 0 || len <= 0) return;
     const stride = Math.floor(boxW / 2) + 1;
@@ -189,7 +260,7 @@ export class EvenHubFont {
     for (let row = 0; row < boxH; row++) {
       const rowStart = off + row * stride;
       for (let col = 0; col < boxW; col++) {
-        const byte = this.bitmap[rowStart + (col >> 1)] ?? 0;
+        const byte = bitmap[rowStart + (col >> 1)] ?? 0;
         const nibble = col % 2 === 0 ? byte >> 4 : byte & 0x0f;
         if (nibble === 0) continue;
         image.setPixel(left + col, top + row, Math.round((nibble / 15) * value));

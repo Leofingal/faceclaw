@@ -2,11 +2,16 @@ import { Frame, Observable } from "@nativescript/core";
 
 import { ensureBlePermissions } from "../g2/android-permissions";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
+import {
+  downloadAndExtractEvenHubFonts,
+  hasExtractedEvenHubFonts,
+  type FirmwareProgress,
+} from "../g2/firmware-builder";
 import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 
-type CheckPhase = "checking" | "custom" | "flashable" | "newer" | "error";
+type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer" | "error";
 
 export class OnboardingFirmwareCheckViewModel extends Observable {
   private _phase: CheckPhase = "checking";
@@ -86,7 +91,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
 
   get secondaryVisibility(): "visible" | "collapse" {
     // Once the custom firmware is confirmed present, Finish is the only action.
-    return this._phase === "custom" ? "collapse" : "visible";
+    return this._phase === "custom" || this._phase === "fonts" ? "collapse" : "visible";
   }
 
   // --- button handlers -------------------------------------------------------
@@ -166,11 +171,11 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.busy = false;
     switch (kind) {
       case "custom":
-        this.setPhase("custom");
-        this.headline = "Custom Firmware Detected";
-        this.status =
-          `Your glasses already run Faceclaw's custom firmware${version ? ` (version ${version})` : ""}` +
-          `${capabilities ? `, extensions: ${capabilities}` : ""}. No flashing needed — you're all set.`;
+        if (!hasExtractedEvenHubFonts()) {
+          void this.extractFontsForCustomFirmware(version, capabilities);
+          break;
+        }
+        this.showCustomReady(version, capabilities, false);
         break;
       case "flashable":
         this.setPhase("flashable");
@@ -197,6 +202,52 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
+  private async extractFontsForCustomFirmware(version: string, capabilities: string): Promise<void> {
+    this.setPhase("fonts");
+    this.headline = "Preparing G2 Fonts";
+    this.busy = true;
+    this.status =
+      "Custom firmware is already installed, but its phone-side fonts are missing. " +
+      "Downloading the official firmware to extract them; your glasses will not be reflashed.";
+    try {
+      await downloadAndExtractEvenHubFonts((progress) => this.reportFontProgress(progress));
+      this.showCustomReady(version, capabilities, true);
+    } catch (error) {
+      this.toError(
+        `Custom firmware is installed, but the G2 fonts could not be prepared: ${this.formatError(error)}`,
+        "Couldn't Prepare Fonts",
+      );
+    }
+  }
+
+  private reportFontProgress(progress: FirmwareProgress): void {
+    switch (progress.phase) {
+      case "downloading":
+        this.status = "Downloading the official firmware from Even's CDN...";
+        break;
+      case "verifying-base":
+        this.status = "Verifying the downloaded firmware...";
+        break;
+      case "extracting-fonts":
+        this.status = "Extracting the G2 fonts for EvenHub apps...";
+        break;
+      default:
+        break;
+    }
+  }
+
+  private showCustomReady(version: string, capabilities: string, extractedFonts: boolean): void {
+    this.busy = false;
+    this.setPhase("custom");
+    this.headline = extractedFonts ? "Fonts Ready" : "Custom Firmware Detected";
+    this.status =
+      `Your glasses already run Faceclaw's custom firmware${version ? ` (version ${version})` : ""}` +
+      `${capabilities ? `, extensions: ${capabilities}` : ""}. ` +
+      (extractedFonts
+        ? "The phone-side G2 fonts were extracted successfully. No flashing was needed — you're all set."
+        : "The phone-side G2 fonts are present. No flashing needed — you're all set.");
+  }
+
   // --- terminal actions ------------------------------------------------------
 
   private goToFlashing(): void {
@@ -217,12 +268,12 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     });
   }
 
-  private toError(message: string): void {
+  private toError(message: string, headline = "Couldn't Check Firmware"): void {
     this.disposeProbe();
     this.busy = false;
     this.status = message;
     this.setPhase("error");
-    this.headline = "Couldn't Check Firmware";
+    this.headline = headline;
   }
 
   private setPhase(phase: CheckPhase): void {
