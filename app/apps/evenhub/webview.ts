@@ -12,7 +12,8 @@
  * host app is backgrounded (see FaceclawEvenHubWebView / the host).
  */
 import { Application, Utils } from "@nativescript/core";
-import { EVENHUB_BRIDGE_INJECT_SCRIPT, type EvenHubSession } from "./session";
+import { EVENHUB_BRIDGE_INJECT_SCRIPT, buildFaceclawExtensionsScript, type EvenHubSession } from "./session";
+import { FACECLAW_VERSION } from "../../version";
 
 declare const android: any;
 declare const com: any;
@@ -56,8 +57,11 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   });
 
   const host = originHost(session);
+  // Stock bridge shim first, then the Faceclaw extensions global (both at
+  // document-start, before any app JS).
+  const injectScript = EVENHUB_BRIDGE_INJECT_SCRIPT + buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`);
   webView.setWebViewClient(
-    new com.faceclaw.app.FaceclawEvenHubWebViewClient(session.distDir, host, EVENHUB_BRIDGE_INJECT_SCRIPT, listener),
+    new com.faceclaw.app.FaceclawEvenHubWebViewClient(session.distDir, host, injectScript, listener),
   );
   webView.addJavascriptInterface(new com.faceclaw.app.FaceclawEvenHubJsBridge(listener), "__faceclawEvenHub");
 

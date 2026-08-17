@@ -38,11 +38,12 @@ To install, run
 ## Features
 
  * A voice assistant that wakes up when you say "Hey Even", transcribes text
-   with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API, and responds
-   to queries and commands using an Anthropic or OpenAI model (requires an API
-   key), or using your own long-running OpenClaw agent (see "Connecting an
-   external agent" below).
+   with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API, and
+   responds to queries and commands using an onboard model (Qwen3 4B, slow)
+   or with an Anthropic or OpenAI model (requires an API key), or using your
+   own long-running OpenClaw agent (see "Connecting an external agent" below).
  * Multitasking, with an app-switcher sidebar and app launcher
+ * Mostly-compatible with EvenHub apps
  * A lock screen; glasses lock automatically when you take them off and unlock
    when you unlock your phone
  * Full-screen apps can use  the full 640x480 display area (rather than the
@@ -87,6 +88,19 @@ scripts/push_config.sh from this repo; the instructions are written so an
 OpenClaw agent with the phone plugged into its host can perform the whole
 setup itself. Note that a pulled settings file contains your API keys, so
 treat it as a secret (the default output path is gitignored here).
+
+## EvenHub App Notes
+
+Faceclaw is mostly compatible with EvenHub apps. If you are developing an
+app or using an open source app, you can package it into an EHPK file, send
+it to your phone, and open it in the file browser to install. Or, you can log
+into EvenHub and download apps there.
+
+Faceclaw runs EvenHub apps through an emulation layer; you may run into bugs
+and differences in behavior. If you run into bugs, please try tunning them in
+the stock Android app before you report them to the app's creator. If you're
+developing your own app and plan to submit it to the Hub, be sure to test it in
+the stock Android app before submitting.
 
 ## Additional Caveats
 

@@ -68,6 +68,7 @@ export function createEvenHubWindow(
     requestRender: created.requestRender,
     closeWindow: () => shell.closeWindow(windowId),
     focusSwitcher: () => shell.yieldFocusToSidebar(),
+    pushOverlay: (layer) => created.stack.push(layer),
   });
 
   // FOREGROUND_ENTER/EXIT for the app on shell focus changes.

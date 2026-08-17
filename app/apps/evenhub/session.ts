@@ -20,7 +20,21 @@
 import { ApplicationSettings } from "@nativescript/core";
 import { GrayImage } from "../../graphics/image";
 import { EvenHubFont } from "../../graphics/evenhub-font";
-import { type DashboardInputEvent } from "../../ui/layers";
+import { type DashboardInputEvent, type Layer } from "../../ui/layers";
+import {
+  anthropicApiKeySetting,
+  elevenLabsApiKeySetting,
+  mapboxApiKeySetting,
+  openAiApiKeySetting,
+  sonioxApiKeySetting,
+} from "../../ui/dashboard-settings";
+import {
+  buildSoundSequencePayload,
+  phraseDurationMs,
+  CFW_SEQ_MAX,
+  type Step,
+} from "../../ui/sound-effects";
+import { EvenHubApiKeyDialogLayer } from "./api-key-dialog";
 import {
   asRecord,
   eventCaptureContainer,
@@ -43,6 +57,8 @@ import { LocationTracker, type TrackedLocation } from "../../native/location-tra
 import { ensureFineLocationPermission } from "../../g2/android-permissions";
 
 const UPNG = require("upng-js");
+
+declare const com: any;
 
 /** OsEventTypeList values (PB ordinals). */
 const CLICK_EVENT = 0;
@@ -157,6 +173,72 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
 })();
 `;
 
+/**
+ * Injected at document-start (after the stock bridge shim): defines
+ * `window.getFaceclawExtensions`, the single entry point for Faceclaw-only
+ * capabilities (see the faceclaw-extensions package). It never touches the
+ * standard SDK or any prototype — everything lives behind this one global, so
+ * apps stay compatible with the stock Even app (where the global is absent).
+ *
+ * RPC uses its own id-keyed promise map and `__fcExtResolve`, kept separate
+ * from the stock `__fcResolve` channel. Events arrive via `__fcExtEvent`.
+ * `<VERSION>` is interpolated by buildFaceclawExtensionsScript at load.
+ */
+export function buildFaceclawExtensionsScript(versionString: string): string {
+  return `
+(function () {
+  if (window.getFaceclawExtensions) return;
+  var VERSION = ${JSON.stringify(versionString)};
+  var pending = {};
+  var nextId = 1;
+  window.__fcExtResolve = function (id, ok, value) {
+    var entry = pending[id];
+    if (!entry) return;
+    delete pending[id];
+    (ok ? entry[0] : entry[1])(value);
+  };
+  function call(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = [resolve, reject];
+      window.__faceclawEvenHub.postMessage("faceclawExt", JSON.stringify([method].concat(params || [])), id);
+    });
+  }
+  function send(method, params) {
+    // Fire-and-forget: id 0 tells the host no response is expected.
+    window.__faceclawEvenHub.postMessage("faceclawExt", JSON.stringify([method].concat(params || [])), 0);
+  }
+  var listeners = {};
+  window.__fcExtEvent = function (name, data) {
+    var arr = listeners[name];
+    if (!arr) return;
+    for (var i = 0; i < arr.slice().length; i++) {
+      try { arr[i](data); } catch (e) { if (window.console) console.error(e); }
+    }
+  };
+  function on(name, cb) {
+    (listeners[name] || (listeners[name] = [])).push(cb);
+    return function () {
+      var arr = listeners[name];
+      if (!arr) return;
+      var i = arr.indexOf(cb);
+      if (i >= 0) arr.splice(i, 1);
+    };
+  }
+  var extensions = {
+    getVersion: function () { return VERSION; },
+    returnToAppSwitcher: function () { send("returnToAppSwitcher"); },
+    quit: function () { send("quit"); },
+    addWindowLifecycleListener: function (cb) { return on("windowLifecycle", cb); },
+    getConfiguredApiKeys: function () { return call("getConfiguredApiKeys"); },
+    requestApiKeyAccess: function (services) { return call("requestApiKeyAccess", [services || []]); },
+    playBuzzer: function (steps) { return call("playBuzzer", [steps || []]); }
+  };
+  window.getFaceclawExtensions = function () { return extensions; };
+})();
+`;
+}
+
 /** Stock blocks a repeated createStartUpPageContainer ~2s before failing it. */
 const DUPLICATE_CREATE_DELAY_MS = 2000;
 
@@ -172,6 +254,8 @@ export type EvenHubWindowHooks = {
   closeWindow: () => void;
   /** Hand focus to the app switcher (used to decline an app's quit request). */
   focusSwitcher: () => void;
+  /** Push a modal overlay layer onto the app window (e.g. a consent prompt). */
+  pushOverlay: (layer: Layer) => void;
 };
 
 export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
@@ -195,6 +279,13 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   private imuRequested = false;
   /** Non-null while the app has an active location subscription. */
   private locationTracker: LocationTracker | null = null;
+  // Window-lifecycle tracking for the extension API (apps launch visible+focused).
+  private lastVisible = true;
+  private lastFocused = true;
+  /** Shell input focus on this window, sampled during paint. */
+  private shellFocused = true;
+  /** API-key services the user has granted this app this session. */
+  private readonly grantedApiKeys = new Set<string>();
   private log: (message: string) => void;
 
   constructor(manifest: EvenHubManifest, distDir: string, log: (message: string) => void) {
@@ -238,6 +329,9 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   }
 
   paint(size: { width: number; height: number }, focused: boolean): GrayImage {
+    // Focus changes always trigger a repaint of the foreground window, so paint
+    // is a reliable place to sample shell input-focus for lifecycle events.
+    this.updateShellFocus(focused);
     if (!this.pageCreated || !this.page) {
       const image = new GrayImage(size.width, size.height, 0);
       const font = EvenHubFont.get();
@@ -308,6 +402,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
     // reads the accelerometer).
     if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
     if (this.imuRequested) evenHubImuRouter.notifyEligibilityChanged();
+    // Focus is unknown until the next paint (a re-shown window repaints and
+    // re-asserts it; a hidden one won't, so treat it as unfocused meanwhile).
+    this.shellFocused = false;
+    this.recomputeLifecycle();
     if (!this.pageCreated) return;
     this.emitSysEvent(foreground ? FOREGROUND_ENTER_EVENT : FOREGROUND_EXIT_EVENT, 0);
   }
@@ -317,6 +415,36 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
     if (this.screenOn === on) return;
     this.screenOn = on;
     if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
+    // As in setForeground: let the next paint re-assert focus.
+    this.shellFocused = false;
+    this.recomputeLifecycle();
+  }
+
+  // ----- extension window lifecycle -----
+
+  /** Sample shell input-focus (from paint) and emit focused/blurred on change. */
+  private updateShellFocus(focused: boolean): void {
+    if (this.shellFocused === focused) return;
+    this.shellFocused = focused;
+    this.recomputeLifecycle();
+  }
+
+  /**
+   * Emit visible/hidden and focused/blurred extension events on transition.
+   * visible = foreground && screen on; focused additionally needs shell input
+   * focus on this window.
+   */
+  private recomputeLifecycle(): void {
+    const visible = this.foreground && this.screenOn;
+    const focused = visible && this.shellFocused;
+    if (visible !== this.lastVisible) {
+      this.lastVisible = visible;
+      this.pushExtEvent("windowLifecycle", { type: visible ? "visible" : "hidden" });
+    }
+    if (focused !== this.lastFocused) {
+      this.lastFocused = focused;
+      this.pushExtEvent("windowLifecycle", { type: focused ? "focused" : "blurred" });
+    }
   }
 
   // ----- microphone (EvenHubMicClient) -----
@@ -461,6 +589,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
    * (kept lenient: a bare object works too).
    */
   handleBridgeCall(handlerName: string, argsJson: string, callId: number): void {
+    if (handlerName === "faceclawExt") {
+      this.handleExtensionCall(argsJson, callId);
+      return;
+    }
     void (async () => {
       let result: unknown = null;
       try {
@@ -638,6 +770,19 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
     );
   }
 
+  private resolveExtCall(callId: number, ok: boolean, value: unknown): void {
+    this.webViewHandle?.evaluateJs(
+      `window.__fcExtResolve && window.__fcExtResolve(${callId}, ${ok ? "true" : "false"}, ${JSON.stringify(value ?? null)})`,
+    );
+  }
+
+  /** Deliver an extension event to the app (e.g. windowLifecycle). */
+  private pushExtEvent(name: string, data: unknown): void {
+    this.webViewHandle?.evaluateJs(
+      `window.__fcExtEvent && window.__fcExtEvent(${JSON.stringify(name)}, ${JSON.stringify(data)})`,
+    );
+  }
+
   private pushEvenHubEvent(payloadType: "sysEvent" | "textEvent" | "listEvent", jsonData: Record<string, unknown>): void {
     this.pushMessage("evenHubEvent", { type: payloadType, jsonData: elideZeroFields(jsonData) });
   }
@@ -654,6 +799,102 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
       currentSelectItemName: list.itemNames[list.selectedIndex] ?? "",
       eventType,
     });
+  }
+
+  // ----- Faceclaw extensions (faceclawExt channel) -----
+
+  private handleExtensionCall(argsJson: string, callId: number): void {
+    void (async () => {
+      let ok = true;
+      let result: unknown = null;
+      try {
+        const args = JSON.parse(argsJson) as unknown[];
+        const method = String(args[0]);
+        result = await this.dispatchExtension(method, args.slice(1));
+      } catch (error) {
+        ok = false;
+        result = String(error);
+        this.log(`evenhub: extension call failed: ${error}`);
+      }
+      // id 0 is a fire-and-forget send; nothing is awaiting it.
+      if (callId !== 0) this.resolveExtCall(callId, ok, result);
+    })();
+  }
+
+  private async dispatchExtension(method: string, params: unknown[]): Promise<unknown> {
+    switch (method) {
+      case "returnToAppSwitcher":
+        this.windowHooks?.focusSwitcher();
+        return null;
+      case "quit":
+        // A real quit — bypasses the shutDown(1) → return-to-switcher behavior.
+        setTimeout(() => this.close(), 0);
+        return null;
+      case "getConfiguredApiKeys":
+        return configuredApiKeyServices();
+      case "requestApiKeyAccess":
+        return this.requestApiKeyAccess(Array.isArray(params[0]) ? params[0].map(String) : []);
+      case "playBuzzer":
+        await this.playBuzzer(Array.isArray(params[0]) ? params[0] : []);
+        return null;
+      default:
+        this.log(`evenhub: unknown extension method ${method}`);
+        return null;
+    }
+  }
+
+  /**
+   * Prompt the user (on the glasses) to share configured API keys with the app,
+   * resolving with the granted values. Services already granted this session
+   * skip the prompt; declining resolves with an empty map.
+   */
+  private requestApiKeyAccess(services: string[]): Promise<Record<string, string>> {
+    const requested = services.filter(isKnownApiKeyService);
+    const buildGrant = (): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const id of requested) {
+        if (!this.grantedApiKeys.has(id)) continue;
+        const value = apiKeyValue(id);
+        if (value) out[id] = value;
+      }
+      return out;
+    };
+    if (requested.length === 0 || requested.every((id) => this.grantedApiKeys.has(id))) {
+      return Promise.resolve(buildGrant());
+    }
+    if (!this.windowHooks) return Promise.resolve({});
+    return new Promise((resolve) => {
+      const dialog = new EvenHubApiKeyDialogLayer(
+        this.manifest.name,
+        requested.map((id) => ({ id, configured: apiKeyValue(id).length > 0 })),
+        () => {
+          for (const id of requested) this.grantedApiKeys.add(id);
+          resolve(buildGrant());
+        },
+        () => resolve({}),
+      );
+      this.windowHooks?.pushOverlay(dialog);
+      this.windowHooks?.requestRender();
+    });
+  }
+
+  /** Play a piezo tone sequence, chunking/pacing past the firmware's 48-step cap. */
+  private async playBuzzer(rawSteps: unknown[]): Promise<void> {
+    const steps = normalizeBuzzerSteps(rawSteps);
+    if (steps.length === 0) return;
+    const communicator = activeCommunicator();
+    if (!communicator) return;
+    for (let i = 0; i < steps.length; i += CFW_SEQ_MAX) {
+      const chunk = steps.slice(i, i + CFW_SEQ_MAX);
+      const payload = buildSoundSequencePayload(chunk);
+      try {
+        communicator.playBuzzerSequence(payload.buffer);
+      } catch (error) {
+        this.log(`evenhub: playBuzzer failed: ${error}`);
+        return;
+      }
+      if (i + CFW_SEQ_MAX < steps.length) await delay(phraseDurationMs(chunk));
+    }
   }
 
   // ----- teardown -----
@@ -739,6 +980,52 @@ function readEnableFlag(data: Record<string, unknown>): boolean {
 function clampImuFreq(freq: number): number {
   const snapped = Math.round(freq / 100) * 100;
   return Math.min(1000, Math.max(100, snapped));
+}
+
+function activeCommunicator(): any {
+  if (!global.isAndroid) return null;
+  try {
+    return com.faceclaw.app.FaceclawBleCommunicator.getActive();
+  } catch {
+    return null;
+  }
+}
+
+/** The API-key services the extension API can surface, and their settings. */
+const API_KEY_SERVICES = [
+  { id: "openai", setting: openAiApiKeySetting },
+  { id: "anthropic", setting: anthropicApiKeySetting },
+  { id: "soniox", setting: sonioxApiKeySetting },
+  { id: "elevenlabs", setting: elevenLabsApiKeySetting },
+  { id: "mapbox", setting: mapboxApiKeySetting },
+] as const;
+
+function isKnownApiKeyService(id: string): boolean {
+  return API_KEY_SERVICES.some((service) => service.id === id);
+}
+
+function apiKeyValue(id: string): string {
+  return API_KEY_SERVICES.find((service) => service.id === id)?.setting.get().trim() ?? "";
+}
+
+/** Service ids the user has actually configured (non-empty key), names only. */
+function configuredApiKeyServices(): string[] {
+  return API_KEY_SERVICES.filter((service) => service.setting.get().trim()).map((service) => service.id);
+}
+
+/** Coerce an app-supplied buzzer step list into validated {freq, ms, duty?}. */
+function normalizeBuzzerSteps(raw: unknown[]): Step[] {
+  const out: Step[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const freq = Number(record.freq);
+    const ms = Number(record.ms);
+    if (!Number.isFinite(freq) || !Number.isFinite(ms)) continue;
+    const duty = record.duty === undefined ? undefined : Number(record.duty);
+    out.push({ freq, ms, duty: duty !== undefined && Number.isFinite(duty) ? duty : undefined });
+  }
+  return out;
 }
 
 /**
