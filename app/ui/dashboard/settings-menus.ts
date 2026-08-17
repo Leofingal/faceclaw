@@ -3,6 +3,7 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
+import { FACECLAW_VERSION } from "../../version";
 import {
   cancelLocalModelDownload,
   deleteLocalModel,
@@ -276,7 +277,7 @@ function renderAbout(args: { image: GrayImage; x: number; y: number; width: numb
   }
   const textX = logo ? x + logo.width + 12 : x;
   image.drawText(font, textX, y + 8, "Faceclaw", 220);
-  image.drawText(font, textX, y + 24, "v0.3.0", 170);
+  image.drawText(font, textX, y + 24, `v${FACECLAW_VERSION}`, 170);
   const blurb = "By James Babcock. Distributed under the GNU General Public License, version 3.";
   const blurbY = y + Math.max(64, logo ? logo.height + 12 : 0);
   const blurbLines = wrapText(font, blurb, width);
