@@ -57,8 +57,14 @@ export type DashboardSnapshot = {
    */
   displayPreviewMessage: string;
   activeTextSettingId: string | null;
+  activeTextEditorTitle: string;
   activeTextSettingTitle: string;
   activeTextSettingValue: string;
+  activeTextSettingInputKind: "text" | "email" | "password";
+  secondaryTextSettingId: string | null;
+  secondaryTextSettingTitle: string;
+  secondaryTextSettingValue: string;
+  secondaryTextSettingInputKind: "text" | "email" | "password";
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -142,7 +148,9 @@ class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
   private log = "";
-  private activeTextSetting: ConfigSettingString | null = null;
+  private activeTextSettings: ConfigSettingString[] = [];
+  private activeTextEditorTitle = "";
+  private activeTextEditorOnFinish: (() => void) | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
@@ -212,6 +220,11 @@ class DashboardController {
     const sharedActions = {
       disconnect: () => this.disconnect(),
       startTextSettingEdit: (setting: ConfigSettingString) => this.startTextSettingEdit(setting),
+      startTextSettingsEdit: (
+        settings: readonly ConfigSettingString[],
+        title: string,
+        onFinish?: () => void,
+      ) => this.startTextSettingsEdit(settings, title, onFinish),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
@@ -683,15 +696,23 @@ class DashboardController {
   }
 
   snapshot(): DashboardSnapshot {
+    const primaryTextSetting = this.activeTextSettings[0] ?? null;
+    const secondaryTextSetting = this.activeTextSettings[1] ?? null;
     return {
       phase: this.phase,
       status: this.status,
       log: this.log,
       displayPreview: this.displayPreview,
       displayPreviewMessage: this.displayPreviewMessage(),
-      activeTextSettingId: this.activeTextSetting?.id ?? null,
-      activeTextSettingTitle: this.activeTextSetting?.editorTitle ?? "",
-      activeTextSettingValue: this.activeTextSetting?.get() ?? "",
+      activeTextSettingId: primaryTextSetting?.id ?? null,
+      activeTextEditorTitle: this.activeTextEditorTitle,
+      activeTextSettingTitle: primaryTextSetting?.editorTitle ?? "",
+      activeTextSettingValue: primaryTextSetting?.get() ?? "",
+      activeTextSettingInputKind: primaryTextSetting?.inputKind ?? "text",
+      secondaryTextSettingId: secondaryTextSetting?.id ?? null,
+      secondaryTextSettingTitle: secondaryTextSetting?.editorTitle ?? "",
+      secondaryTextSettingValue: secondaryTextSetting?.get() ?? "",
+      secondaryTextSettingInputKind: secondaryTextSetting?.inputKind ?? "text",
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -771,9 +792,11 @@ class DashboardController {
     openEvenAppSettings();
   }
 
-  setActiveTextSettingValue(value: string): void {
+  setActiveTextSettingValue(value: string, settingId?: string): void {
     shell.noteUserActivity();
-    const setting = this.activeTextSetting;
+    const setting = settingId
+      ? this.activeTextSettings.find((candidate) => candidate.id === settingId) ?? null
+      : this.activeTextSettings[0] ?? null;
     if (!setting) return;
     if (setting.get() === value) return;
     setting.set(value);
@@ -1182,7 +1205,17 @@ class DashboardController {
   }
 
   private startTextSettingEdit(setting: ConfigSettingString): void {
-    this.activeTextSetting = setting;
+    this.startTextSettingsEdit([setting], setting.editorTitle);
+  }
+
+  private startTextSettingsEdit(
+    settings: readonly ConfigSettingString[],
+    title: string,
+    onFinish?: () => void,
+  ): void {
+    this.activeTextSettings = Array.from(settings.slice(0, 2));
+    this.activeTextEditorTitle = title;
+    this.activeTextEditorOnFinish = onFinish ?? null;
     this.emit();
   }
 
@@ -1236,10 +1269,12 @@ class DashboardController {
   }
 
   private endTextSettingEdit(): void {
-    const finishedSetting = this.activeTextSetting;
-    this.activeTextSetting = null;
+    const finishedSettings = this.activeTextSettings;
+    this.activeTextSettings = [];
+    this.activeTextEditorTitle = "";
+    this.activeTextEditorOnFinish = null;
     this.emit();
-    if (finishedSetting === nightscoutSiteUrlSetting || finishedSetting === nightscoutApiTokenSetting) {
+    if (finishedSettings.includes(nightscoutSiteUrlSetting) || finishedSettings.includes(nightscoutApiTokenSetting)) {
       void this.refreshNightscoutAfterSettingsChange();
     }
   }
@@ -1250,11 +1285,14 @@ class DashboardController {
    * out of the edit page.
    */
   finishActiveTextSettingEdit(): void {
-    if (!this.activeTextSetting) return;
+    if (!this.activeTextSettings.length) return;
+    const onFinish = this.activeTextEditorOnFinish;
+    const closesGlassesEditor = this.activeTextSettings.length === 1;
     this.endTextSettingEdit();
-    if (this.textEditorHost?.closeTextEditor()) {
+    if (closesGlassesEditor && this.textEditorHost?.closeTextEditor()) {
       this.textEditorHost.requestRender();
     }
+    onFinish?.();
   }
 
   private updateTextSetting(setting: ConfigSettingString, value: string): void {

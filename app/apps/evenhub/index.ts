@@ -12,6 +12,8 @@ import { shell } from "../../ui/shell/shell";
 import { EvenHubStoreLayer } from "./store-layer";
 import { launchPackage } from "./manager";
 import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
+import { renderEvenRealitiesLogo } from "../../graphics/even-realities-logo";
+import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
 
 const EVENHUB_STORE_WINDOW_ID = "evenhub:store";
 const EVENHUB_STORE_SURFACE_ID = "window:evenhub:store";
@@ -28,6 +30,7 @@ const evenhubApp: AppDefinition = {
   appId: "evenhub",
   title: "EvenHub",
   icon: "package",
+  renderIcon: renderEvenRealitiesLogo,
   launch: async (ctx) => {
     const existing = shell.getWindows().find((window) => window.windowId === EVENHUB_STORE_WINDOW_ID);
     if (existing) {
@@ -38,7 +41,6 @@ const evenhubApp: AppDefinition = {
     let created: InProcessWindow | null = null;
     const store = new EvenHubStoreLayer({
       launchApp: (appId) => ctx.launchApp(appId),
-      openSettings: () => ctx.launchApp("settings", { section: "EvenHub" }),
       appendLog: ctx.appendLog,
     });
     await ctx.launchInProcessApp(EVENHUB_STORE_WINDOW_ID, EVENHUB_STORE_SURFACE_ID, (options) => {
@@ -48,6 +50,7 @@ const evenhubApp: AppDefinition = {
         title: "EvenHub",
         iconLetter: "EH",
         icon: "package",
+        drawIcon: makeImageWindowIcon(renderEvenRealitiesLogo, windowIcon("package", "EH")),
         closeable: true,
         menuItems: () => (created?.stack.isAtBase() ? store.buildMenuItems() : []),
         actions: options.actions,
@@ -55,7 +58,10 @@ const evenhubApp: AppDefinition = {
         submitFrame: options.submitFrame,
         setSurfaceVisible: options.setSurfaceVisible,
         removeSurface: options.removeSurface,
-        onClosed: options.onClosed,
+        onClosed: () => {
+          store.closeCredentialEditor(options.actions);
+          options.onClosed();
+        },
       });
       return created;
     });

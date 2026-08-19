@@ -14,8 +14,14 @@ export class MainViewModel extends Observable {
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
   private _activeTextSettingId: string | null = null;
+  private _activeTextEditorTitle = "";
   private _activeTextSettingTitle = "";
   private _activeTextSettingValue = "";
+  private _activeTextSettingInputKind: "text" | "email" | "password" = "text";
+  private _secondaryTextSettingId: string | null = null;
+  private _secondaryTextSettingTitle = "";
+  private _secondaryTextSettingValue = "";
+  private _secondaryTextSettingInputKind: "text" | "email" | "password" = "text";
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
@@ -34,8 +40,14 @@ export class MainViewModel extends Observable {
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
       this.activeTextSettingId = snapshot.activeTextSettingId;
+      this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
       this.activeTextSettingValue = snapshot.activeTextSettingValue;
+      this.activeTextSettingInputKind = snapshot.activeTextSettingInputKind;
+      this.secondaryTextSettingId = snapshot.secondaryTextSettingId;
+      this.secondaryTextSettingTitle = snapshot.secondaryTextSettingTitle;
+      this.secondaryTextSettingValue = snapshot.secondaryTextSettingValue;
+      this.secondaryTextSettingInputKind = snapshot.secondaryTextSettingInputKind;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
@@ -185,6 +197,17 @@ export class MainViewModel extends Observable {
     return this._activeTextSettingTitle;
   }
 
+  get activeTextEditorTitle(): string {
+    return this._activeTextEditorTitle;
+  }
+
+  set activeTextEditorTitle(value: string) {
+    if (this._activeTextEditorTitle !== value) {
+      this._activeTextEditorTitle = value;
+      this.notifyPropertyChange("activeTextEditorTitle", value);
+    }
+  }
+
   set activeTextSettingTitle(value: string) {
     if (this._activeTextSettingTitle !== value) {
       this._activeTextSettingTitle = value;
@@ -201,6 +224,94 @@ export class MainViewModel extends Observable {
       this._activeTextSettingValue = value;
       this.notifyPropertyChange("activeTextSettingValue", value);
     }
+  }
+
+  get activeTextSettingInputKind(): "text" | "email" | "password" {
+    return this._activeTextSettingInputKind;
+  }
+
+  set activeTextSettingInputKind(value: "text" | "email" | "password") {
+    if (this._activeTextSettingInputKind !== value) {
+      this._activeTextSettingInputKind = value;
+      this.notifyPropertyChange("activeTextSettingKeyboardType", this.activeTextSettingKeyboardType);
+      this.notifyPropertyChange("activeTextSettingSecure", this.activeTextSettingSecure);
+    }
+  }
+
+  get activeTextSettingKeyboardType(): "email" | "text" {
+    return this._activeTextSettingInputKind === "email" ? "email" : "text";
+  }
+
+  get activeTextSettingSecure(): boolean {
+    return this._activeTextSettingInputKind === "password";
+  }
+
+  get secondaryTextSettingId(): string | null {
+    return this._secondaryTextSettingId;
+  }
+
+  set secondaryTextSettingId(value: string | null) {
+    if (this._secondaryTextSettingId !== value) {
+      this._secondaryTextSettingId = value;
+      this.notifyPropertyChange("secondaryTextSettingId", value);
+      this.notifyPropertyChange("secondaryTextSettingVisibility", this.secondaryTextSettingVisibility);
+      this.notifyPropertyChange("hasSecondaryTextSetting", this.hasSecondaryTextSetting);
+      this.notifyPropertyChange("primaryTextSettingReturnKeyType", this.primaryTextSettingReturnKeyType);
+    }
+  }
+
+  get secondaryTextSettingTitle(): string {
+    return this._secondaryTextSettingTitle;
+  }
+
+  set secondaryTextSettingTitle(value: string) {
+    if (this._secondaryTextSettingTitle !== value) {
+      this._secondaryTextSettingTitle = value;
+      this.notifyPropertyChange("secondaryTextSettingTitle", value);
+    }
+  }
+
+  get secondaryTextSettingValue(): string {
+    return this._secondaryTextSettingValue;
+  }
+
+  set secondaryTextSettingValue(value: string) {
+    if (this._secondaryTextSettingValue !== value) {
+      this._secondaryTextSettingValue = value;
+      this.notifyPropertyChange("secondaryTextSettingValue", value);
+    }
+  }
+
+  get secondaryTextSettingInputKind(): "text" | "email" | "password" {
+    return this._secondaryTextSettingInputKind;
+  }
+
+  set secondaryTextSettingInputKind(value: "text" | "email" | "password") {
+    if (this._secondaryTextSettingInputKind !== value) {
+      this._secondaryTextSettingInputKind = value;
+      this.notifyPropertyChange("secondaryTextSettingKeyboardType", this.secondaryTextSettingKeyboardType);
+      this.notifyPropertyChange("secondaryTextSettingSecure", this.secondaryTextSettingSecure);
+    }
+  }
+
+  get secondaryTextSettingKeyboardType(): "email" | "text" {
+    return this._secondaryTextSettingInputKind === "email" ? "email" : "text";
+  }
+
+  get secondaryTextSettingSecure(): boolean {
+    return this._secondaryTextSettingInputKind === "password";
+  }
+
+  get hasSecondaryTextSetting(): boolean {
+    return this._secondaryTextSettingId !== null;
+  }
+
+  get secondaryTextSettingVisibility(): "visible" | "collapse" {
+    return this.hasSecondaryTextSetting ? "visible" : "collapse";
+  }
+
+  get primaryTextSettingReturnKeyType(): "next" | "done" {
+    return this.hasSecondaryTextSetting ? "next" : "done";
   }
 
   get isTextSettingEditorActive(): boolean {
@@ -423,15 +534,37 @@ export class MainViewModel extends Observable {
   }
 
   onTextSettingTextChange(args: { value?: string; object?: { text?: string } }): void {
-    dashboardController.setActiveTextSettingValue(args.object?.text ?? args.value ?? "");
+    dashboardController.setActiveTextSettingValue(
+      args.object?.text ?? args.value ?? "",
+      this.activeTextSettingId ?? undefined,
+    );
   }
 
-  onTextSettingReturnPress(args: { object?: { text?: string } }): void {
+  onPrimaryTextSettingReturnPress(args: { object?: { text?: string; page?: { getViewById?: (id: string) => { focus?: () => void } | null } } }): void {
     // Commit the field's actual text at done-time, in case the final
     // keystroke's textChange hadn't landed yet.
     const text = args?.object?.text;
     if (typeof text === "string") {
-      dashboardController.setActiveTextSettingValue(text);
+      dashboardController.setActiveTextSettingValue(text, this.activeTextSettingId ?? undefined);
+    }
+    if (this.hasSecondaryTextSetting) {
+      args.object?.page?.getViewById?.("secondarySettingsTextField")?.focus?.();
+      return;
+    }
+    dashboardController.finishActiveTextSettingEdit();
+  }
+
+  onSecondaryTextSettingTextChange(args: { value?: string; object?: { text?: string } }): void {
+    dashboardController.setActiveTextSettingValue(
+      args.object?.text ?? args.value ?? "",
+      this.secondaryTextSettingId ?? undefined,
+    );
+  }
+
+  onSecondaryTextSettingReturnPress(args: { object?: { text?: string } }): void {
+    const text = args?.object?.text;
+    if (typeof text === "string") {
+      dashboardController.setActiveTextSettingValue(text, this.secondaryTextSettingId ?? undefined);
     }
     dashboardController.finishActiveTextSettingEdit();
   }

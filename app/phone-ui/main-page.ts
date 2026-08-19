@@ -79,11 +79,15 @@ function applySettingsTextFieldContrast(textField: TextField): void {
   nativeTextField.setSelectAllOnFocus(true)
 }
 
-function focusSystemNameField(page: Page): void {
+function focusTextEditor(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
+    const secondaryTextField = page.getViewById<TextField>('secondarySettingsTextField')
     if (textField) {
       applySettingsTextFieldContrast(textField)
+    }
+    if (secondaryTextField) {
+      applySettingsTextFieldContrast(secondaryTextField)
     }
     textField?.focus()
   }, 0)
@@ -139,7 +143,7 @@ export function loaded(args: EventData) {
       }
       if (propertyArgs.propertyName === 'activeTextSettingId') {
         if (model.isTextSettingEditorActive) {
-          focusSystemNameField(page)
+          focusTextEditor(page)
         }
         return
       }
@@ -160,7 +164,7 @@ export function loaded(args: EventData) {
   setPageState(page, state)
   scrollLogsToBottom(scrollViews)
   if (model.isTextSettingEditorActive) {
-    focusSystemNameField(page)
+    focusTextEditor(page)
   }
 }
 

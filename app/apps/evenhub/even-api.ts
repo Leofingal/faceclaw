@@ -6,7 +6,7 @@
  * the same signed-header scheme used by the firmware API.
  */
 import { Application } from "@nativescript/core";
-import { evenHubEmailSetting, evenHubPasswordSetting } from "../../ui/dashboard-settings";
+import { evenHubEmailSetting, evenHubPasswordSetting, hasEvenHubCredentials } from "./credentials";
 
 declare const android: any;
 
@@ -60,7 +60,14 @@ export type EvenHubAppDownload = {
 };
 
 export function isEvenHubStoreConfigured(): boolean {
-  return Boolean(evenHubEmailSetting.get().trim() && evenHubPasswordSetting.get());
+  return hasEvenHubCredentials();
+}
+
+export class EvenHubAuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvenHubAuthenticationError";
+  }
 }
 
 export class EvenHubApiClient {
@@ -162,7 +169,7 @@ export class EvenHubApiClient {
   private ensureLogin(): Promise<string> {
     if (this.token) return Promise.resolve(this.token);
     if (!isEvenHubStoreConfigured()) {
-      return Promise.reject(new Error("Set the EvenHub email and password in Settings > EvenHub."));
+      return Promise.reject(new EvenHubAuthenticationError("Enter your Even account email and password."));
     }
     if (!this.loginPromise) {
       this.loginPromise = this.login().finally(() => {
@@ -173,15 +180,20 @@ export class EvenHubApiClient {
   }
 
   private async login(): Promise<string> {
-    const response = await this.request("POST", "/v2/g/login", {
-      commonVersion: 1,
-      body: { email: evenHubEmailSetting.get().trim(), passwd: evenHubPasswordSetting.get() },
-    });
-    const data = asRecord(unwrap(response.envelope, response.httpStatus, "/v2/g/login"));
-    const token = typeof data.token === "string" ? data.token : "";
-    if (!token) throw new Error("Even login succeeded without returning a session token.");
-    this.token = token;
-    return token;
+    try {
+      const response = await this.request("POST", "/v2/g/login", {
+        commonVersion: 1,
+        body: { email: evenHubEmailSetting.get().trim(), passwd: evenHubPasswordSetting.get() },
+      });
+      const data = asRecord(unwrap(response.envelope, response.httpStatus, "/v2/g/login"));
+      const token = typeof data.token === "string" ? data.token : "";
+      if (!token) throw new Error("Even login succeeded without returning a session token.");
+      this.token = token;
+      return token;
+    } catch (error) {
+      if (error instanceof EvenHubAuthenticationError) throw error;
+      throw new EvenHubAuthenticationError(String((error as Error)?.message ?? error));
+    }
   }
 
   private async request(
@@ -321,7 +333,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQU
 
 function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknown {
   if (httpStatus === 401) {
-    throw new Error("Even rejected the login session. Check Settings > EvenHub.");
+    throw new EvenHubAuthenticationError("Even rejected the login session.");
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`EvenHub request failed (HTTP ${httpStatus}, ${path}).`);

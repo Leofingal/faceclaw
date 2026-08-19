@@ -29,6 +29,12 @@ export type LayerActions = {
   requestRender: () => void;
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
+  /** Open one phone form for multiple related settings (for example email + password). */
+  startTextSettingsEdit: (
+    settings: readonly ConfigSettingString[],
+    title: string,
+    onFinish?: () => void,
+  ) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   /**
    * Start push-to-talk voice capture with the provider chosen in settings.
@@ -50,6 +56,7 @@ export const noopLayerActions: LayerActions = {
   requestRender: () => {},
   disconnect: () => {},
   startTextSettingEdit: () => {},
+  startTextSettingsEdit: () => {},
   endTextSettingEdit: () => {},
   startVoiceCapture: () => {},
   stopVoiceCapture: () => {},

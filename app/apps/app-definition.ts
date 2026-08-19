@@ -1,3 +1,4 @@
+import { type GrayImage } from "../graphics/image";
 import { type Plane } from "../graphics/plane";
 import { type IconName } from "../graphics/icons";
 import { type LayerActions } from "../ui/layers";
@@ -18,6 +19,8 @@ export type AppDefinition = {
   title: string;
   /** Launcher-grid icon. */
   icon: IconName;
+  /** App-supplied launcher icon renderer; icon remains the fallback. */
+  renderIcon?: (size: number) => GrayImage | null;
   /** Open the app's window (or focus it if already open). */
   launch: (ctx: AppContext, params?: AppLaunchParams) => Promise<void>;
   /**

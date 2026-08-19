@@ -25,7 +25,12 @@ const launcherApp: AppDefinition = {
         apps: () => [
           ...ctx.apps
             .filter((app) => app.showInLauncher !== false)
-            .map((app) => ({ appId: app.appId, label: app.title, icon: app.icon })),
+            .map((app) => ({
+              appId: app.appId,
+              label: app.title,
+              icon: app.icon,
+              renderIcon: app.renderIcon,
+            })),
           ...getInstalledEvenHubApps().map((app) => ({
             appId: installedEvenHubAppId(app.packageId),
             label: app.name,

@@ -1,9 +1,9 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
-import { truncateText } from "../../graphics/textwrap";
+import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
 import {
   drawListScrollbar,
   drawSelectionHighlight,
@@ -11,7 +11,17 @@ import {
   type MenuItem,
 } from "../../ui/menu";
 import { shell } from "../../ui/shell/shell";
-import { evenHubApi, isEvenHubStoreConfigured, type EvenHubStoreApp } from "./even-api";
+import {
+  evenHubApi,
+  EvenHubAuthenticationError,
+  isEvenHubStoreConfigured,
+  type EvenHubStoreApp,
+} from "./even-api";
+import {
+  clearEvenHubPassword,
+  evenHubEmailSetting,
+  evenHubPasswordSetting,
+} from "./credentials";
 import { EvenHubStoreDetailLayer } from "./store-detail-layer";
 
 const HEADER_HEIGHT = 34;
@@ -21,7 +31,6 @@ const LIST_X = 18;
 
 export type EvenHubStoreLayerOptions = {
   launchApp: (appId: string) => Promise<void> | void;
-  openSettings: () => Promise<void> | void;
   appendLog: (message: string) => void;
 };
 
@@ -34,14 +43,20 @@ export class EvenHubStoreLayer implements Layer {
   private nextPage = 1;
   private started = false;
   private loading = false;
-  private status = "";
+  private showingLogin = !isEvenHubStoreConfigured();
+  private status = this.showingLogin ? "Sign in to browse public apps." : "";
+  private credentialEditorOpen = false;
 
   constructor(private readonly options: EvenHubStoreLayerOptions) {}
 
   paint(ctx: LayerContext): GrayImage {
     if (!this.started) {
       this.started = true;
-      void this.reload(ctx);
+      if (this.showingLogin) {
+        this.openCredentialEditor(ctx);
+      } else {
+        void this.reload(ctx);
+      }
     }
 
     const font = getDefaultSmallFont();
@@ -49,10 +64,25 @@ export class EvenHubStoreLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     image.drawText(font, LIST_X, 8, "EvenHub", 220);
 
-    const subtitle = !isEvenHubStoreConfigured()
-      ? "Set account details in Settings > EvenHub"
-      : this.status || (this.total ? `${this.apps.length} of ${this.total} public apps` : "Public apps");
+    const subtitle = this.status || (this.total ? `${this.apps.length} of ${this.total} public apps` : "Public apps");
     image.drawText(font, LIST_X, 22, truncateText(font, subtitle, width - LIST_X * 2), 125);
+
+    if (this.showingLogin) {
+      const message = this.loading
+        ? "Signing in..."
+        : "Enter your Even account email and password in the phone app.";
+      for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
+        image.drawText(font, LIST_X, HEADER_HEIGHT + 22 + index * 15, line, 190);
+      }
+      image.drawText(
+        font,
+        LIST_X,
+        height - 16,
+        truncateText(font, `${GESTURE_CLICK} edit credentials   ${GESTURE_DOUBLE_CLICK} back`, width - LIST_X * 2),
+        105,
+      );
+      return image;
+    }
 
     if (this.apps.length === 0) {
       const message = this.loading ? "Loading apps..." : this.status || "No apps returned.";
@@ -83,14 +113,20 @@ export class EvenHubStoreLayer implements Layer {
       }
     }
 
-    const hint = !isEvenHubStoreConfigured()
-      ? `${GESTURE_CLICK} settings   ${GESTURE_DOUBLE_CLICK} back`
-      : `${GESTURE_SCROLL} select   ${GESTURE_CLICK} details   ${GESTURE_DOUBLE_CLICK} back`;
+    const hint = `${GESTURE_SCROLL} select   ${GESTURE_CLICK} details   ${GESTURE_DOUBLE_CLICK} back`;
     image.drawText(font, LIST_X, height - 16, truncateText(font, hint, width - LIST_X * 2), 105);
     return image;
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+    if (this.showingLogin) {
+      if (event.type === "click" && !this.loading) {
+        this.openCredentialEditor(ctx);
+      } else if (event.type === "double-click") {
+        shell.yieldFocusToSidebar();
+      }
+      return;
+    }
     switch (event.type) {
       case "scroll-up":
         this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -102,10 +138,6 @@ export class EvenHubStoreLayer implements Layer {
         }
         return;
       case "click":
-        if (!isEvenHubStoreConfigured()) {
-          await this.options.openSettings();
-          return;
-        }
         if (!this.loading) {
           const app = this.apps[this.selectedIndex];
           if (app) {
@@ -127,6 +159,7 @@ export class EvenHubStoreLayer implements Layer {
   }
 
   buildMenuItems(): MenuItem[] {
+    if (this.showingLogin) return [];
     return [
       {
         label: "Refresh",
@@ -136,13 +169,21 @@ export class EvenHubStoreLayer implements Layer {
         },
       },
       {
-        label: "EvenHub settings",
+        label: "Log Out",
         onSelect: (ctx) => {
           ctx.stack.pop();
-          void this.options.openSettings();
+          clearEvenHubPassword();
+          evenHubApi.clearSession();
+          this.enterLogin(ctx, "Signed out.");
         },
       },
     ];
+  }
+
+  closeCredentialEditor(actions: Pick<LayerActions, "endTextSettingEdit">): void {
+    if (!this.credentialEditorOpen) return;
+    this.credentialEditorOpen = false;
+    void actions.endTextSettingEdit();
   }
 
   private async reload(ctx: LayerContext): Promise<void> {
@@ -155,7 +196,7 @@ export class EvenHubStoreLayer implements Layer {
     this.scrollRow = 0;
     this.status = "";
     if (!isEvenHubStoreConfigured()) {
-      ctx.actions.requestRender();
+      this.enterLogin(ctx);
       return;
     }
     await this.loadNextPage(ctx);
@@ -174,12 +215,50 @@ export class EvenHubStoreLayer implements Layer {
       this.nextPage = page.page + 1;
       this.status = "";
     } catch (error) {
-      this.status = cleanError(error);
+      const message = cleanError(error);
+      if (error instanceof EvenHubAuthenticationError) {
+        this.options.appendLog(`evenhub store login failed: ${message}`);
+        this.enterLogin(ctx, `Login failed: ${message}`);
+        return;
+      }
+      this.status = message;
       this.options.appendLog(`evenhub store: ${this.status}`);
     } finally {
       this.loading = false;
       ctx.actions.requestRender();
     }
+  }
+
+  private enterLogin(ctx: LayerContext, status = "Sign in to browse public apps."): void {
+    this.showingLogin = true;
+    this.loading = false;
+    this.apps = [];
+    this.total = 0;
+    this.status = status;
+    this.openCredentialEditor(ctx);
+    ctx.actions.requestRender();
+  }
+
+  private openCredentialEditor(ctx: LayerContext): void {
+    if (this.credentialEditorOpen) return;
+    this.credentialEditorOpen = true;
+    void ctx.actions.startTextSettingsEdit(
+      [evenHubEmailSetting, evenHubPasswordSetting],
+      "Sign in to EvenHub",
+      () => {
+        this.credentialEditorOpen = false;
+        void this.submitCredentials(ctx);
+      },
+    );
+  }
+
+  private async submitCredentials(ctx: LayerContext): Promise<void> {
+    if (!isEvenHubStoreConfigured()) {
+      this.enterLogin(ctx, "Email and password are required.");
+      return;
+    }
+    this.showingLogin = false;
+    await this.reload(ctx);
   }
 
 }

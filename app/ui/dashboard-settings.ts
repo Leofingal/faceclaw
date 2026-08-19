@@ -167,6 +167,7 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
 type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<string, TId> & {
   editorTitle?: string;
   glassesEditTitle?: string;
+  inputKind?: "text" | "email" | "password";
   normalize?: (value: string | null | undefined) => string;
 };
 
@@ -182,12 +183,14 @@ export function getStringSettingById(id: string): ConfigSettingString | null {
 export class ConfigSettingString<TId extends string = string> extends ConfigSetting<string, TId> {
   readonly editorTitle: string;
   readonly glassesEditTitle: string;
+  readonly inputKind: "text" | "email" | "password";
   private readonly normalizer: (value: string | null | undefined) => string;
 
   constructor(options: ConfigSettingStringOptions<TId>) {
     super(options);
     this.editorTitle = options.editorTitle ?? options.label;
     this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
+    this.inputKind = options.inputKind ?? "text";
     this.normalizer = options.normalize ?? ((value) => value ?? "");
     stringSettingsById.set(this.id, this);
   }
@@ -495,31 +498,6 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   glassesEditTitle: "Edit Mapbox token",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
-});
-
-export const evenHubEmailSetting = new ConfigSettingString({
-  id: "evenhub-email",
-  label: "Even account email",
-  storageKey: "integrations.evenhub.email",
-  defaultValue: "",
-  editorTitle: "Even Realities account email",
-  glassesEditTitle: "Edit Even email",
-  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
-  formatValue: emptySettingDisplay,
-  description: "Email for the Even account used to browse and download public EvenHub apps.",
-});
-
-export const evenHubPasswordSetting = new ConfigSettingString({
-  id: "evenhub-password",
-  label: "Even account password",
-  storageKey: "integrations.evenhub.password",
-  defaultValue: "",
-  editorTitle: "Even Realities account password",
-  glassesEditTitle: "Edit Even password",
-  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, ""),
-  formatValue: (value) => (value ? "(set)" : "(not set)"),
-  description:
-    "Password used to mint a short-lived Even API session. Faceclaw stores it in the same private settings store as other API credentials and never logs it.",
 });
 
 /**
