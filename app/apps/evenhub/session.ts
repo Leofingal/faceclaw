@@ -703,8 +703,13 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
 
   private textUpgrade(data: Record<string, unknown>): boolean {
     const id = readNumber(data, "containerID", -1);
+    // containerID is the identity; containerName is optional in the wild (e.g.
+    // level-even-g2 omits it). Match by id, enforcing the name only when the app
+    // actually supplies a non-empty one. (updateImage already matches by id.)
     const name = readString(data, "containerName", "");
-    const container = this.page?.containers.find((c) => c.kind === "text" && c.id === id && c.name === name);
+    const container = this.page?.containers.find(
+      (c) => c.kind === "text" && c.id === id && (name === "" || c.name === name),
+    );
     if (!container || container.kind !== "text") return false;
     const content = readString(data, "content", "");
     const offset = readOptionalNumber(data, "contentOffset");
