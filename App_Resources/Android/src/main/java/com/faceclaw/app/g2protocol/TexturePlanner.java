@@ -32,8 +32,16 @@ public final class TexturePlanner {
 
     /** Cap on mode-14 string sub-messages (mode-8 count is a u8). */
     private static final int MAX_GLYPH_RUNS = 180;
+    /**
+     * Soft cap on cached-glyph selection per update, before run grouping.
+     * Sized above a full-screen 6x12 terminal repaint (~4,240 cells) so dense
+     * screens draw everything; the run budget is the real bound.
+     */
+    private static final int MAX_SELECTED_GLYPHS = 4600;
     /** Cap on mode-13 image sub-messages per update. */
     private static final int MAX_IMAGE_DRAWS = 60;
+    /** Cap on mode-15 builtin-font string sub-messages per update. */
+    private static final int MAX_FWTEXT_RUNS = 80;
     /** Mode-12 payload size that fits one BLE image message comfortably. */
     private static final int UPLOAD_PAYLOAD_MAX = 3600;
     /** Max x-adjust control bytes between two glyphs before starting a new run. */
@@ -52,13 +60,15 @@ public final class TexturePlanner {
         public final int drawnGlyphs;
         public final int runCount;
         public final int drawnImages;
+        public final int fwGlyphs;
+        public final int fwRuns;
         public final int bakedCandidates;
         public final int uploadBytes;
         public final boolean fullFrame;
 
         Result(byte[] payload, List<byte[]> uploads, int nextFid, int rectCount,
-               int drawnGlyphs, int runCount, int drawnImages, int bakedCandidates,
-               int uploadBytes, boolean fullFrame) {
+               int drawnGlyphs, int runCount, int drawnImages, int fwGlyphs, int fwRuns,
+               int bakedCandidates, int uploadBytes, boolean fullFrame) {
             this.payload = payload;
             this.uploads = uploads;
             this.nextFid = nextFid;
@@ -66,6 +76,8 @@ public final class TexturePlanner {
             this.drawnGlyphs = drawnGlyphs;
             this.runCount = runCount;
             this.drawnImages = drawnImages;
+            this.fwGlyphs = fwGlyphs;
+            this.fwRuns = fwRuns;
             this.bakedCandidates = bakedCandidates;
             this.uploadBytes = uploadBytes;
             this.fullFrame = fullFrame;
@@ -93,15 +105,15 @@ public final class TexturePlanner {
     /**
      * Plan a cached-draw update. previous is the delta base (the frame the
      * shadow currently holds), or null/mismatched for a full-frame keyframe.
-     * allowImages requires the teximg13 capability. Returns null when the
-     * plain paths should run instead (no replayable draws, or identical
-     * frames).
+     * allowImages requires the teximg13 capability; allowFwText requires
+     * font15. Returns null when the plain paths should run instead (no
+     * replayable draws, or identical frames).
      */
     public static Result plan(
             byte[] previous, byte[] next, int width, int height,
             SurfaceCompositor.ScreenDraw[] draws,
             TextureCacheState cache, int fidStart,
-            boolean allowMultiRect, int maxRects, boolean allowImages) {
+            boolean allowMultiRect, int maxRects, boolean allowImages, boolean allowFwText) {
         if (next == null || draws == null || draws.length == 0 || width <= 0 || height <= 0) {
             return null;
         }
@@ -136,6 +148,21 @@ public final class TexturePlanner {
         List<Selected> selected = new ArrayList<>();
         int bakedCandidates = 0;
         int selectedImages = 0;
+        // Builtin-font (mode 15) runs: no cache residency, no uploads — the
+        // firmware owns the font. Processed first because it has no cache
+        // side effects; the counters feed the shared stats.
+        List<byte[]> fwSubs = new ArrayList<>();
+        List<FwPunch> fwPunches = new ArrayList<>();
+        int fwGlyphCount = 0;
+        int fwBaked = 0;
+        if (allowFwText) {
+            for (SurfaceCompositor.ScreenDraw draw : draws) {
+                if (draw.kind != SurfaceCompositor.ScreenDraw.KIND_FWTEXT) continue;
+                fwBaked += planFwRun(draw, rects, next, stride, width, height, fwSubs, fwPunches);
+            }
+            fwGlyphCount = fwPunches.size();
+            bakedCandidates += fwBaked;
+        }
         for (SurfaceCompositor.ScreenDraw draw : draws) {
             if (draw.kind == SurfaceCompositor.ScreenDraw.KIND_GLYPH) {
                 GlyphAtlas.Glyph atlas = GlyphAtlas.get(draw.fontId, draw.encoding);
@@ -155,7 +182,7 @@ public final class TexturePlanner {
                     bakedCandidates++;
                     continue;
                 }
-                if (selected.size() >= MAX_GLYPH_RUNS * 10) { // soft cap before run grouping
+                if (selected.size() >= MAX_SELECTED_GLYPHS) {
                     bakedCandidates++;
                     continue;
                 }
@@ -180,21 +207,20 @@ public final class TexturePlanner {
                 selectedImages++;
             }
         }
-        if (selected.isEmpty()) {
+        if (selected.isEmpty() && fwSubs.isEmpty()) {
             return null;
         }
 
         // Residency: ensure every selected draw is in the cache, retrying once
         // after a reset when the bump allocator fills. A draw that still fails
-        // falls back to baked. IMPORTANT: from here on, every bail-out to the
-        // plain path must cache.reset() — ensure* marked entries resident
-        // and queued uploads that only a returned Result would enqueue.
-        List<Selected> drawable = ensureResident(cache, selected);
+        // falls back to baked. IMPORTANT: once ensure* has run, every bail-out
+        // to the plain path must cache.reset() — ensure* marked entries
+        // resident and queued uploads that only a returned Result would
+        // enqueue. (Fw-text needs no residency, so a fw-only plan skips this.)
+        List<Selected> drawable = selected.isEmpty()
+                ? Collections.<Selected>emptyList()
+                : ensureResident(cache, selected);
         bakedCandidates += selected.size() - drawable.size();
-        if (drawable.isEmpty()) {
-            cache.reset();
-            return null;
-        }
 
         // Group glyphs into mode-14 runs; leftover-budget glyphs bake.
         List<Selected> glyphDrawable = new ArrayList<>();
@@ -208,8 +234,11 @@ public final class TexturePlanner {
         bakedCandidates += glyphDrawable.size() - drawnGlyphs.size();
         List<Selected> drawn = new ArrayList<>(drawnGlyphs);
         drawn.addAll(imageDrawable);
-        if (drawn.isEmpty() || rects.size() + runs.size() + imageDrawable.size() > 255) {
-            cache.reset();
+        if ((drawn.isEmpty() && fwSubs.isEmpty())
+                || rects.size() + runs.size() + imageDrawable.size() + fwSubs.size() > 255) {
+            if (!selected.isEmpty()) {
+                cache.reset();
+            }
             return null;
         }
 
@@ -218,6 +247,9 @@ public final class TexturePlanner {
         byte[] punched = next.clone();
         for (Selected sel : drawn) {
             punch(punched, stride, width, height, sel);
+        }
+        for (FwPunch fw : fwPunches) {
+            punchFw(punched, stride, width, height, fw);
         }
 
         List<byte[]> subs = new ArrayList<>();
@@ -234,12 +266,184 @@ public final class TexturePlanner {
             subs.add(encodeImageDraw(cache, sel));
         }
         subs.addAll(runs);
+        subs.addAll(fwSubs);
         byte[] payload = assembleMode8(subs);
 
         int uploadBytes = cache.pendingUploadBytes();
         List<byte[]> uploads = cache.drainUploadPayloads(UPLOAD_PAYLOAD_MAX);
         return new Result(payload, uploads, fid, rects.size(), drawnGlyphs.size(), runs.size(),
-                imageDrawable.size(), bakedCandidates, uploadBytes, fullFrame);
+                imageDrawable.size(), fwGlyphCount, fwSubs.size(),
+                bakedCandidates, uploadBytes, fullFrame);
+    }
+
+    /** One punch task for an emitted firmware-font glyph. */
+    private static final class FwPunch {
+        final FwGlyphAtlas.Entry entry;
+        final int gx;
+        final int gy;
+
+        FwPunch(FwGlyphAtlas.Entry entry, int gx, int gy) {
+            this.entry = entry;
+            this.gx = gx;
+            this.gy = gy;
+        }
+    }
+
+    /**
+     * Plan one firmware-font run (mode 15): classify every member, and when
+     * any correct ink member intersects a sent rect, emit sub-messages over
+     * the maximal correct stretches. A stretch never spans an incorrect
+     * member — the sub-message boundary restarts the firmware's advance walk
+     * at an explicit pen x, so occluded or unknown glyphs simply stay baked
+     * without disturbing their neighbors' positions. Emitted ink members are
+     * queued for punching. Returns how many ink members stay baked.
+     */
+    private static int planFwRun(
+            SurfaceCompositor.ScreenDraw draw, List<int[]> rects,
+            byte[] next, int stride, int width, int height,
+            List<byte[]> outSubs, List<FwPunch> outPunches) {
+        int n = draw.fwCps.length;
+        if (n == 0 || draw.y < 0 || draw.y > 0xffff) {
+            return countInk(draw);
+        }
+        int top = BmpUtil.nibbleForGray(draw.value);
+        boolean[] ok = new boolean[n];
+        FwGlyphAtlas.Entry[] entries = new FwGlyphAtlas.Entry[n];
+        boolean relevant = false;
+        int baked = 0;
+        for (int i = 0; i < n; i++) {
+            if (!draw.fwInk[i]) {
+                ok[i] = true; // inkless connector (space): draws nothing
+                continue;
+            }
+            FwGlyphAtlas.Entry entry = FwGlyphAtlas.get(draw.fwCps[i]);
+            if (entry == null) {
+                baked++;
+                continue;
+            }
+            int gx = draw.x + draw.fwDx[i] + entry.ofsX;
+            int gy = draw.y + entry.inkTop;
+            if (!fwGlyphMatchesComposite(next, stride, width, height, entry, gx, gy, top)) {
+                baked++;
+                continue;
+            }
+            ok[i] = true;
+            entries[i] = entry;
+            if (intersectsAny(rects, gx, gy, entry.boxW, entry.boxH)) {
+                relevant = true;
+            }
+        }
+        if (!relevant) {
+            return 0; // nothing in a sent rect: leave the run's pixels alone
+        }
+
+        int i = 0;
+        while (i < n && outSubs.size() < MAX_FWTEXT_RUNS) {
+            while (i < n && !(ok[i] && draw.fwInk[i])) i++;
+            if (i >= n) break;
+            int startX = draw.x + draw.fwDx[i];
+            if (startX < 0 || startX > 0xffff) {
+                baked++;
+                i++;
+                continue;
+            }
+            // Extend across correct members while the UTF-8 payload fits,
+            // tracking the last ink member so trailing connectors trim away.
+            int j = i;
+            int lastInk = -1;
+            int bytesToLastInk = 0;
+            int bytesSoFar = 0;
+            while (j < n && ok[j]) {
+                int encodedLength = utf8Length(draw.fwCps[j]);
+                if (bytesSoFar + encodedLength > 255) break;
+                bytesSoFar += encodedLength;
+                if (draw.fwInk[j]) {
+                    lastInk = j;
+                    bytesToLastInk = bytesSoFar;
+                }
+                j++;
+            }
+            if (lastInk < i) { // a single over-long codepoint; not realistic
+                baked++;
+                i++;
+                continue;
+            }
+            byte[] sub = new byte[7 + bytesToLastInk];
+            sub[0] = 15;
+            sub[1] = (byte) (startX & 0xff);
+            sub[2] = (byte) ((startX >> 8) & 0xff);
+            sub[3] = (byte) (draw.y & 0xff);
+            sub[4] = (byte) ((draw.y >> 8) & 0xff);
+            sub[5] = (byte) (top | 0x10); // top color + transparent
+            sub[6] = (byte) bytesToLastInk;
+            int pos = 7;
+            for (int k = i; k <= lastInk; k++) {
+                byte[] encoded = new StringBuilder().appendCodePoint(draw.fwCps[k])
+                        .toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                System.arraycopy(encoded, 0, sub, pos, encoded.length);
+                pos += encoded.length;
+            }
+            outSubs.add(sub);
+            for (int k = i; k <= lastInk; k++) {
+                if (draw.fwInk[k]) {
+                    outPunches.add(new FwPunch(entries[k],
+                            draw.x + draw.fwDx[k] + entries[k].ofsX,
+                            draw.y + entries[k].inkTop));
+                }
+            }
+            i = lastInk + 1;
+        }
+        return baked;
+    }
+
+    private static int utf8Length(int cp) {
+        if (cp < 0x80) return 1;
+        if (cp < 0x800) return 2;
+        if (cp < 0x10000) return 3;
+        return 4;
+    }
+
+    private static int countInk(SurfaceCompositor.ScreenDraw draw) {
+        int count = 0;
+        for (boolean ink : draw.fwInk) {
+            if (ink) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Whether every in-panel nonzero pixel of the builtin-font glyph lands
+     * correct: the composite's 4bpp value must equal the firmware's LUT
+     * output src*top/15 (integer division — a general LUT check, since these
+     * glyphs are anti-aliased).
+     */
+    private static boolean fwGlyphMatchesComposite(byte[] packed, int stride, int width, int height,
+            FwGlyphAtlas.Entry entry, int gx, int gy, int top) {
+        for (int row = 0; row < entry.boxH; row++) {
+            int y = gy + row;
+            if (y < 0 || y >= height) continue;
+            for (int col = 0; col < entry.boxW; col++) {
+                int source = entry.nibbleAt(col, row);
+                if (source == 0) continue;
+                int x = gx + col;
+                if (x < 0 || x >= width) continue;
+                if (nibbleAt(packed, stride, x, y) != (source * top) / 15) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static void punchFw(byte[] packed, int stride, int width, int height, FwPunch fw) {
+        for (int row = 0; row < fw.entry.boxH; row++) {
+            int y = fw.gy + row;
+            if (y < 0 || y >= height) continue;
+            for (int col = 0; col < fw.entry.boxW; col++) {
+                if (fw.entry.nibbleAt(col, row) == 0) continue;
+                punchPixel(packed, stride, width, fw.gx + col, y);
+            }
+        }
     }
 
     private static boolean intersectsAny(List<int[]> rects, int x, int y, int w, int h) {

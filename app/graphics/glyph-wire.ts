@@ -20,12 +20,14 @@
  * only means "no wire savings for this draw".
  */
 import { BdfFont, Glyph } from "./bdffont";
-import { GrayImage, type DeferredDraw, type PlacedImage } from "./image";
+import { GrayImage, type DeferredDraw, type PlacedFwText, type PlacedImage } from "./image";
 
 declare const com: any;
 
-const GLYPH_RECORD_BYTES = 12; // [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]
-const IMAGE_RECORD_BYTES = 9;  // [1][imageId u32][x s16][y s16]
+const GLYPH_RECORD_BYTES = 12;   // [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]
+const IMAGE_RECORD_BYTES = 9;    // [1][imageId u32][x s16][y s16]
+const FWTEXT_HEADER_BYTES = 7;   // [2][x s16][y s16][value u8][count u8]
+const FWTEXT_MEMBER_BYTES = 7;   // [cp u32][dx s16][ink u8]
 
 type FontWireState = {
   fontId: number;
@@ -74,6 +76,51 @@ function representableGlyph(font: BdfFont, glyph: Glyph): boolean {
   return inkTop >= 0 && inkTop + glyph.bbxHeight <= font.lineHeight;
 }
 
+/** Firmware-font codepoints already registered with the Java FwGlyphAtlas. */
+const fwRegistered = new Set<string>();
+
+/**
+ * Whether a firmware-text run is expressible on the wire, registering any
+ * unseen ink members' rasters with the Java FwGlyphAtlas as a side effect.
+ */
+function prepareFwTextRun(placed: PlacedFwText): boolean {
+  if (!inRange16(placed.x) || !inRange16(placed.y)) return false;
+  if (placed.glyphs.length === 0 || placed.glyphs.length > 255) return false;
+  let registration: Array<{ cp: number; data: NonNullable<ReturnType<PlacedFwText["font"]["fwGlyphWireData"]>> }> | null = null;
+  for (const member of placed.glyphs) {
+    if (member.cp < 0 || member.cp > 0x10ffff || !inRange16(member.dx)) return false;
+    if (!member.ink) continue;
+    const key = `${placed.font.atlasTag}:${member.cp}`;
+    if (fwRegistered.has(key)) continue;
+    const data = placed.font.fwGlyphWireData(member.cp);
+    if (!data) return false; // ink without raster data: keep the run baked
+    fwRegistered.add(key);
+    registration ??= [];
+    registration.push({ cp: member.cp, data });
+  }
+  if (registration) {
+    let total = 0;
+    for (const entry of registration) {
+      total += 10 + entry.data.nibbles.length;
+    }
+    const buffer = new ArrayBuffer(total);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+    let offset = 0;
+    for (const entry of registration) {
+      view.setUint32(offset, entry.cp, true);
+      view.setInt16(offset + 4, entry.data.ofsX, true);
+      view.setInt16(offset + 6, entry.data.inkTop, true);
+      view.setUint8(offset + 8, entry.data.boxW);
+      view.setUint8(offset + 9, entry.data.boxH);
+      bytes.set(entry.data.nibbles, offset + 10);
+      offset += 10 + entry.data.nibbles.length;
+    }
+    com.faceclaw.app.FwGlyphAtlas.register(buffer);
+  }
+  return true;
+}
+
 /** Resolve (registering on first sight) the Java image id for a drawImage source. */
 function imageId(placed: PlacedImage): number | null {
   if (!global.isAndroid) return null;
@@ -100,13 +147,16 @@ function inRange16(v: number): boolean {
  * alongside the frame's pixels: little-endian tagged records
  *   [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]   (glyph)
  *   [1][imageId u32][x s16][y s16]                                 (image)
+ *   [2][x s16][y s16][value u8][count u8]                          (fw text run)
+ *      then count x [cp u32][dx s16][ink u8]
  * in draw order. Returns null when nothing is expressible (or off-Android).
  */
 export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer | null {
   if (!global.isAndroid || draws.length === 0) return null;
 
-  // Pass 1: resolve ids, collect unregistered glyph rasters, size the buffer.
+  // Pass 1: resolve ids, register unseen rasters, size the buffer.
   let registration: Map<FontWireState, { font: BdfFont; glyphs: Glyph[] }> | null = null;
+  const fwRunOk = new Map<PlacedFwText, boolean>();
   let bytes = 0;
   for (const placed of draws) {
     if (placed.kind === "glyph") {
@@ -123,9 +173,13 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
         registration.set(state, group);
       }
       group.glyphs.push(placed.glyph);
-    } else {
+    } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
+    } else {
+      const ok = prepareFwTextRun(placed);
+      fwRunOk.set(placed, ok);
+      if (ok) bytes += FWTEXT_HEADER_BYTES + placed.glyphs.length * FWTEXT_MEMBER_BYTES;
     }
   }
   if (registration) {
@@ -137,8 +191,8 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   const out = new DataView(new ArrayBuffer(bytes));
   let offset = 0;
   for (const placed of draws) {
-    if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
     if (placed.kind === "glyph") {
+      if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       const state = fontWireState(placed.font);
       if (!state || !representableGlyph(placed.font, placed.glyph)) continue;
       out.setUint8(offset, 0);
@@ -148,7 +202,8 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       out.setInt16(offset + 9, placed.y, true);
       out.setUint8(offset + 11, placed.value);
       offset += GLYPH_RECORD_BYTES;
-    } else {
+    } else if (placed.kind === "image") {
+      if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       const id = imageId(placed);
       if (id === null) continue;
       out.setUint8(offset, 1);
@@ -156,6 +211,20 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       out.setInt16(offset + 5, placed.x, true);
       out.setInt16(offset + 7, placed.y, true);
       offset += IMAGE_RECORD_BYTES;
+    } else {
+      if (!fwRunOk.get(placed)) continue;
+      out.setUint8(offset, 2);
+      out.setInt16(offset + 1, placed.x, true);
+      out.setInt16(offset + 3, placed.y, true);
+      out.setUint8(offset + 5, placed.value);
+      out.setUint8(offset + 6, placed.glyphs.length);
+      offset += FWTEXT_HEADER_BYTES;
+      for (const member of placed.glyphs) {
+        out.setUint32(offset, member.cp, true);
+        out.setInt16(offset + 4, member.dx, true);
+        out.setUint8(offset + 6, member.ink ? 1 : 0);
+        offset += FWTEXT_MEMBER_BYTES;
+      }
     }
   }
   return out.buffer;

@@ -57,6 +57,8 @@ public final class SurfaceCompositor {
     public static final class ScreenDraw {
         public static final int KIND_GLYPH = 0;
         public static final int KIND_IMAGE = 1;
+        /** A firmware-builtin-font text run (CFW mode 15). */
+        public static final int KIND_FWTEXT = 2;
 
         public final int kind;
         /** Glyph draws only. */
@@ -67,10 +69,17 @@ public final class SurfaceCompositor {
         public final int imageId;
         public final int x;
         public final int y;
-        /** Glyph draws only: 8-bit brightness the glyph was drawn with. */
+        /** Glyph and fw-text draws: 8-bit brightness. */
         public final int value;
+        /** Fw-text runs only: member codepoints, in text order. */
+        public final int[] fwCps;
+        /** Fw-text runs only: member pen offsets relative to x. */
+        public final int[] fwDx;
+        /** Fw-text runs only: whether each member has visible pixels. */
+        public final boolean[] fwInk;
 
-        ScreenDraw(int kind, int fontId, int encoding, int imageId, int x, int y, int value) {
+        ScreenDraw(int kind, int fontId, int encoding, int imageId, int x, int y, int value,
+                   int[] fwCps, int[] fwDx, boolean[] fwInk) {
             this.kind = kind;
             this.fontId = fontId;
             this.encoding = encoding;
@@ -78,14 +87,21 @@ public final class SurfaceCompositor {
             this.x = x;
             this.y = y;
             this.value = value;
+            this.fwCps = fwCps;
+            this.fwDx = fwDx;
+            this.fwInk = fwInk;
         }
 
         static ScreenDraw glyph(int fontId, int encoding, int penX, int lineY, int value) {
-            return new ScreenDraw(KIND_GLYPH, fontId, encoding, 0, penX, lineY, value);
+            return new ScreenDraw(KIND_GLYPH, fontId, encoding, 0, penX, lineY, value, null, null, null);
         }
 
         static ScreenDraw image(int imageId, int x, int y) {
-            return new ScreenDraw(KIND_IMAGE, 0, 0, imageId, x, y, 0);
+            return new ScreenDraw(KIND_IMAGE, 0, 0, imageId, x, y, 0, null, null, null);
+        }
+
+        static ScreenDraw fwText(int x, int y, int value, int[] cps, int[] dx, boolean[] ink) {
+            return new ScreenDraw(KIND_FWTEXT, 0, 0, 0, x, y, value, cps, dx, ink);
         }
     }
 
@@ -314,6 +330,23 @@ public final class SurfaceCompositor {
                 int x = in.getShort();
                 int y = in.getShort();
                 out.add(ScreenDraw.image(imageId, x, y));
+            } else if (kind == ScreenDraw.KIND_FWTEXT && in.remaining() >= 6) {
+                int x = in.getShort();
+                int y = in.getShort();
+                int value = in.get() & 0xff;
+                int count = in.get() & 0xff;
+                if (in.remaining() < count * 7) {
+                    break; // malformed tail: keep what parsed cleanly
+                }
+                int[] cps = new int[count];
+                int[] dx = new int[count];
+                boolean[] ink = new boolean[count];
+                for (int i = 0; i < count; i++) {
+                    cps[i] = in.getInt();
+                    dx[i] = in.getShort();
+                    ink[i] = in.get() != 0;
+                }
+                out.add(ScreenDraw.fwText(x, y, value, cps, dx, ink));
             } else {
                 break; // malformed tail: keep what parsed cleanly
             }
@@ -379,7 +412,8 @@ public final class SurfaceCompositor {
             blendLocked(gray, surface);
             for (ScreenDraw draw : surface.draws) {
                 draws.add(new ScreenDraw(draw.kind, draw.fontId, draw.encoding, draw.imageId,
-                        draw.x + surface.x, draw.y + surface.y, draw.value));
+                        draw.x + surface.x, draw.y + surface.y, draw.value,
+                        draw.fwCps, draw.fwDx, draw.fwInk));
             }
             fingerprint.append('|').append(surface.id)
                     .append('@').append(surface.x).append(',').append(surface.y)

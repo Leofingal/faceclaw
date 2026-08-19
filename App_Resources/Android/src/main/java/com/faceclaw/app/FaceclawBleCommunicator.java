@@ -196,6 +196,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final TextureCacheState textureCache = new TextureCacheState();
     private boolean textureCacheSupported;
     private boolean textureImagesSupported;
+    private boolean fwTextSupported;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -2231,7 +2232,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     deltaBase, packed, width, height, draws, textureCache,
                     nextImageFrameId,
                     connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS,
-                    textureImagesSupported);
+                    textureImagesSupported, fwTextSupported);
             if (tex != null) {
                 nextImageFrameId = tex.nextFid;
                 for (byte[] upload : tex.uploads) {
@@ -2244,6 +2245,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 String texLog = "texture update " + (tex.fullFrame ? "full" : ("rects=" + tex.rectCount))
                         + " glyphs=" + tex.drawnGlyphs + " runs=" + tex.runCount
                         + " images=" + tex.drawnImages
+                        + " fw=" + tex.fwGlyphs + "/" + tex.fwRuns
                         + " baked=" + tex.bakedCandidates
                         + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
                         + " payload=" + tex.payload.length + "B";
@@ -2445,6 +2447,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
                         && hasCapability(firmwareInfo.capabilities, "texstr14");
                 textureImagesSupported = hasCapability(firmwareInfo.capabilities, "teximg13");
+                fwTextSupported = hasCapability(firmwareInfo.capabilities, "font15");
                 emitFirmwareInfo(firmwareInfo);
             }
         };

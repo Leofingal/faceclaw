@@ -139,6 +139,11 @@ export function compositePage(page: EvenHubPage | null, size: { width: number; h
   for (const container of paintOrder(page.containers)) {
     switch (container.kind) {
       case "image":
+        // Text painted so far is deferred draws (firmware-text runs), which
+        // would otherwise render above this container's raster. Stock puts a
+        // later image container OVER earlier text, so bake the pending draws
+        // first; text painted after this container stays deferred (and above).
+        image.bakeDeferredDrawsInPlace();
         paintImageContainer(image, container);
         break;
       case "text":

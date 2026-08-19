@@ -50,13 +50,62 @@ export type PlacedImage = {
   y: number;
 };
 
+/** One member of a firmware-font text run: codepoint at run.x + dx; ink =
+ * whether it has visible pixels (spaces are inkless connectors kept for the
+ * firmware's own advance/kerning continuity). */
+export type PlacedFwTextGlyph = {
+  cp: number;
+  dx: number;
+  ink: boolean;
+};
+
+/**
+ * The provider behind firmware-font text runs (implemented by EvenHubFont).
+ * Structural interface so image.ts needs no import: the font both bakes runs
+ * phone-side (with firmware-exact pixel math) and serves per-glyph raster
+ * data for the Java-side eligibility checks.
+ */
+export interface FwTextFont {
+  /** Stable tag for fingerprints/registration (one builtin font today). */
+  readonly atlasTag: number;
+  bakeFwTextRun(target: GrayImage, run: PlacedFwText, dx: number, dy: number): void;
+  /** Wire-registration raster for a run member, or null when unavailable. */
+  fwGlyphWireData(cp: number): {
+    ofsX: number;
+    /** First ink row relative to the run's line-top y. */
+    inkTop: number;
+    boxW: number;
+    boxH: number;
+    /** 4bpp rows, stride ceil(boxW/2), high nibble = left pixel. */
+    nibbles: Uint8Array;
+  } | null;
+}
+
+/**
+ * One deferred firmware-font text run (CFW mode 15): a maximal stretch of
+ * text that EvenHubFont laid out with consecutive pretext advances, drawn by
+ * the glasses' builtin 20px font chain. Members' dx are relative to x so
+ * translation only touches x/y. Runs must only be built over glyphs whose
+ * on-glasses rendering the phone predicts exactly (the font enforces this).
+ */
+export type PlacedFwText = {
+  kind: "fwtext";
+  font: FwTextFont;
+  /** Pen x of the first member; the wire draw starts exactly here. */
+  x: number;
+  /** Line top y (the mode-15 y argument). */
+  y: number;
+  value: number;
+  glyphs: readonly PlacedFwTextGlyph[];
+};
+
 /**
  * A retained draw, always rendered on top of the raster pixels regardless of
  * draw order (deferred draws keep their order among themselves). An overlay
  * that must cover deferred draws below it needs its own plane (see plane.ts)
  * or must suppress the covered draws.
  */
-export type DeferredDraw = PlacedGlyph | PlacedImage;
+export type DeferredDraw = PlacedGlyph | PlacedImage | PlacedFwText;
 
 export class GrayImage {
   readonly width: number;
@@ -321,11 +370,19 @@ export class GrayImage {
         hash = mixInt(hash, placed.font.fingerprintId);
         hash = mixInt(hash, placed.glyph.encoding);
         hash = mixInt(hash, placed.value);
-      } else {
+      } else if (placed.kind === "image") {
         hash = mixInt(hash, 0x1c0e5);
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.contentHash32());
+      } else {
+        hash = mixInt(hash, 0xf17e);
+        hash = mixInt(hash, placed.font.atlasTag);
+        hash = mixInt(hash, placed.value);
+        for (const member of placed.glyphs) {
+          hash = mixInt(hash, member.cp);
+          hash = mixInt(hash, member.dx);
+        }
       }
       hash = mixInt(hash, placed.x);
       hash = mixInt(hash, placed.y);
@@ -374,6 +431,41 @@ export class GrayImage {
   }
 
   /**
+   * Record a firmware-font text run (see PlacedFwText). Called by
+   * EvenHubFont, which owns run construction; the members array must be
+   * immutable from here on.
+   */
+  drawFwText(
+    font: FwTextFont,
+    x: number,
+    y: number,
+    value: number,
+    glyphs: readonly PlacedFwTextGlyph[],
+  ): void {
+    if (glyphs.length === 0) return;
+    this.drawList.push({ kind: "fwtext", font, x, y, value: clampByte(value), glyphs });
+  }
+
+  /**
+   * Bake this image's deferred draws into its own pixels and clear the list.
+   * Used where later raster must be able to cover earlier draws within the
+   * same image (e.g. the EvenHub compositor's image-over-text z-order).
+   */
+  bakeDeferredDrawsInPlace(): void {
+    if (!this.drawList.length) return;
+    const draws = this.drawList.splice(0, this.drawList.length);
+    for (const placed of draws) {
+      if (placed.kind === "glyph") {
+        rasterizeGlyph(this, placed.font, placed.glyph, placed.x, placed.y, placed.value);
+      } else if (placed.kind === "image") {
+        this.bitBlt(placed.source, placed.x, placed.y, { transparentZero: true });
+      } else {
+        placed.font.bakeFwTextRun(this, placed, 0, 0);
+      }
+    }
+  }
+
+  /**
    * This image with its deferred draws rasterized into the pixel buffer.
    * Returns this image unchanged when there are none, otherwise a baked copy
    * with an empty draw list.
@@ -391,8 +483,10 @@ export class GrayImage {
     for (const placed of this.drawList) {
       if (placed.kind === "glyph") {
         rasterizeGlyph(target, placed.font, placed.glyph, placed.x + dx, placed.y + dy, placed.value);
-      } else {
+      } else if (placed.kind === "image") {
         target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
+      } else {
+        placed.font.bakeFwTextRun(target, placed, dx, dy);
       }
     }
   }

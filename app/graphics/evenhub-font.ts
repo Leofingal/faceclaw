@@ -21,7 +21,7 @@ import { File, knownFolders } from "@nativescript/core";
 import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
 import { toUint8Array } from "../util/array-util";
-import { GrayImage } from "./image";
+import { GrayImage, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 
 declare const com: any;
 
@@ -61,7 +61,35 @@ function base64Decode(text: string): Uint8Array {
   return out.subarray(0, outIndex);
 }
 
-export class EvenHubFont {
+/**
+ * Codepoint ranges whose glyphs the font asset merged from the flash CJK
+ * font with a baseline-shifted ofsY (see scripts/build-evenhub-font.mjs).
+ * The shift keeps the phone-side composite right, but the firmware's mode-15
+ * draw uses the root font's baseline with the glyph's TRUE ofsY, so the two
+ * may disagree by the shift — keep these baked until the fallback placement
+ * is hardware-verified. Mirrors the build script's SYMBOL_RANGES.
+ */
+const MODE15_UNCERTAIN_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x2000, 0x206f], [0x2100, 0x214f], [0x2190, 0x21ff], [0x2200, 0x22ff],
+  [0x2500, 0x257f], [0x2580, 0x259f], [0x25a0, 0x25ff], [0x2600, 0x26ff],
+  [0x2700, 0x27bf], [0x3000, 0x303f], [0xff00, 0xffef],
+];
+
+function inMode15UncertainRange(cp: number): boolean {
+  for (const [start, end] of MODE15_UNCERTAIN_RANGES) {
+    if (cp >= start && cp <= end) return true;
+  }
+  return false;
+}
+
+/** The 4bpp level an 8-bit value packs to (BmpUtil's GRAY_TO_NIBBLE). */
+function quantNibble(value: number): number {
+  return value <= 0 ? 0 : Math.min(15, (value + 8) >> 4);
+}
+
+export class EvenHubFont implements FwTextFont {
+  /** One builtin firmware font today; see FwTextFont. */
+  readonly atlasTag = 1;
   readonly lineHeight: number;
   readonly baseline: number;
   private readonly glyphs: Map<number, GlyphRecord>;
@@ -195,22 +223,110 @@ export class EvenHubFont {
     return lines;
   }
 
-  /** Draw one line of text with its top-left at (x, y). Missing glyphs are skipped. */
+  /**
+   * Draw one line of text with its top-left at (x, y). Missing glyphs are
+   * skipped.
+   *
+   * Glyphs the firmware's mode-15 builtin-font draw renders identically to
+   * our raster (native-table entries outside MODE15_UNCERTAIN_RANGES) are
+   * recorded as deferred firmware-text runs: maximal stretches laid out with
+   * consecutive pretext advances, spaces included as inkless connectors so
+   * the firmware's own advance/kerning walk stays in lockstep. Anything else
+   * (CJK fallback, shifted symbols, unknown codepoints) rasters immediately
+   * and breaks the run — a break means the next run restarts at an explicit
+   * pen x, so no cursor prediction ever spans an uncertain glyph.
+   */
   drawText(image: GrayImage, x: number, y: number, text: string, value = 255): void {
     const cps = Array.from(text).map((c) => c.codePointAt(0)!);
     const baselineY = y + this.baseline;
     let penX = x;
+    let run: PlacedFwTextGlyph[] = [];
+    let runX = 0;
+    const flushRun = () => {
+      if (run.length) {
+        this.emitRun(image, runX, y, value, run);
+        run = [];
+      }
+    };
     for (let i = 0; i < cps.length; i++) {
       const cp = cps[i]!;
       const glyph = this.glyphs.get(cp);
-      if (glyph) {
+      if (glyph && !inMode15UncertainRange(cp)) {
+        if (run.length === 0) runX = penX;
+        run.push({
+          cp,
+          dx: penX - runX,
+          ink: glyph[0] > 0 && glyph[1] > 0 && glyph[5] > 0,
+        });
+      } else if (glyph) {
+        flushRun();
         this.drawGlyph(image, glyph, this.bitmap, penX, baselineY, value);
       } else {
+        flushRun();
         const cjk = this.getCjkGlyph(cp);
         if (cjk) this.drawGlyph(image, cjk.record, cjk.bitmap, penX, y + this.cjkBaseline, value);
       }
       penX += this.advanceOf(cp, cps[i + 1] ?? 0);
     }
+    flushRun();
+  }
+
+  /** Record one run, trimmed of inkless leading/trailing connectors. */
+  private emitRun(
+    image: GrayImage,
+    runX: number,
+    lineY: number,
+    value: number,
+    members: PlacedFwTextGlyph[],
+  ): void {
+    let first = 0;
+    let last = members.length - 1;
+    while (first <= last && !members[first]!.ink) first++;
+    while (last >= first && !members[last]!.ink) last--;
+    if (first > last) return; // nothing visible
+    const startX = runX + members[first]!.dx;
+    const trimmed = members.slice(first, last + 1).map((member) =>
+      first === 0 ? member : { ...member, dx: member.dx - members[first]!.dx },
+    );
+    image.drawFwText(this, startX, lineY, value, trimmed);
+  }
+
+  /** FwTextFont: bake a recorded run with firmware-exact pixel math. */
+  bakeFwTextRun(target: GrayImage, run: PlacedFwText, dx: number, dy: number): void {
+    const baselineY = run.y + dy + this.baseline;
+    for (const member of run.glyphs) {
+      if (!member.ink) continue;
+      const glyph = this.glyphs.get(member.cp);
+      if (glyph) this.drawGlyph(target, glyph, this.bitmap, run.x + member.dx + dx, baselineY, run.value);
+    }
+  }
+
+  /** FwTextFont: raster registration data for the Java-side planner. */
+  fwGlyphWireData(cp: number): {
+    ofsX: number;
+    inkTop: number;
+    boxW: number;
+    boxH: number;
+    nibbles: Uint8Array;
+  } | null {
+    const glyph = this.glyphs.get(cp);
+    if (!glyph) return null;
+    const [boxW, boxH, ofsX, ofsY, off, len] = glyph;
+    if (boxW <= 0 || boxH <= 0 || len <= 0 || boxW > 255 || boxH > 255) return null;
+    if (ofsX < -32768 || ofsX > 32767) return null;
+    const inkTop = this.baseline - boxH - ofsY;
+    if (inkTop < -32768 || inkTop > 32767) return null;
+    // Repack from the source stride (floor(boxW/2)+1, pad nibble at odd
+    // widths) to the wire stride ceil(boxW/2).
+    const srcStride = Math.floor(boxW / 2) + 1;
+    const outStride = (boxW + 1) >> 1;
+    const nibbles = new Uint8Array(outStride * boxH);
+    for (let row = 0; row < boxH; row++) {
+      for (let byte = 0; byte < outStride; byte++) {
+        nibbles[row * outStride + byte] = this.bitmap[off + row * srcStride + byte] ?? 0;
+      }
+    }
+    return { ofsX, inkTop, boxW, boxH, nibbles };
   }
 
   /** Draw wrapped text within a box; returns the number of lines drawn. */
@@ -257,13 +373,19 @@ export class EvenHubFont {
     const stride = Math.floor(boxW / 2) + 1;
     const left = penX + ofsX;
     const top = baselineY - boxH - ofsY;
+    // Firmware-exact shading: the CFW draws through a LUT mapping source
+    // nibble n to n*top/15 (integer), skipping only n == 0. Writing 16*level
+    // makes the composite quantize (min(15, (v+8)>>4)) back to exactly that
+    // level, so the texture-cache planner's pixel checks — and the shadow
+    // after an on-glasses mode-15 draw — match this bake bit-for-bit.
+    const top4 = quantNibble(value);
     for (let row = 0; row < boxH; row++) {
       const rowStart = off + row * stride;
       for (let col = 0; col < boxW; col++) {
         const byte = bitmap[rowStart + (col >> 1)] ?? 0;
         const nibble = col % 2 === 0 ? byte >> 4 : byte & 0x0f;
         if (nibble === 0) continue;
-        image.setPixel(left + col, top + row, Math.round((nibble / 15) * value));
+        image.setPixel(left + col, top + row, Math.floor((nibble * top4) / 15) * 16);
       }
     }
   }
