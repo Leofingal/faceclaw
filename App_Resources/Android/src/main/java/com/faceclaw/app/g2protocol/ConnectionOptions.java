@@ -59,4 +59,9 @@ public class ConnectionOptions {
     // small (one tight rect); only attempt multi-rect above it or when the box
     // spans multiple horizontal clusters.
     public static final int MULTI_RECT_MIN_PAYLOAD = 900;
+
+    // Ship text as on-glasses cached-glyph draws (CFW modes 12/14) instead of
+    // pixels, punching glyph ink out of the baked deltas (see TexturePlanner).
+    // Also gated at runtime on the firmware advertising texcache12 + texstr14.
+    final boolean TEXTURE_CACHE_FRAMES = true;
 }

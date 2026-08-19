@@ -7,7 +7,8 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { flattenPlanes, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import * as frameTimings from "../../native/frame-timings";
@@ -593,7 +594,7 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
-    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = image.to8bppBuffer();
     communicator.submitSurfaceFrame(
       buffer.buffer,
@@ -605,6 +606,7 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      prepareFrameDraws(draws),
     );
     win.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

@@ -20,6 +20,13 @@ export class BdfFont {
    * bitmap). Only meaningful within one JS context; never persist it.
    */
   readonly fingerprintId = nextFontFingerprintId++;
+  /**
+   * Stable cross-context identity for the on-glasses glyph atlas (the
+   * embedded font name). Worker threads and the main thread must agree on
+   * it, unlike fingerprintId. Fonts without one (ad-hoc parses) simply never
+   * participate in texture caching — their glyphs stay baked.
+   */
+  readonly atlasKey: string | null;
   readonly ascent: number;
   readonly descent: number;
   readonly lineHeight: number;
@@ -40,6 +47,7 @@ export class BdfFont {
     defaultChar: number;
     glyphs: Map<number, Glyph>;
     fallback?: BdfFont;
+    atlasKey?: string;
   }) {
     this.ascent = opts.ascent;
     this.descent = opts.descent;
@@ -47,9 +55,10 @@ export class BdfFont {
     this.defaultChar = opts.defaultChar;
     this.glyphs = opts.glyphs;
     this.fallback = opts.fallback;
+    this.atlasKey = opts.atlasKey ?? null;
   }
 
-  static parse(source: string, opts: { fallback?: BdfFont; minEncoding?: number } = {}): BdfFont {
+  static parse(source: string, opts: { fallback?: BdfFont; minEncoding?: number; atlasKey?: string } = {}): BdfFont {
     const minEncoding = opts.minEncoding ?? 0;
     const lines = source.replace(/\r/g, "").split("\n");
     let ascent = 10;
@@ -128,7 +137,7 @@ export class BdfFont {
       }
     }
 
-    return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback });
+    return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback, atlasKey: opts.atlasKey });
   }
 
   /** Exact lookup for a single code point, with no default-char substitution. */
@@ -192,6 +201,7 @@ function loadEmbeddedFont(name: EmbeddedFontName): BdfFont {
   const font = BdfFont.parse(text, {
     fallback: fallbackName ? loadEmbeddedFont(fallbackName) : undefined,
     minEncoding: fontMinEncoding[name],
+    atlasKey: name,
   });
   cachedEmbeddedFonts.set(name, font);
   return font;

@@ -17,7 +17,7 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
     return null;
   }
 
-  const baked = image.withGlyphsBaked();
+  const baked = image.withDrawsBaked();
   const bitmap = com.faceclaw.app.PreviewBitmapUtil.fromGray(
     baked.pixels.buffer,
     baked.width,

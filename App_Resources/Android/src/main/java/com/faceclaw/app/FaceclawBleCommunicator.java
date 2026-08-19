@@ -178,12 +178,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int desiredHeight;
     private int desiredPaintMs;
     private int desiredFrameId;
+    // Screen-space deferred draws (glyphs + images) whose pixels are baked
+    // into desiredPacked; the texture-cache planner may replay them as
+    // on-glasses cached draws.
+    private SurfaceCompositor.ScreenDraw[] desiredDraws = new SurfaceCompositor.ScreenDraw[0];
     // Highest compositor sequence stored as the desired frame; composites that
     // lost a store race to a newer one are discarded (their content is already
     // included in the newer composite).
     private long lastStoredCompositeSeq;
 
     private final SurfaceCompositor compositor = new SurfaceCompositor();
+
+    // Phone-side model of the CFW's 64 KiB texture cache (modes 12/13/14).
+    // Reset whenever the image pipeline / EvenHub session is torn down: the
+    // firmware frees the cache with the fb lease, and after any resync the
+    // cheap safe assumption is an empty cache (glyphs re-upload lazily).
+    private final TextureCacheState textureCache = new TextureCacheState();
+    private boolean textureCacheSupported;
+    private boolean textureImagesSupported;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -685,10 +697,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             int paintMs,
             int frameId
     ) {
+        submitSurfaceFrame(pixels8bpp, surfaceId, rectX, rectY, rectWidth, rectHeight,
+                contentFingerprint, paintMs, frameId, null);
+    }
+
+    /**
+     * As above, with the frame's glyph draws (see SurfaceCompositor's glyph
+     * overload for the buffer format): the surface's full text content as
+     * structured draws, letting the texture-cache planner ship glyphs as
+     * on-glasses cached draws instead of pixels. Null when the submitter has
+     * no glyph metadata; the pixels alone remain fully correct.
+     */
+    public void submitSurfaceFrame(
+            java.nio.ByteBuffer pixels8bpp,
+            String surfaceId,
+            int rectX,
+            int rectY,
+            int rectWidth,
+            int rectHeight,
+            String contentFingerprint,
+            int paintMs,
+            int frameId,
+            java.nio.ByteBuffer glyphs
+    ) {
         Log.i(TAG, "Received an updated frame for surface " + surfaceId);
         FrameTimings.getInstance().spanStart(frameId, "composite");
         SurfaceCompositor.Composite composite = compositor.applyAndComposite(
-                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint);
+                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
         FrameTimings.getInstance().spanEnd(frameId, "composite");
         // Pack the composited 8bpp buffer down to the headerless 4bpp frame
         // format the wire planners consume; BMP framing is added later only on
@@ -717,6 +752,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 desiredFingerprint = composite.fingerprint;
                 desiredPaintMs = paintMs;
                 desiredFrameId = frameId;
+                desiredDraws = composite.draws;
             }
         }
         if (stale) {
@@ -868,6 +904,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * reconnecting Bluetooth here would defeat the power-saving mode.
      */
     public boolean suspendEvenHubSession() {
+        // Ending the plugin task releases the fb lease, which frees the
+        // on-glasses texture cache; forget it phone-side either way (a lost
+        // ack may still have taken effect).
+        synchronized (lock) {
+            textureCache.reset();
+        }
         if (sendShutdownInternal(0, false)) {
             return true;
         }
@@ -2155,12 +2197,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int height;
         int paintMs;
         int frameId;
+        SurfaceCompositor.ScreenDraw[] draws;
         synchronized (desiredTilesLock) {
             packed = desiredPacked;
             width = desiredWidth;
             height = desiredHeight;
             paintMs = desiredPaintMs;
             frameId = desiredFrameId;
+            draws = desiredDraws;
             desiredFrameId = 0;
         }
         if (packed == null) {
@@ -2171,6 +2215,43 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             lastEnqueuedFingerprint = fingerprint;
             finishFrame(frameId, "discarded: image content identical to displayed");
             return;
+        }
+
+        // Texture-cache path: ship text as cached-glyph draws, punching their
+        // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
+        // image message on the ordered transport. Falls through to the plain
+        // paths whenever the planner has nothing to draw.
+        if (textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
+                && draws != null && draws.length > 0 && packed.length > 0) {
+            byte[] deltaBase = (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
+                    && lastEnqueuedWidth == width && lastEnqueuedHeight == height)
+                    ? lastEnqueuedPacked : null;
+            FrameTimings.getInstance().spanStart(frameId, "texture-plan");
+            TexturePlanner.Result tex = TexturePlanner.plan(
+                    deltaBase, packed, width, height, draws, textureCache,
+                    nextImageFrameId,
+                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS,
+                    textureImagesSupported);
+            if (tex != null) {
+                nextImageFrameId = tex.nextFid;
+                for (byte[] upload : tex.uploads) {
+                    enqueueTextureUploadLocked(upload);
+                }
+                BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
+                        0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), tex.payload);
+                plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
+                FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
+                String texLog = "texture update " + (tex.fullFrame ? "full" : ("rects=" + tex.rectCount))
+                        + " glyphs=" + tex.drawnGlyphs + " runs=" + tex.runCount
+                        + " images=" + tex.drawnImages
+                        + " baked=" + tex.bakedCandidates
+                        + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
+                        + " payload=" + tex.payload.length + "B";
+                FrameTimings.getInstance().log(frameId, texLog);
+                finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
+                return;
+            }
+            FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
         }
 
         FrameTimings.getInstance().spanStart(frameId, "compress-and-plan");
@@ -2221,7 +2302,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (incrementalLog != null) {
             FrameTimings.getInstance().log(frameId, incrementalLog);
         }
+        finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
+    }
 
+    /** Shared tail of enqueueDesiredImageLocked: enqueue fragments, advance the delta base, log. */
+    private void finishEnqueueDesiredImageLocked(
+            BleImageOptimizer.TileImagePlan plan, String fingerprint, int paintMs, int frameId) {
         int updateId = nextImageUpdateId++;
         int messageCount = plan.fragments.size();
         imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1, frameId));
@@ -2242,6 +2328,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " messages=" + messageCount + " payload=" + plan.payload.length + "B");
         logLine("queue image update#" + updateId + " fingerprint=" + fingerprint
                 + " messages=" + messageCount);
+    }
+
+    /**
+     * Enqueue one mode-12 texture-cache upload ahead of the image message that
+     * references its glyphs (the transport is FIFO, so no ack round trip is
+     * needed before use). A timeout means the on-glasses cache state is
+     * unknown; forget everything phone-side (glyphs re-upload lazily) and let
+     * the accompanying image update's own timeout drive the frame resync.
+     */
+    private void enqueueTextureUploadLocked(byte[] payload) {
+        OutboundMessage message = messageBuilder.imagePayload(
+            "texcache",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            "texture upload " + payload.length + "B",
+            connectionOptions.sendImagesToLeft);
+        message.onTimeout = () -> {
+            textureCache.reset();
+            logLine("texture upload ack timeout; texture cache state reset");
+        };
+        pendingMessages.addLast(message);
+        logLine("queue " + message.label);
     }
 
     private void enqueueImageFragmentLocked(
@@ -2333,6 +2442,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
                 cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
+                textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
+                        && hasCapability(firmwareInfo.capabilities, "texstr14");
+                textureImagesSupported = hasCapability(firmwareInfo.capabilities, "teximg13");
                 emitFirmwareInfo(firmwareInfo);
             }
         };
@@ -2621,6 +2733,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // image is a full keyframe rather than a delta onto a stale base.
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
+        // Queued texture uploads (if any) were dropped with the rest, and the
+        // session churn behind a full clear may have freed the on-glasses
+        // cache; forget it phone-side so glyphs re-upload lazily.
+        textureCache.reset();
     }
 
     /**
@@ -2651,6 +2767,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         clearInFlightMessagesLocked(reason);
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
+        textureCache.reset();
     }
 
     /** Any image update whose fragments are still queued (not yet sent). */

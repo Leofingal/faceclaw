@@ -16,7 +16,8 @@ import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboa
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { flattenPlanes, planesFingerprint, type Plane } from "../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
+import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { getDefaultMediumFont } from "../graphics/bdffont";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
@@ -1562,7 +1563,7 @@ class DashboardController {
       return;
     }
     const fingerprint = planesFingerprint(planes);
-    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = image.to8bppBuffer();
     await communicator.submitSurfaceFrame(
       surfaceId,
@@ -1571,6 +1572,7 @@ class DashboardController {
       fingerprint,
       paintMs,
       frameId,
+      prepareFrameDraws(draws),
     );
   }
 
@@ -1630,7 +1632,7 @@ class DashboardController {
       return;
     }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
-    const image = frameTimings.span(frameId, "flatten", () => flattenPlanes(planes));
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     await this.communicator.submitSurfaceFrame(
       SHELL_SURFACE_ID,
@@ -1639,6 +1641,7 @@ class DashboardController {
       fingerprint,
       paintMs,
       frameId,
+      prepareFrameDraws(draws),
     );
     await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
     this.updateCompositePreview();

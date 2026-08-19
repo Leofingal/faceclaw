@@ -95,6 +95,30 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
   };
 }
 
+/**
+ * Inverted (black-on-white) variant of an icon raster, for the focused tab:
+ * coverage becomes darkness, with full coverage mapping to SHELL_OPAQUE_BLACK
+ * (1) rather than 0, since 0 is the surface's transparent color key. Memoized
+ * per source object so the variant is a stable image the texture cache can
+ * key on (mode-13's inverse LUT can't reproduce this mapping exactly, so it
+ * is simply a separate cached image).
+ */
+const invertedIconCache = new WeakMap<GrayImage, GrayImage>();
+function invertedIcon(icon: GrayImage): GrayImage {
+  let inverted = invertedIconCache.get(icon);
+  if (!inverted) {
+    inverted = new GrayImage(icon.width, icon.height, 0);
+    for (let i = 0; i < icon.pixels.length; i++) {
+      const coverage = icon.pixels[i]!;
+      if (coverage > 0) {
+        inverted.pixels[i] = Math.max(SHELL_OPAQUE_BLACK, 255 - coverage);
+      }
+    }
+    invertedIconCache.set(icon, inverted);
+  }
+  return inverted;
+}
+
 /** Window icon rendered from an SVG (Lucide), rendered once per size and cached. */
 export function makeSvgWindowIcon(name: IconName, glyph?: string): ShellChromeWindow["drawIcon"] {
   return (image, x, y, size, inverted) => {
@@ -102,21 +126,7 @@ export function makeSvgWindowIcon(name: IconName, glyph?: string): ShellChromeWi
     if (!icon) return;
     const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
     const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
-    if (!inverted) {
-      image.bitBlt(icon, dx, dy, { transparentZero: true });
-      return;
-    }
-    // Invert onto a white background: coverage becomes darkness. Full coverage
-    // maps to SHELL_OPAQUE_BLACK (1) rather than 0, since 0 is the surface's
-    // transparent color key.
-    for (let row = 0; row < icon.height; row++) {
-      for (let col = 0; col < icon.width; col++) {
-        const coverage = icon.pixels[row * icon.width + col] ?? 0;
-        if (coverage > 0) {
-          image.setPixel(dx + col, dy + row, Math.max(SHELL_OPAQUE_BLACK, 255 - coverage));
-        }
-      }
-    }
+    image.drawImage(inverted ? invertedIcon(icon) : icon, dx, dy);
   };
 }
 
@@ -138,18 +148,7 @@ export function makeImageWindowIcon(
     }
     const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
     const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
-    if (!inverted) {
-      image.bitBlt(icon, dx, dy, { transparentZero: true });
-      return;
-    }
-    for (let row = 0; row < icon.height; row++) {
-      for (let col = 0; col < icon.width; col++) {
-        const coverage = icon.pixels[row * icon.width + col] ?? 0;
-        if (coverage > 0) {
-          image.setPixel(dx + col, dy + row, Math.max(SHELL_OPAQUE_BLACK, 255 - coverage));
-        }
-      }
-    }
+    image.drawImage(inverted ? invertedIcon(icon) : icon, dx, dy);
   };
 }
 
@@ -243,8 +242,10 @@ export class ShellChromeLayer implements Layer {
       }
       window.drawIcon(image, x, y, iconSize, focused);
       if (window.attention) {
-        // Black dot on the white focused tab, white dot otherwise.
-        image.fillRoundedRect(x + iconSize - 7, y - 1, 8, 8, focused ? SHELL_OPAQUE_BLACK : 255, 4);
+        // Black dot on the white focused tab, white dot otherwise. A deferred
+        // image (not a raster fill) so it renders above the icon, which is
+        // itself a deferred draw.
+        image.drawImage(attentionDot(focused ? SHELL_OPAQUE_BLACK : 255), x + iconSize - 7, y - 1);
       }
     }
 
@@ -287,9 +288,7 @@ export class ShellChromeLayer implements Layer {
       }
       const iconY = barTop + (((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0);
       for (let index = 0; index < icons.length; index++) {
-        image.bitBlt(icons[index]!, iconsX + index * (NOTIFICATION_ICON_SIZE + 4), iconY, {
-          transparentZero: true,
-        });
+        image.drawImage(icons[index]!, iconsX + index * (NOTIFICATION_ICON_SIZE + 4), iconY);
       }
     }
   }
@@ -354,11 +353,21 @@ function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: numb
   for (let index = trayIcons.length - 1; index >= 0; index--) {
     const icon = trayIcons[index]!;
     x -= icon.width + 10;
-    image.bitBlt(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
-      transparentZero: true,
-    });
+    image.drawImage(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0));
   }
   return x;
+}
+
+/** The sidebar attention marker, cached per fill value (deferred-image source). */
+const attentionDots = new Map<number, GrayImage>();
+function attentionDot(value: number): GrayImage {
+  let dot = attentionDots.get(value);
+  if (!dot) {
+    dot = new GrayImage(8, 8, 0);
+    dot.fillRoundedRect(0, 0, 8, 8, value, 4);
+    attentionDots.set(value, dot);
+  }
+  return dot;
 }
 
 const TAB_RADIUS = 6;

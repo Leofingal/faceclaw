@@ -1,4 +1,4 @@
-import { GrayImage } from "./image";
+import { GrayImage, type DeferredDraw } from "./image";
 
 /**
  * The unit apps (and the shell) submit to the compositor: instead of one
@@ -49,7 +49,7 @@ export function flattenPlanes(
 
   const only = planes.length === 1 ? planes[0]! : undefined;
   if (only && only.x === 0 && only.y === 0 && only.image.width === width && only.image.height === height) {
-    return only.image.withGlyphsBaked();
+    return only.image.withDrawsBaked();
   }
 
   const target = new GrayImage(width, height, 0);
@@ -57,9 +57,35 @@ export function flattenPlanes(
     // Baking first (rather than bitBlt's glyph carry-over) is what enforces
     // the plane ordering: the next plane's raster must be able to cover this
     // plane's glyphs.
-    target.bitBlt(plane.image.withGlyphsBaked(), plane.x, plane.y, { transparentZero: true });
+    target.bitBlt(plane.image.withDrawsBaked(), plane.x, plane.y, { transparentZero: true });
   }
   return target;
+}
+
+/**
+ * Flatten planes and also return the frame's deferred draws (glyphs and
+ * images), translated into frame coordinates and in bake order (plane order,
+ * then each image's draw order). The flattened image has every draw baked in,
+ * exactly as flattenPlanes produces; the list preserves the draws' identity
+ * so the texture-cache pipeline can replay them as on-glasses cached draws
+ * (see graphics/glyph-wire.ts).
+ */
+export function flattenPlanesWithDraws(
+  planes: readonly Plane[],
+  size?: { width: number; height: number },
+): { image: GrayImage; draws: DeferredDraw[] } {
+  const image = flattenPlanes(planes, size);
+  const draws: DeferredDraw[] = [];
+  for (const plane of planes) {
+    for (const placed of plane.image.draws) {
+      draws.push(
+        plane.x === 0 && plane.y === 0
+          ? placed
+          : { ...placed, x: placed.x + plane.x, y: placed.y + plane.y },
+      );
+    }
+  }
+  return { image, draws };
 }
 
 /**

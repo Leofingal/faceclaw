@@ -287,11 +287,17 @@ class LauncherGridLayer implements Layer {
         : renderIcon("folder-filled", ICON_SIZE);
       if (icon) {
         // Clip the icon at the grid bottom so a peeking row shows only its top.
+        // A fully visible icon goes through the deferred-image path (texture
+        // cacheable); the clipped peeking row falls back to a raster blit,
+        // since cached draws are whole-image only.
         const clipHeight = Math.min(icon.height, Math.floor(gridBottom - blockTop));
-        image.bitBlt(icon, Math.round(centerX - icon.width / 2), Math.round(blockTop), {
-          height: clipHeight,
-          transparentZero: true,
-        });
+        const iconX = Math.round(centerX - icon.width / 2);
+        const iconY = Math.round(blockTop);
+        if (clipHeight >= icon.height) {
+          image.drawImage(icon, iconX, iconY);
+        } else {
+          image.bitBlt(icon, iconX, iconY, { height: clipHeight, transparentZero: true });
+        }
       }
       const labelY = Math.round(blockTop + ICON_SIZE + LABEL_GAP);
       if (labelY + font.lineHeight <= gridBottom) {

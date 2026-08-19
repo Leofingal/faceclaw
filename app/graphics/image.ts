@@ -24,11 +24,12 @@ export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayIm
 /**
  * One deferred glyph draw. Text drawn through drawGlyph/drawText/
  * drawTextWrapped is retained here rather than baked into the pixel buffer,
- * so the compositor can later ship glyphs as display-list references instead
- * of pixels. (x, y) and value are the drawGlyph arguments (y is the top of
+ * so the compositor can ship glyphs as on-glasses cached draws instead of
+ * pixels. (x, y) and value are the drawGlyph arguments (y is the top of
  * the line; the baseline is y + font.ascent).
  */
 export type PlacedGlyph = {
+  kind: "glyph";
   font: BdfFont;
   glyph: Glyph;
   x: number;
@@ -36,16 +37,32 @@ export type PlacedGlyph = {
   value: number;
 };
 
+/**
+ * One deferred image draw (drawImage): a color-key blit of `source` at
+ * (x, y), retained so icons can ship as on-glasses cached-image draws.
+ * `source` is flat (no deferred draws of its own) and treated as immutable
+ * from the moment it is placed.
+ */
+export type PlacedImage = {
+  kind: "image";
+  source: GrayImage;
+  x: number;
+  y: number;
+};
+
+/**
+ * A retained draw, always rendered on top of the raster pixels regardless of
+ * draw order (deferred draws keep their order among themselves). An overlay
+ * that must cover deferred draws below it needs its own plane (see plane.ts)
+ * or must suppress the covered draws.
+ */
+export type DeferredDraw = PlacedGlyph | PlacedImage;
+
 export class GrayImage {
   readonly width: number;
   readonly height: number;
   readonly pixels: Uint8Array;
-  /**
-   * Deferred glyph draws, always rendered on top of the raster pixels
-   * regardless of draw order. An overlay that must cover text below it needs
-   * its own plane (see plane.ts) or must suppress the covered draws.
-   */
-  private readonly glyphList: PlacedGlyph[] = [];
+  private readonly drawList: DeferredDraw[] = [];
 
   constructor(width: number, height: number, fill = 0) {
     this.width = width;
@@ -54,24 +71,24 @@ export class GrayImage {
     this.clear(fill);
   }
 
-  get glyphs(): readonly PlacedGlyph[] {
-    return this.glyphList;
+  get draws(): readonly DeferredDraw[] {
+    return this.drawList;
   }
 
-  hasGlyphs(): boolean {
-    return this.glyphList.length > 0;
+  hasDeferredDraws(): boolean {
+    return this.drawList.length > 0;
   }
 
   clone(): GrayImage {
     const clone = new GrayImage(this.width, this.height, 0);
     clone.pixels.set(this.pixels);
-    clone.glyphList.push(...this.glyphList);
+    clone.drawList.push(...this.drawList);
     return clone;
   }
 
   clear(value = 0): void {
     this.pixels.fill(clampByte(value));
-    this.glyphList.length = 0;
+    this.drawList.length = 0;
   }
 
   setPixel(x: number, y: number, value: number): void {
@@ -199,19 +216,19 @@ export class GrayImage {
       }
     }
 
-    // Carry the source's deferred glyphs along, translated into destination
-    // space. Membership in the copied rect is judged by the glyph's anchor
+    // Carry the source's deferred draws along, translated into destination
+    // space. Membership in the copied rect is judged by the draw's anchor
     // (fine for the whole-image blits this is used for; a sub-rect blit can
-    // clip a glyph's overhang imperfectly).
-    if (source.glyphList.length) {
+    // clip a draw's overhang imperfectly).
+    if (source.drawList.length) {
       const offsetX = destX - srcX;
       const offsetY = destY - srcY;
-      for (const placed of source.glyphList) {
+      for (const placed of source.drawList) {
         if (
           placed.x >= srcX && placed.x < srcX + copyWidth &&
           placed.y >= srcY && placed.y < srcY + copyHeight
         ) {
-          this.glyphList.push({ ...placed, x: placed.x + offsetX, y: placed.y + offsetY });
+          this.drawList.push({ ...placed, x: placed.x + offsetX, y: placed.y + offsetY });
         }
       }
     }
@@ -292,63 +309,91 @@ export class GrayImage {
     }
   }
 
-  fingerprint(): string {
+  /** 32-bit content hash over pixels and deferred draws (fingerprint's core). */
+  contentHash32(): number {
     let hash = 2166136261;
     for (let i = 0; i < this.pixels.length; i++) {
       hash ^= this.pixels[i]!;
       hash = Math.imul(hash, 16777619);
     }
-    for (const placed of this.glyphList) {
-      hash = mixInt(hash, placed.font.fingerprintId);
-      hash = mixInt(hash, placed.glyph.encoding);
+    for (const placed of this.drawList) {
+      if (placed.kind === "glyph") {
+        hash = mixInt(hash, placed.font.fingerprintId);
+        hash = mixInt(hash, placed.glyph.encoding);
+        hash = mixInt(hash, placed.value);
+      } else {
+        hash = mixInt(hash, 0x1c0e5);
+        hash = mixInt(hash, placed.source.width);
+        hash = mixInt(hash, placed.source.height);
+        hash = mixInt(hash, placed.source.contentHash32());
+      }
       hash = mixInt(hash, placed.x);
       hash = mixInt(hash, placed.y);
-      hash = mixInt(hash, placed.value);
     }
-    return `fnv:${(hash >>> 0).toString(16)}`;
+    return hash >>> 0;
+  }
+
+  fingerprint(): string {
+    return `fnv:${this.contentHash32().toString(16)}`;
   }
 
   /**
    * Snapshot of the full image as a single 8-bit-per-pixel grayscale buffer,
-   * row-major and top-to-bottom, with any deferred glyphs baked in. The Java
+   * row-major and top-to-bottom, with any deferred draws baked in. The Java
    * side turns this into whatever wire format the firmware currently expects
    * (today: a 4bpp BMP), so all framing concerns stay on one side of the
    * bridge.
    */
   to8bppBuffer(): Uint8Array {
-    if (!this.glyphList.length) {
+    if (!this.drawList.length) {
       return Uint8Array.from(this.pixels);
     }
-    // withGlyphsBaked's buffer is a private temporary, safe to hand out.
-    return this.withGlyphsBaked().pixels;
+    // withDrawsBaked's buffer is a private temporary, safe to hand out.
+    return this.withDrawsBaked().pixels;
   }
 
   /**
-   * Record a glyph draw. Deferred: the glyph joins the image's glyph list
+   * Record a glyph draw. Deferred: the glyph joins the image's draw list
    * (rendered above all raster pixels) instead of being baked into the
    * buffer.
    */
   drawGlyph(font: BdfFont, glyph: Glyph, x: number, y: number, value: number): void {
-    this.glyphList.push({ font, glyph, x, y, value: clampByte(value) });
+    this.drawList.push({ kind: "glyph", font, glyph, x, y, value: clampByte(value) });
   }
 
   /**
-   * This image with its glyph list rasterized into the pixel buffer. Returns
-   * this image unchanged when there are no glyphs, otherwise a baked copy
-   * with an empty glyph list.
+   * Record a color-key image blit (source value 0 = transparent), deferred
+   * like glyph draws so icons keep their identity to the wire encoder. The
+   * source is snapshot-flattened (its own deferred draws baked) and must not
+   * be mutated afterwards — pass long-lived rendered assets (icons), not
+   * scratch buffers. For a clipped or mutable blit, use bitBlt instead.
    */
-  withGlyphsBaked(): GrayImage {
-    if (!this.glyphList.length) return this;
+  drawImage(source: GrayImage, x: number, y: number): void {
+    if (source.width <= 0 || source.height <= 0) return;
+    this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y });
+  }
+
+  /**
+   * This image with its deferred draws rasterized into the pixel buffer.
+   * Returns this image unchanged when there are none, otherwise a baked copy
+   * with an empty draw list.
+   */
+  withDrawsBaked(): GrayImage {
+    if (!this.drawList.length) return this;
     const baked = new GrayImage(this.width, this.height, 0);
     baked.pixels.set(this.pixels);
-    this.bakeGlyphsInto(baked, 0, 0);
+    this.bakeDrawsInto(baked, 0, 0);
     return baked;
   }
 
-  /** Rasterize this image's glyph list into target, translated by (dx, dy). */
-  bakeGlyphsInto(target: GrayImage, dx: number, dy: number): void {
-    for (const placed of this.glyphList) {
-      rasterizeGlyph(target, placed.font, placed.glyph, placed.x + dx, placed.y + dy, placed.value);
+  /** Rasterize this image's deferred draws into target, translated by (dx, dy). */
+  bakeDrawsInto(target: GrayImage, dx: number, dy: number): void {
+    for (const placed of this.drawList) {
+      if (placed.kind === "glyph") {
+        rasterizeGlyph(target, placed.font, placed.glyph, placed.x + dx, placed.y + dy, placed.value);
+      } else {
+        target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
+      }
     }
   }
 }

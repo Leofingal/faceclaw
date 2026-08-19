@@ -515,6 +515,12 @@ export class FaceclawCommunicatorBridge {
     fingerprint: string,
     paintMs = -1,
     frameId = 0,
+    /**
+     * The frame's glyph draws in surface coordinates (see
+     * graphics/glyph-wire.ts prepareFrameGlyphs); lets the texture-cache
+     * pipeline ship text as on-glasses cached draws instead of pixels.
+     */
+    glyphs: ArrayBuffer | null = null,
   ): Promise<void> {
     // Snapshot because the Java call is deferred; the buffer is passed as an
     // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
@@ -531,6 +537,7 @@ export class FaceclawCommunicatorBridge {
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),
+        glyphs,
       );
     });
   }

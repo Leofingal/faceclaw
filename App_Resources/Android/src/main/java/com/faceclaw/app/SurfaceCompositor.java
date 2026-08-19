@@ -42,6 +42,55 @@ public final class SurfaceCompositor {
     public static final int TRANSPARENCY_OPAQUE = 0;
     public static final int TRANSPARENCY_COLOR_KEY = 1;
 
+    /**
+     * One deferred draw (a text glyph or an icon image) within a frame, in
+     * screen coordinates. The draw's pixels are already baked into the
+     * composited gray buffer (the TS side bakes before submitting); this
+     * record preserves the draw's identity so the texture-cache planner can
+     * replay it as an on-glasses cached draw instead of image bytes.
+     *
+     * Glyphs: x/y are the pen position and line top; the raster (and its
+     * bearing/cell placement) comes from GlyphAtlas under (fontId, encoding).
+     * Images: x/y are the blit's top-left; the raster comes from ImageAtlas
+     * under imageId.
+     */
+    public static final class ScreenDraw {
+        public static final int KIND_GLYPH = 0;
+        public static final int KIND_IMAGE = 1;
+
+        public final int kind;
+        /** Glyph draws only. */
+        public final int fontId;
+        /** Glyph draws only. */
+        public final int encoding;
+        /** Image draws only. */
+        public final int imageId;
+        public final int x;
+        public final int y;
+        /** Glyph draws only: 8-bit brightness the glyph was drawn with. */
+        public final int value;
+
+        ScreenDraw(int kind, int fontId, int encoding, int imageId, int x, int y, int value) {
+            this.kind = kind;
+            this.fontId = fontId;
+            this.encoding = encoding;
+            this.imageId = imageId;
+            this.x = x;
+            this.y = y;
+            this.value = value;
+        }
+
+        static ScreenDraw glyph(int fontId, int encoding, int penX, int lineY, int value) {
+            return new ScreenDraw(KIND_GLYPH, fontId, encoding, 0, penX, lineY, value);
+        }
+
+        static ScreenDraw image(int imageId, int x, int y) {
+            return new ScreenDraw(KIND_IMAGE, 0, 0, imageId, x, y, 0);
+        }
+    }
+
+    private static final ScreenDraw[] NO_DRAWS = new ScreenDraw[0];
+
     /** One composited full-screen frame plus the metadata the pipeline needs. */
     public static final class Composite {
         /** Full-screen 8bpp grayscale pixels, screenWidth*screenHeight bytes. */
@@ -56,13 +105,20 @@ public final class SurfaceCompositor {
         public final String fingerprint;
         /** Monotonic: a Composite with a higher seq contains strictly newer state. */
         public final long seq;
+        /**
+         * Screen-space deferred draws of every visible surface, in composite
+         * order (surface z ascending, then each surface's draw order). Their
+         * pixels are already baked into gray.
+         */
+        public final ScreenDraw[] draws;
 
-        Composite(byte[] gray, int width, int height, String fingerprint, long seq) {
+        Composite(byte[] gray, int width, int height, String fingerprint, long seq, ScreenDraw[] draws) {
             this.gray = gray;
             this.width = width;
             this.height = height;
             this.fingerprint = fingerprint;
             this.seq = seq;
+            this.draws = draws == null ? NO_DRAWS : draws;
         }
     }
 
@@ -77,6 +133,8 @@ public final class SurfaceCompositor {
         boolean visible = true;
         byte[] pixels;
         String fingerprint = "";
+        /** Surface-local deferred draws of the retained content (already baked into pixels). */
+        ScreenDraw[] draws = NO_DRAWS;
 
         Surface(String id) {
             this.id = id;
@@ -125,6 +183,7 @@ public final class SurfaceCompositor {
             if (surface.pixels == null || surface.width != width || surface.height != height) {
                 surface.pixels = new byte[width * height];
                 surface.fingerprint = "";
+                surface.draws = NO_DRAWS;
             }
             surface.x = x;
             surface.y = y;
@@ -183,6 +242,31 @@ public final class SurfaceCompositor {
             int rectHeight,
             String contentFingerprint
     ) {
+        return applyAndComposite(surfaceId, pixels, rectX, rectY, rectWidth, rectHeight,
+                contentFingerprint, null);
+    }
+
+    /**
+     * As above, with the frame's deferred draws: a little-endian buffer of
+     * tagged records
+     *   [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]  (glyph)
+     *   [1][imageId u32][x s16][y s16]                                (image)
+     * in surface-local coordinates and draw order. The list describes the
+     * surface's FULL retained content and replaces the previous list, so it is
+     * only meaningful for full-surface updates (which is what every submitter
+     * sends); pass null to clear. Draw pixels must already be baked into pixels.
+     */
+    public Composite applyAndComposite(
+            String surfaceId,
+            ByteBuffer pixels,
+            int rectX,
+            int rectY,
+            int rectWidth,
+            int rectHeight,
+            String contentFingerprint,
+            ByteBuffer glyphs
+    ) {
+        ScreenDraw[] parsed = parseDraws(glyphs);
         synchronized (lock) {
             requireScreenConfiguredLocked();
             Surface surface = surfaces.get(surfaceId);
@@ -205,8 +289,36 @@ public final class SurfaceCompositor {
                 pixels.get(surface.pixels, dstOffset, rectWidth);
             }
             surface.fingerprint = contentFingerprint == null ? "" : contentFingerprint;
+            surface.draws = parsed;
             return compositeLocked();
         }
+    }
+
+    private static ScreenDraw[] parseDraws(ByteBuffer draws) {
+        if (draws == null || draws.remaining() < 1) {
+            return NO_DRAWS;
+        }
+        ByteBuffer in = draws.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        List<ScreenDraw> out = new ArrayList<>();
+        while (in.remaining() >= 1) {
+            int kind = in.get() & 0xff;
+            if (kind == ScreenDraw.KIND_GLYPH && in.remaining() >= 11) {
+                int fontId = in.getShort() & 0xffff;
+                int encoding = in.getInt();
+                int penX = in.getShort();
+                int lineY = in.getShort();
+                int value = in.get() & 0xff;
+                out.add(ScreenDraw.glyph(fontId, encoding, penX, lineY, value));
+            } else if (kind == ScreenDraw.KIND_IMAGE && in.remaining() >= 8) {
+                int imageId = in.getInt();
+                int x = in.getShort();
+                int y = in.getShort();
+                out.add(ScreenDraw.image(imageId, x, y));
+            } else {
+                break; // malformed tail: keep what parsed cleanly
+            }
+        }
+        return out.toArray(new ScreenDraw[0]);
     }
 
     /** Composite the current retained state without applying an update. */
@@ -228,7 +340,7 @@ public final class SurfaceCompositor {
                 return null;
             }
             byte[] gray = buildGrayLocked();
-            return new Composite(gray, screenWidth, screenHeight, "preview", 0);
+            return new Composite(gray, screenWidth, screenHeight, "preview", 0, NO_DRAWS);
         }
     }
 
@@ -253,7 +365,7 @@ public final class SurfaceCompositor {
         byte[] gray = new byte[screenWidth * screenHeight];
         if (blanked) {
             return new Composite(gray, screenWidth, screenHeight,
-                    "blanked:" + screenWidth + "x" + screenHeight, nextCompositeSeq++);
+                    "blanked:" + screenWidth + "x" + screenHeight, nextCompositeSeq++, NO_DRAWS);
         }
         List<Surface> ordered = new ArrayList<>(surfaces.values());
         ordered.sort(Comparator
@@ -261,9 +373,14 @@ public final class SurfaceCompositor {
                 .thenComparing(s -> s.id));
         StringBuilder fingerprint = new StringBuilder();
         fingerprint.append(screenWidth).append('x').append(screenHeight);
+        List<ScreenDraw> draws = new ArrayList<>();
         for (Surface surface : ordered) {
             if (!surface.visible) continue;
             blendLocked(gray, surface);
+            for (ScreenDraw draw : surface.draws) {
+                draws.add(new ScreenDraw(draw.kind, draw.fontId, draw.encoding, draw.imageId,
+                        draw.x + surface.x, draw.y + surface.y, draw.value));
+            }
             fingerprint.append('|').append(surface.id)
                     .append('@').append(surface.x).append(',').append(surface.y)
                     .append('+').append(surface.width).append('x').append(surface.height)
@@ -271,7 +388,8 @@ public final class SurfaceCompositor {
                     .append(':').append(surface.transparency)
                     .append(':').append(surface.fingerprint);
         }
-        return new Composite(gray, screenWidth, screenHeight, fingerprint.toString(), nextCompositeSeq++);
+        return new Composite(gray, screenWidth, screenHeight, fingerprint.toString(), nextCompositeSeq++,
+                draws.toArray(new ScreenDraw[0]));
     }
 
     private void blendLocked(byte[] gray, Surface surface) {
