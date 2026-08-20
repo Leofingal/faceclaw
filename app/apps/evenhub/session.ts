@@ -788,9 +788,15 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     if (!container || container.kind !== "text") return false;
     const content = readString(data, "content", "");
     const offset = readOptionalNumber(data, "contentOffset");
-    const length = readOptionalNumber(data, "contentLength");
-    if (offset !== undefined && length !== undefined) {
-      container.content = container.content.slice(0, offset) + content + container.content.slice(offset + length);
+    // (contentLength is intentionally ignored — see below.)
+    // Stock semantics are "write `content` at contentOffset and truncate the
+    // rest" (a null-terminating strcpy(buf+offset, content)), NOT a splice that
+    // keeps the old tail after offset+contentLength. Keeping the tail left stray
+    // trailing text when an app (e.g. g2oom) shrank a string with an
+    // under-sized contentLength; dropping it matches stock and still supports
+    // suffix rewrites (offset>0) and full replaces (offset 0 / omitted).
+    if (offset !== undefined && offset > 0) {
+      container.content = container.content.slice(0, offset) + content;
     } else {
       container.content = content;
     }
