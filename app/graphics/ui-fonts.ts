@@ -31,6 +31,25 @@ const LARGE_MIN_LINE_HEIGHT = 26;
 /** How far size can grow hunting a line-height floor before giving up. */
 const MAX_SIZE_GROWTH = 48;
 
+/**
+ * Guaranteed line-height range of getDefaultSmallFont, which UI layouts may
+ * rely on (getDefaultMediumFont's range follows: 16..29). The font picker
+ * disables sizes outside it, and resolution falls back to the bitmap face if
+ * a stored selection somehow lands outside (e.g. the font file changed).
+ */
+export const SMALL_FONT_MIN_LINE_HEIGHT = 12;
+export const SMALL_FONT_MAX_LINE_HEIGHT = 21;
+
+/** Whether a small-font selection at this path+size satisfies the UI bound. */
+export function uiFontSizeAllowed(path: string, size: number): boolean {
+  const font = TtfFont.load(path, size);
+  return (
+    font !== null &&
+    font.lineHeight >= SMALL_FONT_MIN_LINE_HEIGHT &&
+    font.lineHeight <= SMALL_FONT_MAX_LINE_HEIGHT
+  );
+}
+
 export function parseFontSelection(raw: string): UiFontSelection | null {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -123,7 +142,11 @@ function resolveRole(role: "small" | "medium" | "large"): UiFont {
   if (cached) return cached;
   const selection = getUiFontSelection();
   let font: UiFont | null = null;
-  if (selection.kind === "ttf") {
+  // Enforce the guaranteed small-font range even against a stale or
+  // hand-edited selection: an out-of-range selection falls back to bitmap for
+  // every role (medium/large derive from small, so their documented ranges
+  // follow and the roles never mix faces).
+  if (selection.kind === "ttf" && uiFontSizeAllowed(installedFontPath(selection.file), selection.size)) {
     font =
       role === "small"
         ? resolveTtf(selection)

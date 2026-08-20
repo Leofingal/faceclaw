@@ -10,6 +10,7 @@ import {
   GESTURE_SCROLL_UP,
 } from "../../ui/gestures";
 import { MenuLayer, drawSelectionHighlight, drawSubmenuIndicator } from "../../ui/menu";
+import { lineStep, tightRowHeight } from "../../ui/metrics";
 import {
   mediaControllerBridge,
   type MediaControllerState,
@@ -33,7 +34,6 @@ const ART_X = 22;
 const ART_Y = 8;
 const META_X = ART_X + ART_SIZE + 14;
 const LIST_TOP = 120;
-const ROW_HEIGHT = 16;
 const ACTION_X = 22;
 const ACTION_WIDTH = 154;
 const COLUMN_DIVIDER_X = 190;
@@ -81,7 +81,7 @@ class MusicAppLayer implements Layer {
         width - 48,
       );
       for (let index = 0; index < lines.length; index++) {
-        image.drawText(font, 24, 16 + index * 14, lines[index]!, 180);
+        image.drawText(font, 24, 16 + index * lineStep(font), lines[index]!, 180);
       }
       image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
@@ -90,11 +90,11 @@ class MusicAppLayer implements Layer {
     if (!media.available) {
       image.drawText(font, 24, 16, "No active media session.", 180);
       if (mediaBrowserBridge.listBrowsableApps().length) {
-        image.drawText(font, 24, 34, "Click to browse a music app's library,", 150);
-        image.drawText(font, 24, 48, "or start playback on the phone.", 150);
+        image.drawText(font, 24, 22 + lineStep(font), "Click to browse a music app's library,", 150);
+        image.drawText(font, 24, 22 + 2 * lineStep(font), "or start playback on the phone.", 150);
         image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse   ${GESTURE_DOUBLE_CLICK} back`, 110);
       } else {
-        image.drawText(font, 24, 34, "Start playback in another app on the phone.", 150);
+        image.drawText(font, 24, 22 + lineStep(font), "Start playback in another app on the phone.", 150);
         image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
       }
       return image;
@@ -103,22 +103,24 @@ class MusicAppLayer implements Layer {
     this.drawArt(image, media);
 
     const metaWidth = width - META_X - 24;
+    const metaStep = lineStep(font) + 1;
     const titleLines = wrapText(font, media.title || "Unknown title", metaWidth).slice(0, 2);
     for (let index = 0; index < titleLines.length; index++) {
-      image.drawText(font, META_X, ART_Y + 2 + index * 15, titleLines[index]!, 230);
+      image.drawText(font, META_X, ART_Y + 2 + index * metaStep, titleLines[index]!, 230);
     }
-    image.drawText(font, META_X, ART_Y + 36, media.artist || "Unknown artist", 180);
+    image.drawText(font, META_X, ART_Y + 6 + 2 * metaStep, media.artist || "Unknown artist", 180);
     if (media.album) {
-      image.drawText(font, META_X, ART_Y + 52, truncateText(font, media.album, metaWidth), 150);
+      image.drawText(font, META_X, ART_Y + 6 + 3 * metaStep, truncateText(font, media.album, metaWidth), 150);
     }
-    image.drawText(font, META_X, ART_Y + 68, truncateText(font, media.appName || media.packageName, metaWidth), 110);
+    image.drawText(font, META_X, ART_Y + 6 + 4 * metaStep, truncateText(font, media.appName || media.packageName, metaWidth), 110);
     this.drawProgress(image, media, metaWidth);
 
     const queue = mediaControllerBridge.getQueue();
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
     const listHeight = height - LIST_TOP - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const rowH = tightRowHeight(font);
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     if (this.selectedQueueIndex < this.queueScrollRow) {
       this.queueScrollRow = this.selectedQueueIndex;
     } else if (this.selectedQueueIndex >= this.queueScrollRow + visibleRows) {
@@ -128,12 +130,12 @@ class MusicAppLayer implements Layer {
 
     for (let index = 0; index < actions.length; index++) {
       const action = actions[index]!;
-      const y = LIST_TOP + index * ROW_HEIGHT;
+      const y = LIST_TOP + index * rowH;
       const selected = index === this.selectedActionIndex;
       const highlightX = ACTION_X - 6;
       const highlightY = y - 1;
       const highlightWidth = ACTION_WIDTH + 8;
-      const highlightHeight = ROW_HEIGHT - 1;
+      const highlightHeight = rowH - 1;
       if (selected) {
         drawSelectionHighlight(
           image,
@@ -160,7 +162,7 @@ class MusicAppLayer implements Layer {
       const lastVisible = Math.min(queue.length, this.queueScrollRow + visibleRows);
       for (let index = this.queueScrollRow; index < lastVisible; index++) {
         const item = queue[index]!;
-        const y = LIST_TOP + (index - this.queueScrollRow) * ROW_HEIGHT;
+        const y = LIST_TOP + (index - this.queueScrollRow) * rowH;
         const selected = index === this.selectedQueueIndex;
         if (selected) {
           drawSelectionHighlight(
@@ -168,7 +170,7 @@ class MusicAppLayer implements Layer {
             QUEUE_X - 6,
             y - 1,
             queueWidth + 8,
-            ROW_HEIGHT - 1,
+            rowH - 1,
             ctx.stack.isFocused() && this.focusColumn === "playlist",
             4,
           );
@@ -177,7 +179,7 @@ class MusicAppLayer implements Layer {
         image.drawText(font, QUEUE_X, y + 1, truncateText(font, label, queueWidth - 4), selected ? 255 : 200);
       }
       if (queue.length > visibleRows) {
-        const trackHeight = visibleRows * ROW_HEIGHT - 4;
+        const trackHeight = visibleRows * rowH - 4;
         const trackX = width - 12;
         image.fillRect(trackX, LIST_TOP, 3, trackHeight, 30);
         const thumbHeight = Math.max(8, (trackHeight * visibleRows / queue.length) | 0);

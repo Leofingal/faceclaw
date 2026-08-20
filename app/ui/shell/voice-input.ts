@@ -7,6 +7,7 @@ import { refineDictation, type AnthropicStreamHandle } from "../../native/anthro
 import { anthropicApiKeySetting } from "../dashboard-settings";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
+import { listRowHeight } from "../metrics";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
 import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
 
@@ -22,7 +23,6 @@ const TEXT_MAX_WIDTH = DIALOG_W - 32;
 function dialogY(): number {
   return minWindowTop() + DIALOG_MARGIN_Y;
 }
-const MENU_ROW_H = 20;
 // After the mic stops, the provider's final transcript can trail in (cloud
 // commit round-trip); wait this long for it before refining with what we have.
 const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
@@ -229,6 +229,7 @@ export class VoiceInputLayer implements Layer {
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const font = getDefaultSmallFont();
+    const menuRowH = listRowHeight(font);
     const image = paintBelow();
     const top = dialogY();
 
@@ -244,7 +245,7 @@ export class VoiceInputLayer implements Layer {
     const inMenu = this.phase === "menu";
     const rows = inMenu ? this.menuRows() : [];
     // Reserve space for the actual number of rows this menu has.
-    const textBottom = inMenu ? top + DIALOG_H - rows.length * MENU_ROW_H - 8 : top + DIALOG_H - 8;
+    const textBottom = inMenu ? top + DIALOG_H - rows.length * menuRowH - 8 : top + DIALOG_H - 8;
     const textTop = top + 56;
     const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
@@ -256,12 +257,12 @@ export class VoiceInputLayer implements Layer {
     }
 
     if (inMenu) {
-      const menuTop = top + DIALOG_H - rows.length * MENU_ROW_H - 2;
+      const menuTop = top + DIALOG_H - rows.length * menuRowH - 2;
       for (let i = 0; i < rows.length; i++) {
-        const rowY = menuTop + i * MENU_ROW_H;
+        const rowY = menuTop + i * menuRowH;
         const selected = i === this.menuIndex;
         if (selected) {
-          drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, MENU_ROW_H - 2, true, 6);
+          drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, menuRowH - 2, true, 6);
         }
         const row = rows[i]!;
         image.drawText(font, left + 4, rowY + 2, row.label, row.dim ? 90 : selected ? 255 : 200);

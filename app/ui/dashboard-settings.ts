@@ -16,6 +16,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
+import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
@@ -678,7 +679,7 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           image.drawText(
             getDefaultSmallFont(),
             x,
-            y + 3,
+            y + LIST_ROW_TEXT_INSET,
             `${setting.displayValue(value)}${selected}`,
             disabled ? 70 : 200,
           );
@@ -723,7 +724,7 @@ export function textSettingMenuItem<TId extends string = string>(
     render: ({ image, x, y }) => {
       // displayValue honors the setting's formatValue, so secrets (API keys,
       // tokens) can mask themselves instead of rendering in the clear.
-      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
+      image.drawText(getDefaultSmallFont(), x, y + LIST_ROW_TEXT_INSET, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
     }
   };
 }
@@ -742,13 +743,15 @@ export class EditTextSettingLayer implements Layer {
     // viewport in the settings app).
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const step = lineStep(font);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
+    const messageTop = 24 + 2 * font.lineHeight;
     const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
     for (let index = 0; index < message.length; index++) {
-      image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
+      image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
     }
-    image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
-    image.drawText(font, 22, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 22, messageTop + (message.length + 2) * step, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, 22, height - 24 - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

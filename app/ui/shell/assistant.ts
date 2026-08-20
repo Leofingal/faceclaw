@@ -3,6 +3,7 @@ import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GESTURE_DOUBLE_CLICK } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
+import { listRowHeight } from "../metrics";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
@@ -14,7 +15,6 @@ const DIALOG_W = G2_LENS_WIDTH - 80;
 const DIALOG_MARGIN_Y = 24;
 const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
-const MENU_ROW_H = 20;
 const MENU_ROWS = 2;
 
 /** Dialog top edge; band-relative, so computed per paint. */
@@ -89,6 +89,7 @@ export class AssistantLayer implements Layer {
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const font = getDefaultSmallFont();
+    const menuRowH = listRowHeight(font);
     const image = paintBelow();
     const top = dialogY();
 
@@ -105,7 +106,7 @@ export class AssistantLayer implements Layer {
     }
 
     const inMenu = this.phase !== "thinking";
-    const textBottom = inMenu ? top + DIALOG_H - MENU_ROWS * MENU_ROW_H - 8 : top + DIALOG_H - 8;
+    const textBottom = inMenu ? top + DIALOG_H - MENU_ROWS * menuRowH - 8 : top + DIALOG_H - 8;
     const textTop = top + 56;
     const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
@@ -118,12 +119,12 @@ export class AssistantLayer implements Layer {
 
     if (inMenu) {
       const rows = ["Follow-up", "Done"];
-      const menuTop = top + DIALOG_H - MENU_ROWS * MENU_ROW_H - 2;
+      const menuTop = top + DIALOG_H - MENU_ROWS * menuRowH - 2;
       for (let i = 0; i < rows.length; i++) {
-        const rowY = menuTop + i * MENU_ROW_H;
+        const rowY = menuTop + i * menuRowH;
         const selected = i === this.menuIndex;
         if (selected) {
-          drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, MENU_ROW_H - 2, true, 6);
+          drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, menuRowH - 2, true, 6);
         }
         image.drawText(font, left + 4, rowY + 2, rows[i]!, selected ? 255 : 200);
       }

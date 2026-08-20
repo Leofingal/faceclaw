@@ -5,16 +5,13 @@ import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } f
 import { drawSelectionHighlight } from "../../ui/menu";
 import { permissionDetail, permissionLabel, type EvenHubPermission } from "./permissions";
 import { openPrivacyPolicyOnPhone } from "./privacy-policy";
+import { lineStep, listRowHeight } from "../../ui/metrics";
 
 const DIALOG_X = 8;
 const DIALOG_Y = 8;
 const DIALOG_WIDTH = 272;
 const PADDING = 10;
-const HEADER_STEP = 16;
-const PERM_LABEL_STEP = 15;
-const PERM_DETAIL_STEP = 13;
 const PERM_GAP = 4;
-const ACTION_ROW_HEIGHT = 20;
 
 /**
  * Confirmation dialog listing the permissions an EvenHub app declares, shown
@@ -42,13 +39,17 @@ export class EvenHubPermissionDialogLayer implements Layer {
     const textWidth = DIALOG_WIDTH - 2 * PADDING - 4;
     const left = DIALOG_X + PADDING + 2;
 
+    const headerStep = lineStep(font) + 2;
+    const permLabelStep = lineStep(font) + 1;
+    const permDetailStep = lineStep(font) - 1;
+    const actionRowH = listRowHeight(font);
     const permsHeight = this.permissions.reduce(
-      (sum, permission) => sum + PERM_LABEL_STEP + (permissionDetail(permission) ? PERM_DETAIL_STEP : 0) + PERM_GAP,
+      (sum, permission) => sum + permLabelStep + (permissionDetail(permission) ? permDetailStep : 0) + PERM_GAP,
       0,
     );
-    const emptyPermissionsHeight = this.permissions.length === 0 ? PERM_LABEL_STEP + PERM_GAP : 0;
-    const bodyTop = PADDING + HEADER_STEP + 6 + permsHeight + emptyPermissionsHeight + 6;
-    const height = Math.min(bodyTop + this.actions().length * ACTION_ROW_HEIGHT + PADDING, viewportHeight - 2 * DIALOG_Y);
+    const emptyPermissionsHeight = this.permissions.length === 0 ? permLabelStep + PERM_GAP : 0;
+    const bodyTop = PADDING + headerStep + 6 + permsHeight + emptyPermissionsHeight + 6;
+    const height = Math.min(bodyTop + this.actions().length * actionRowH + PADDING, viewportHeight - 2 * DIALOG_Y);
 
     // Fill 1 (transparent color key is 0), outline for the dialog edge.
     image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_WIDTH, height, 1);
@@ -57,7 +58,7 @@ export class EvenHubPermissionDialogLayer implements Layer {
     let y = DIALOG_Y + PADDING;
     const heading = this.permissions.length ? `${this.appName} needs:` : `${this.appName} is ready to run`;
     image.drawText(font, left, y, truncateText(font, heading, textWidth), 235);
-    y += HEADER_STEP + 6;
+    y += headerStep + 6;
 
     if (this.permissions.length === 0) {
       image.drawText(font, left, y, "No special permissions requested.", 140);
@@ -65,11 +66,11 @@ export class EvenHubPermissionDialogLayer implements Layer {
     }
     for (const permission of this.permissions) {
       image.drawText(font, left, y, truncateText(font, permissionLabel(permission.name), textWidth), 220);
-      y += PERM_LABEL_STEP;
+      y += permLabelStep;
       const detail = permissionDetail(permission);
       if (detail) {
         image.drawText(font, left + 8, y, truncateText(font, detail, textWidth - 8), 140);
-        y += PERM_DETAIL_STEP;
+        y += permDetailStep;
       }
       y += PERM_GAP;
     }
@@ -78,10 +79,10 @@ export class EvenHubPermissionDialogLayer implements Layer {
     const focused = ctx.stack.isFocused();
     const actions = this.actions();
     for (let index = 0; index < actions.length; index++) {
-      const rowY = y + index * ACTION_ROW_HEIGHT;
+      const rowY = y + index * actionRowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, ACTION_ROW_HEIGHT - 1, focused, 8);
+        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, actionRowH - 1, focused, 8);
       }
       image.drawText(font, DIALOG_X + 22, rowY + 3, actions[index]!, selected ? 255 : 200);
     }

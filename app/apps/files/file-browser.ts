@@ -5,6 +5,7 @@ import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { lineStep, tightRowHeight } from "../../ui/metrics";
 import { ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import {
@@ -17,10 +18,12 @@ import {
 } from "../../native/file-access";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
 
-const HEADER_HEIGHT = 34;
-const ROW_HEIGHT = 16;
 const LIST_X = 20;
-const FOOTER_HEIGHT = 22;
+
+/** Header: title line + path line (34px at the 12px bitmap default). */
+function headerHeight(font: UiFont): number {
+  return 8 + lineStep(font) + font.lineHeight;
+}
 
 const GRID_COLS = 5;
 const GRID_VISIBLE_ROWS = 3;
@@ -139,7 +142,7 @@ export class FileBrowserLayer implements Layer {
 
     image.drawText(font, 20, 8, "Files", 220);
     const pathLabel = this.location === null ? "Places" : this.location;
-    image.drawText(font, 20, 22, truncateLeft(font, pathLabel, width - 40), 130);
+    image.drawText(font, 20, 8 + lineStep(font), truncateLeft(font, pathLabel, width - 40), 130);
 
     if (filesViewModeSetting.get() === "list") {
       this.paintList(image, font, rows, ctx);
@@ -153,23 +156,25 @@ export class FileBrowserLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     this.listIndex = clamp(this.listIndex, 0, Math.max(0, rows.length - 1));
 
-    const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const rowH = tightRowHeight(font);
+    const headerH = headerHeight(font);
+    const listHeight = height - headerH - font.lineHeight - 10;
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.listIndex, visibleRows, rows.length);
 
     const lastVisible = Math.min(rows.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const row = rows[index]!;
-      const y = HEADER_HEIGHT + (index - this.scrollRow) * ROW_HEIGHT;
+      const y = headerH + (index - this.scrollRow) * rowH;
       const selected = index === this.listIndex;
       if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
       }
       const value = itemValue(row, selected);
       image.drawText(font, LIST_X, y + 1, truncateText(font, row.label, width - 2 * LIST_X), value);
     }
 
-    image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
+    image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
   }
 
   private paintIcons(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
@@ -178,7 +183,7 @@ export class FileBrowserLayer implements Layer {
     const iconRows = buildIconRows(rows);
     this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
 
-    const gridTop = HEADER_HEIGHT;
+    const gridTop = headerHeight(font);
     const gridBottom = height - GRID_BOTTOM_MARGIN;
     const rowH = Math.floor((gridBottom - gridTop) / GRID_VISIBLE_ROWS);
     const colW = width / GRID_COLS;
@@ -232,7 +237,7 @@ export class FileBrowserLayer implements Layer {
       this.iconMode === "row"
         ? `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick   ${GESTURE_DOUBLE_CLICK} up / back`
         : `${GESTURE_SCROLL} item   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} row`;
-    image.drawText(font, 20, height - 16, hint, 110);
+    image.drawText(font, 20, height - font.lineHeight - 4, hint, 110);
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {

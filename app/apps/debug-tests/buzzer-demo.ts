@@ -4,6 +4,7 @@ import { clamp } from "../../util/numeric-util";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../../ui/layers";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
+import { tightRowHeight } from "../../ui/metrics";
 import {
   buildSoundSequencePayload,
   CFW_SEQ_MAX,
@@ -14,7 +15,6 @@ import {
 } from "../../ui/sound-effects";
 
 const HEADER_HEIGHT = 30;
-const ROW_HEIGHT = 16;
 const LIST_X = 20;
 const FOOTER_HEIGHT = 22;
 
@@ -42,16 +42,17 @@ export class BuzzerDemoLayer implements Layer {
     image.drawText(font, width - 24 - font.measureText(status), 8, status, 140);
 
     const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const rowH = tightRowHeight(font);
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, SOUND_EFFECTS.length);
 
     const lastVisible = Math.min(SOUND_EFFECTS.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const effect = SOUND_EFFECTS[index]!;
-      const y = HEADER_HEIGHT + (index - this.scrollRow) * ROW_HEIGHT;
+      const y = HEADER_HEIGHT + (index - this.scrollRow) * rowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
       }
       image.drawText(font, LIST_X, y + 1, effect.name, selected ? 255 : 200);
       image.drawText(font, LIST_X + 110, y + 1, effect.desc, selected ? 180 : 120);

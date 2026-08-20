@@ -69,6 +69,7 @@ import {
   scrollToKeepSelectionVisible,
   type MenuItem,
 } from "../../ui/menu";
+import { lineStep, listRowHeight } from "../../ui/metrics";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -97,7 +98,6 @@ function viewGrid(): { cols: number; rows: number } {
   };
 }
 const DEVICE_NAME = "Faceclaw G2";
-const HUB_ROW_HEIGHT = 20;
 const RENDER_COALESCE_MS = 33;
 const HISTORY_PAGE = 200;
 // Auto-reconnect backoff: doubles per failed attempt, resets on success.
@@ -1402,24 +1402,28 @@ function paintHub(window: HubWindow): GrayImage {
     return paintAddConnection(window);
   }
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const font = chromeFont();
+  const step = lineStep(font);
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  image.drawText(chromeFont(), 18, 10, window.mode === "connections" ? "Terminal - Connections" : "Terminal", 220);
-  image.drawText(chromeFont(), 24, 30, hubStatusLine(window), 170);
+  image.drawText(font, 18, 10, window.mode === "connections" ? "Terminal - Connections" : "Terminal", 220);
+  const statusY = 16 + step;
+  image.drawText(font, 24, statusY, hubStatusLine(window), 170);
 
-  let listTop = 52;
+  let listTop = statusY + step + 8;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(chromeFont(), 24, 46, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(chromeFont(), 24, 60, "https://github.com/jimrandomh/g2mirror", 190);
-    listTop += 28;
+    image.drawText(font, 24, statusY + step + 2, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, 24, statusY + 2 * step + 2, "https://github.com/jimrandomh/g2mirror", 190);
+    listTop += 2 * step;
   }
 
   const items = hubItems(window);
   clampHubSelection(window, items);
-  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
+  const hubRowH = listRowHeight(chromeFont());
+  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / hubRowH) | 0);
   window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
   const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
   for (let index = window.scrollRow; index < lastVisibleRow; index++) {
-    const y = listTop + (index - window.scrollRow) * HUB_ROW_HEIGHT;
+    const y = listTop + (index - window.scrollRow) * hubRowH;
     const item = items[index]!;
     if (item.heading) {
       image.drawText(chromeFont(), 20, y + 2, item.label, 140);
@@ -1429,7 +1433,7 @@ function paintHub(window: HubWindow): GrayImage {
     if (selected) {
       // Match the shell convention: fill only when this window has focus, so
       // an outline-only selection signals the sidebar owns input.
-      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, HUB_ROW_HEIGHT - 1, window.focused, 8);
+      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, hubRowH - 1, window.focused, 8);
     }
     image.drawText(chromeFont(), 32, y + 2, item.label, selected ? 255 : 200);
   }
@@ -1438,28 +1442,32 @@ function paintHub(window: HubWindow): GrayImage {
       image,
       window.viewportWidth - 10,
       listTop,
-      visibleRowCount * HUB_ROW_HEIGHT - 4,
+      visibleRowCount * hubRowH - 4,
       window.scrollRow,
       visibleRowCount,
       items.length,
     );
   }
 
-  image.drawText(chromeFont(), 24, window.viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);
+  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `${GESTURE_DOUBLE_CLICK} back`, 110);
   return image;
 }
 
 function paintAddConnection(window: HubWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
-  image.drawText(chromeFont(), 18, 10, "Add connection", 220);
-  image.drawText(chromeFont(), 24, 34, "Type the g2mirror://token@host string in the", 170);
-  image.drawText(chromeFont(), 24, 48, "phone app (or use voice input from the menu).", 170);
+  const font = chromeFont();
+  const step = lineStep(font);
+  image.drawText(font, 18, 10, "Add connection", 220);
+  const instructionsY = 20 + step;
+  image.drawText(font, 24, instructionsY, "Type the g2mirror://token@host string in the", 170);
+  image.drawText(font, 24, instructionsY + step, "phone app (or use voice input from the menu).", 170);
+  const draftY = instructionsY + 3 * step;
   const draft = terminalNewConnectionSetting.get();
-  image.drawText(chromeFont(), 24, 76, truncateLabel(draft || "(empty)", 52), 220);
+  image.drawText(font, 24, draftY, truncateLabel(draft || "(empty)", 52), 220);
   if (window.addError) {
-    image.drawText(chromeFont(), 24, 96, window.addError, 150);
+    image.drawText(font, 24, draftY + step + 6, window.addError, 150);
   }
-  image.drawText(chromeFont(), 24, window.viewportHeight - 24, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
+  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
   return image;
 }
 
@@ -1513,8 +1521,9 @@ function drawGridRow(
 function paintView(window: ViewWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   if (!window.receivedData) {
-    image.drawText(chromeFont(), 24, 110, window.status, 170);
-    image.drawText(chromeFont(), 24, 130, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    const font = chromeFont();
+    image.drawText(font, 24, 110, window.status, 170);
+    image.drawText(font, 24, 116 + lineStep(font), `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

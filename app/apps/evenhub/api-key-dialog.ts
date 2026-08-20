@@ -3,14 +3,12 @@ import { GrayImage } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
 import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 
 const DIALOG_X = 8;
 const DIALOG_Y = 8;
 const DIALOG_WIDTH = 272;
 const PADDING = 10;
-const HEADER_STEP = 16;
-const SERVICE_STEP = 15;
-const ACTION_ROW_HEIGHT = 20;
 
 const SERVICE_LABELS: Record<string, string> = {
   openai: "OpenAI",
@@ -47,31 +45,34 @@ export class EvenHubApiKeyDialogLayer implements Layer {
     const textWidth = DIALOG_WIDTH - 2 * PADDING - 4;
     const left = DIALOG_X + PADDING + 2;
 
-    const bodyTop = PADDING + HEADER_STEP + 6 + this.services.length * SERVICE_STEP + 8;
-    const height = Math.min(bodyTop + 2 * ACTION_ROW_HEIGHT + PADDING, viewportHeight - 2 * DIALOG_Y);
+    const headerStep = lineStep(font) + 2;
+    const serviceStep = lineStep(font) + 1;
+    const actionRowH = listRowHeight(font);
+    const bodyTop = PADDING + headerStep + 6 + this.services.length * serviceStep + 8;
+    const height = Math.min(bodyTop + 2 * actionRowH + PADDING, viewportHeight - 2 * DIALOG_Y);
 
     image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_WIDTH, height, 1);
     image.drawRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_WIDTH, height, 72);
 
     let y = DIALOG_Y + PADDING;
     image.drawText(font, left, y, truncateText(font, `${this.appName} wants your keys:`, textWidth), 235);
-    y += HEADER_STEP + 6;
+    y += headerStep + 6;
 
     for (const service of this.services) {
       const label = SERVICE_LABELS[service.id] ?? service.id;
       const text = service.configured ? label : `${label} (not set)`;
       image.drawText(font, left + 8, y, truncateText(font, text, textWidth - 8), service.configured ? 220 : 130);
-      y += SERVICE_STEP;
+      y += serviceStep;
     }
     y += 4;
 
     const focused = ctx.stack.isFocused();
     const actions = ["Allow", "Deny"];
     for (let index = 0; index < actions.length; index++) {
-      const rowY = y + index * ACTION_ROW_HEIGHT;
+      const rowY = y + index * actionRowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, ACTION_ROW_HEIGHT - 1, focused, 8);
+        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, actionRowH - 1, focused, 8);
       }
       image.drawText(font, DIALOG_X + 22, rowY + 3, actions[index]!, selected ? 255 : 200);
     }

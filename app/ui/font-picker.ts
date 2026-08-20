@@ -14,6 +14,7 @@ import { listInstalledFonts, type InstalledFont } from "../graphics/installed-fo
 import {
   fontSelectionLabel,
   getDefaultSmallFont,
+  uiFontSizeAllowed,
   getTerminalFontSelection,
   getUiFontSelection,
   setTerminalFontSelection,
@@ -23,6 +24,7 @@ import {
 } from "../graphics/ui-fonts";
 import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import { drawRightValueMenuItem, drawSelectionHighlight, openModalMenu, type MenuItem } from "./menu";
+import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
 import type { DashboardInputEvent, Layer, LayerContext } from "./layers";
 
 const SIZE_CHOICES = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
@@ -33,6 +35,11 @@ type FontPickerOptions = {
   title: string;
   /** Only offer faces where every style is monospace (terminal picker). */
   monospaceOnly: boolean;
+  /** When set, sizes where this returns false are disabled (and drafts are
+   * clamped to an allowed size on face/weight changes). The UI-font picker
+   * uses it to keep getDefaultSmallFont's line height within its guaranteed
+   * 12..21px range; the terminal picker has no such bound. */
+  sizeAllowed?: (path: string, size: number) => boolean;
   /** Bitmap faces offered ahead of the installed TTF families. */
   bitmapFaces: readonly { face: BitmapFace; label: string }[];
   get(): UiFontSelection;
@@ -66,7 +73,7 @@ export class FontPickerLayer implements Layer {
     if (selection.kind === "ttf") {
       for (const family of this.families) {
         const font = family.fonts.find((f) => f.fileName === selection.file);
-        if (font) return { kind: "ttf", family, font, size: selection.size };
+        if (font) return { kind: "ttf", family, font, size: this.clampSize(font, selection.size) };
       }
     }
     const face =
@@ -102,24 +109,24 @@ export class FontPickerLayer implements Layer {
 
     const rowX = 22;
     const rowWidth = width - 2 * rowX;
-    const rowHeight = 22;
-    const rowsTop = 40;
+    const rowHeight = listRowHeight(font);
+    const rowsTop = 24 + font.lineHeight;
     for (let index = 0; index < ROWS.length; index++) {
       const row = ROWS[index]!;
       const y = rowsTop + index * rowHeight;
       const disabled = this.rowDisabled(row);
       if (index === this.selectedRow) {
-        drawSelectionHighlight(image, rowX - 10, y - 2, rowWidth + 20, rowHeight - 2, focused, 8);
+        drawSelectionHighlight(image, rowX - 10, y, rowWidth + 20, rowHeight - 2, focused, 8);
       }
       if (row === "save") {
-        image.drawText(font, rowX, y + 3, "Save", index === this.selectedRow ? 255 : 200);
+        image.drawText(font, rowX, y + LIST_ROW_TEXT_INSET, "Save", index === this.selectedRow ? 255 : 200);
         continue;
       }
       const label = row === "face" ? "Font" : row === "weight" ? "Weight" : "Size";
       const value = this.rowValue(row);
       if (disabled) {
-        image.drawText(font, rowX, y + 3, label, 70);
-        image.drawText(font, rowX + rowWidth - font.measureText(value) - 2, y + 3, value, 70);
+        image.drawText(font, rowX, y + LIST_ROW_TEXT_INSET, label, 70);
+        image.drawText(font, rowX + rowWidth - font.measureText(value) - 2, y + LIST_ROW_TEXT_INSET, value, 70);
       } else {
         drawRightValueMenuItem(image, font, rowX, y, rowWidth, label, value);
       }
@@ -135,7 +142,7 @@ export class FontPickerLayer implements Layer {
     const info = `Line height: ${preview.lineHeight}px`;
     image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
 
-    image.drawText(font, rowX - 4, height - 30, `scroll select  click change  ${GESTURE_DOUBLE_CLICK} cancel`, 90);
+    image.drawText(font, rowX - 4, height - font.lineHeight - 8, `scroll select  click change  ${GESTURE_DOUBLE_CLICK} cancel`, 90);
     return image;
   }
 
@@ -222,7 +229,22 @@ export class FontPickerLayer implements Layer {
         font = candidate;
       }
     }
-    this.draft = { kind: "ttf", family, font, size };
+    this.draft = { kind: "ttf", family, font, size: this.clampSize(font, size) };
+  }
+
+  /**
+   * The nearest allowed size for this face (line-height bounds differ by
+   * face, so a face/weight change can invalidate the carried-over size).
+   */
+  private clampSize(font: InstalledFont, size: number): number {
+    const allowed = this.options.sizeAllowed;
+    if (!allowed || allowed(font.path, size)) return size;
+    let best = -1;
+    for (const candidate of SIZE_CHOICES) {
+      if (!allowed(font.path, candidate)) continue;
+      if (best < 0 || Math.abs(candidate - size) < Math.abs(best - size)) best = candidate;
+    }
+    return best > 0 ? best : size;
   }
 
   private openWeightMenu(ctx: LayerContext): void {
@@ -231,7 +253,7 @@ export class FontPickerLayer implements Layer {
     const items = draft.family.fonts.map((font): MenuItem => ({
       label: font.style || "Regular",
       onSelect: (innerCtx) => {
-        this.draft = { ...draft, font };
+        this.draft = { ...draft, font, size: this.clampSize(font, draft.size) };
         innerCtx.stack.pop();
       },
     }));
@@ -243,6 +265,7 @@ export class FontPickerLayer implements Layer {
     const draft = this.draft;
     const items = SIZE_CHOICES.map((size): MenuItem => ({
       label: String(size),
+      disabled: () => this.options.sizeAllowed !== undefined && !this.options.sizeAllowed(draft.font.path, size),
       onSelect: (innerCtx) => {
         this.draft = { ...draft, size };
         innerCtx.stack.pop();
@@ -275,6 +298,7 @@ export function uiFontPickerMenuItem(): MenuItem {
       "Typeface for UI text on the glasses: a bitmap Terminus variant or any installed TTF face at a chosen weight and size. Install more fonts from the Files app.",
     title: "UI font",
     monospaceOnly: false,
+    sizeAllowed: uiFontSizeAllowed,
     bitmapFaces: [
       { face: "terminus", label: "Terminus" },
       { face: "terminusv", label: "TerminusV" },

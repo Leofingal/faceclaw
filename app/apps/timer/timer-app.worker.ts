@@ -4,7 +4,7 @@
  * durable expiry path; worker timeouts keep the live UI prompt.
  */
 import "@nativescript/core/globals";
-import { GrayImage } from "../../graphics/image";
+import { type UiFont, GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
@@ -36,7 +36,10 @@ const FOOTER_HEIGHT = 34;
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
-const smallFont = getDefaultSmallFont();
+// Resolved per use so a font-setting change applies without a worker restart.
+function smallFont(): UiFont {
+  return getDefaultSmallFont();
+}
 
 type TimerView = "stopwatch" | "timers" | "editor";
 
@@ -529,7 +532,7 @@ function paintStopwatch(image: GrayImage, window: TimerWindow): void {
   image.drawText(largeFont, timeX, 66, timeLabel, 245);
 
   const state = stopwatchRunningSinceMs === null ? (elapsed > 0 ? "Paused" : "Ready") : "Running";
-  drawCenteredText(image, smallFont, 112, state, 145);
+  drawCenteredText(image, smallFont(), 112, state, 145);
 
   const labels = [stopwatchRunningSinceMs === null ? "Start" : "Pause", "Reset", `Timers (${timers.length})`];
   drawButtonRow(image, labels, window.stopwatchAction, 154);
@@ -552,7 +555,7 @@ function paintTimers(image: GrayImage, window: TimerWindow): void {
       image.fillRoundedRect(18, y, image.width - 36, TIMER_ROW_HEIGHT - 4, 34, 5);
       image.drawRect(18, y, image.width - 36, TIMER_ROW_HEIGHT - 4, 105);
     }
-    image.drawText(index >= 2 ? mediumFont : smallFont, 32, y + (index >= 2 ? 2 : 7), items[index]!, selected ? 245 : 180);
+    image.drawText(index >= 2 ? mediumFont : smallFont(), 32, y + (index >= 2 ? 2 : 7), items[index]!, selected ? 245 : 180);
   }
 
   const selectedTimer = window.timerSelection >= 2 ? timers[window.timerSelection - 2] : null;
@@ -561,7 +564,7 @@ function paintTimers(image: GrayImage, window: TimerWindow): void {
 }
 
 function paintEditor(image: GrayImage, window: TimerWindow): void {
-  image.drawText(smallFont, 24, 14, "New timer", 190);
+  image.drawText(smallFont(), 24, 14, "New timer", 190);
   const fields = [pad2(window.editorHours), pad2(window.editorMinutes), pad2(window.editorSeconds)];
   const labels = ["hours", "minutes", "seconds"];
   const fieldWidth = 118;
@@ -576,7 +579,7 @@ function paintEditor(image: GrayImage, window: TimerWindow): void {
       image.drawRect(x, 57, fieldWidth, 68, 120);
     }
     drawCenteredIn(image, largeFont, x, fieldWidth, 65, fields[index]!, window.editorField === index ? 250 : 180);
-    drawCenteredIn(image, smallFont, x, fieldWidth, 105, labels[index]!, 125);
+    drawCenteredIn(image, smallFont(), x, fieldWidth, 105, labels[index]!, 125);
     if (index < 2) image.drawText(mediumFont, x + fieldWidth + 5, 71, ":", 130);
   }
 
@@ -587,8 +590,8 @@ function paintEditor(image: GrayImage, window: TimerWindow): void {
     image.fillRoundedRect(buttonX, 151, buttonWidth, 38, 40, 6);
     image.drawRect(buttonX, 151, buttonWidth, 38, 120);
   }
-  drawCenteredIn(image, smallFont, buttonX, buttonWidth, 162, "Start timer", startSelected ? 250 : 175);
-  if (window.editorMessage) drawCenteredText(image, smallFont, 202, window.editorMessage, 190);
+  drawCenteredIn(image, smallFont(), buttonX, buttonWidth, 162, "Start timer", startSelected ? 250 : 175);
+  if (window.editorMessage) drawCenteredText(image, smallFont(), 202, window.editorMessage, 190);
   drawFooter(image, `${GESTURE_SCROLL} adjust   ${GESTURE_CLICK} next   ${GESTURE_DOUBLE_CLICK} cancel`);
 }
 
@@ -596,11 +599,11 @@ function drawTabs(image: GrayImage, active: "stopwatch" | "timers"): void {
   const stopwatch = "Stopwatch";
   const timerLabel = `Timers (${timers.length})`;
   const left = 24;
-  const dividerX = left + smallFont.measureText(stopwatch) + 18;
-  image.drawText(smallFont, left, 15, stopwatch, active === "stopwatch" ? 245 : 105);
+  const dividerX = left + smallFont().measureText(stopwatch) + 18;
+  image.drawText(smallFont(), left, 15, stopwatch, active === "stopwatch" ? 245 : 105);
   image.drawLine(left, 35, dividerX - 12, 35, active === "stopwatch" ? 200 : 30);
-  image.drawText(smallFont, dividerX, 15, timerLabel, active === "timers" ? 245 : 105);
-  image.drawLine(dividerX, 35, dividerX + smallFont.measureText(timerLabel), 35, active === "timers" ? 200 : 30);
+  image.drawText(smallFont(), dividerX, 15, timerLabel, active === "timers" ? 245 : 105);
+  image.drawLine(dividerX, 35, dividerX + smallFont().measureText(timerLabel), 35, active === "timers" ? 200 : 30);
 }
 
 function drawButtonRow(image: GrayImage, labels: string[], selected: number, y: number): void {
@@ -613,22 +616,22 @@ function drawButtonRow(image: GrayImage, labels: string[], selected: number, y: 
       image.fillRoundedRect(x, y, width, 40, 38, 6);
       image.drawRect(x, y, width, 40, 115);
     }
-    drawCenteredIn(image, smallFont, x, width, y + 12, labels[index]!, index === selected ? 245 : 155);
+    drawCenteredIn(image, smallFont(), x, width, y + 12, labels[index]!, index === selected ? 245 : 155);
   }
 }
 
 function drawFooter(image: GrayImage, text: string): void {
   image.drawLine(16, image.height - FOOTER_HEIGHT, image.width - 16, image.height - FOOTER_HEIGHT, 35);
-  drawCenteredText(image, smallFont, image.height - 22, text, 115);
+  drawCenteredText(image, smallFont(), image.height - 22, text, 115);
 }
 
-function drawCenteredText(image: GrayImage, font: typeof smallFont, y: number, text: string, value: number): void {
+function drawCenteredText(image: GrayImage, font: UiFont, y: number, text: string, value: number): void {
   image.drawText(font, Math.round((image.width - font.measureText(text)) / 2), y, text, value);
 }
 
 function drawCenteredIn(
   image: GrayImage,
-  font: typeof smallFont,
+  font: UiFont,
   x: number,
   width: number,
   y: number,

@@ -15,9 +15,9 @@ import {
   type EvenHubInstallIcon,
 } from "./installed-apps";
 import { EvenHubPermissionDialogLayer } from "./permission-dialog";
+import { lineStep, listRowHeight } from "../../ui/metrics";
 
 const X = 18;
-const ACTION_HEIGHT = 24;
 
 export type EvenHubStoreDetailOptions = {
   launchApp: (appId: string) => Promise<void> | void;
@@ -43,18 +43,20 @@ export class EvenHubStoreDetailLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const textWidth = width - X * 2;
+    const step = lineStep(font);
+    const actionRowH = listRowHeight(font) + 4;
     let y = 8;
 
     image.drawText(font, X, y, truncateText(font, this.app.name, textWidth), 235);
-    y += 16;
+    y += step + 2;
     const creator = this.app.creatorName ? `by ${this.app.creatorName}` : this.app.packageId;
     image.drawText(font, X, y, truncateText(font, creator, textWidth), 130);
-    y += 20;
+    y += step + 6;
 
     const summary = this.app.tagline || this.app.description || "No description supplied.";
     for (const line of wrapText(font, summary, textWidth).slice(0, 3)) {
       image.drawText(font, X, y, line, 205);
-      y += 14;
+      y += step;
     }
     y += 4;
 
@@ -66,31 +68,31 @@ export class EvenHubStoreDetailLayer implements Layer {
     ].filter(Boolean);
     for (const line of metadata) {
       image.drawText(font, X, y, truncateText(font, line, textWidth), 125);
-      y += 14;
+      y += step;
     }
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
     const actions = ["About", "What's New", this.working ? "Installing..." : installed ? "Launch" : "Install"];
-    const actionTop = height - 22 - actions.length * ACTION_HEIGHT;
+    const actionTop = height - font.lineHeight - 10 - actions.length * actionRowH;
     if (installed && !this.status) {
       image.drawText(font, X, y + 2, `Installed version ${installed.version}`, 155);
     }
     if (this.status) {
-      image.drawText(font, X, Math.min(actionTop - 14, y + 2), truncateText(font, this.status, textWidth), 180);
+      image.drawText(font, X, Math.min(actionTop - step, y + 2), truncateText(font, this.status, textWidth), 180);
     }
 
     for (let index = 0; index < actions.length; index++) {
-      const actionY = actionTop + index * ACTION_HEIGHT;
+      const actionY = actionTop + index * actionRowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, X - 5, actionY, textWidth + 10, ACTION_HEIGHT - 1, ctx.stack.isFocused(), 8);
+        drawSelectionHighlight(image, X - 5, actionY, textWidth + 10, actionRowH - 1, ctx.stack.isFocused(), 8);
       }
       image.drawText(font, X + 6, actionY + 5, actions[index]!, this.working && index === 2 ? 145 : selected ? 245 : 190);
     }
     image.drawText(
       font,
       X,
-      height - 16,
+      height - font.lineHeight - 4,
       `${GESTURE_SCROLL} select   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} back`,
       105,
     );

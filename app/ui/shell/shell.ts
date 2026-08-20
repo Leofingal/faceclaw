@@ -166,7 +166,7 @@ class ShellAlertLayer implements Layer {
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
-      y: alertY + 34,
+      y: alertY + 18 + font.lineHeight + 4,
       width: ALERT_W - 32,
       text: this.text,
       value: 235,
