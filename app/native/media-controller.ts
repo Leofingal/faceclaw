@@ -4,6 +4,14 @@ import { grayImageFromPacket } from "./image-files";
 
 declare const com: any;
 
+/**
+ * Tone curve applied to album art before it is dithered down to the display's
+ * 16 gray levels (out = in^gamma, in 0..1). Cover art is sRGB-encoded but the
+ * G2 drives its levels roughly linearly, so untouched art reads washed out;
+ * 2.2 undoes the sRGB encoding. Lower it toward ~1.8 if shadows crush.
+ */
+const ALBUM_ART_GAMMA = 2.2;
+
 export type MediaQueueItem = {
   id: number;
   title: string;
@@ -133,14 +141,17 @@ export class FaceclawMediaControllerBridge {
   }
 
   /**
-   * Album art for the current item, grayscale, scaled to fit maxSize; null
-   * when the player provides none.
+   * Album art for the current item, grayscale (gamma-corrected and dithered
+   * onto the display's 16 levels), scaled to fit maxSize; null when the
+   * player provides none.
    */
   getAlbumArt(maxSize: number): GrayImage | null {
     if (!global.isAndroid) return null;
     this.ensureController();
     if (!this.controller) return null;
-    return grayImageFromPacket(this.controller.getAlbumArtGray(Math.round(maxSize)));
+    return grayImageFromPacket(
+      this.controller.getAlbumArtGray(Math.round(maxSize), ALBUM_ART_GAMMA),
+    );
   }
 
   /** The player's queue (playlist), empty when the player exposes none. */
