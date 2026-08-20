@@ -1,4 +1,5 @@
 import { Application } from "@nativescript/core";
+import { fetchWithUserAgent } from "../../util/http";
 
 declare const android: any;
 declare const androidx: any;
@@ -74,7 +75,7 @@ async function downloadAndOpenPdf(url: string, appName: string, activity: any): 
   });
   let response: Response;
   try {
-    response = await Promise.race([fetch(url), timeout]);
+    response = await Promise.race([fetchWithUserAgent(url), timeout]);
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
   }

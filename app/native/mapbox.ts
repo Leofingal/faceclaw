@@ -7,6 +7,7 @@
 import { GrayImage } from "../graphics/image";
 import { getStringSetting } from "./settings-store";
 import { grayImageFromPacket } from "./image-files";
+import { fetchWithUserAgent } from "../util/http";
 
 declare const com: any;
 declare const global: any;
@@ -268,7 +269,7 @@ async function fetchJson(url: string, label: string): Promise<any> {
 }
 
 async function fetchWithTimeout(url: string, label: string): Promise<Response> {
-  const request = fetch(url);
+  const request = fetchWithUserAgent(url);
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error(`${label} timed out.`)), FETCH_TIMEOUT_MS);

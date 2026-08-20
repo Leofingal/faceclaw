@@ -7,6 +7,7 @@
  */
 import { Application } from "@nativescript/core";
 import { evenHubEmailSetting, evenHubPasswordSetting, hasEvenHubCredentials } from "./credentials";
+import { fetchWithUserAgent } from "../../util/http";
 
 declare const android: any;
 
@@ -325,7 +326,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQU
     timeoutHandle = setTimeout(() => reject(new Error("EvenHub request timed out.")), timeoutMs);
   });
   try {
-    return await Promise.race([fetch(url, init), timeout]);
+    return await Promise.race([fetchWithUserAgent(url, init), timeout]);
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
   }

@@ -63,6 +63,7 @@ public class FaceclawModelDownloader {
                     sharedClient = new OkHttpClient.Builder()
                         .connectTimeout(30, TimeUnit.SECONDS)
                         .readTimeout(60, TimeUnit.SECONDS)
+                        .addInterceptor(FaceclawHttp.userAgentInterceptor())
                         .build();
                 }
             }

@@ -6,6 +6,7 @@
  * worker via fetch.
  */
 import { roamApiTokenSetting, roamGraphNameSetting } from "../../ui/dashboard-settings";
+import { fetchWithUserAgent } from "../../util/http";
 
 const API_BASE = "https://api.roamresearch.com";
 const FETCH_TIMEOUT_MS = 12_000;
@@ -145,7 +146,7 @@ async function roamPost(endpoint: "q" | "pull" | "write", body: object): Promise
 
 async function fetchWithTimeout(url: string, payload: string, token: string): Promise<Response> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const request = fetch(url, {
+  const request = fetchWithUserAgent(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=utf-8",

@@ -18,6 +18,7 @@ import {
   extractEvenHubFontAsset,
   isEvenHubFontAsset,
 } from "./firmware-fonts";
+import { fetchWithUserAgent } from "../util/http";
 
 declare const com: any;
 
@@ -157,7 +158,7 @@ async function downloadAndVerifyBase(report: (progress: FirmwareProgress) => voi
 async function downloadFirmware(): Promise<ArrayBuffer> {
   let response: Response;
   try {
-    response = await fetch(FIRMWARE_URL);
+    response = await fetchWithUserAgent(FIRMWARE_URL);
   } catch (error) {
     throw new FirmwareBuildError(`Could not reach Even's firmware CDN: ${(error as Error)?.message ?? error}`);
   }
