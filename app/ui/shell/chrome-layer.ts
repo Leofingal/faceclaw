@@ -391,12 +391,19 @@ function drawSelectionTab(image: GrayImage, left: number, top: number, bottom: n
     }
     return;
   }
-  // Outline: curved left edge (per-row) plus straight top and bottom edges.
+  // Outline: the tab shape minus the same shape inset by a pixel, row by row.
+  // Stroking the curve one pixel per row instead would leave gaps wherever the
+  // corner steps in by more than one pixel, and the top/bottom edges have to
+  // start at the same inset the curve uses or they part company from it.
   for (let yy = top; yy < bottom; yy++) {
-    image.setPixel(left + tabLeftInset(yy, top, bottom, TAB_RADIUS), yy, TAB_STROKE);
+    const outer = left + tabLeftInset(yy, top, bottom, TAB_RADIUS);
+    // The top and bottom rows are the horizontal edges: solid out to the open
+    // right side. In between only the left edge is stroked.
+    const inner = yy > top && yy < bottom - 1
+      ? left + 1 + tabLeftInset(yy, top + 1, bottom - 1, TAB_RADIUS - 1)
+      : right + 1;
+    image.fillRect(outer, yy, Math.max(1, Math.min(inner, right + 1) - outer), 1, TAB_STROKE);
   }
-  image.drawLine(left + tabLeftInset(top, top, bottom-1, TAB_RADIUS), top, right, top, TAB_STROKE);
-  image.drawLine(left + tabLeftInset(bottom-1, top, bottom-1, TAB_RADIUS), bottom-1, right, bottom-1, TAB_STROKE);
 }
 
 /**
