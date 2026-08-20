@@ -11,6 +11,16 @@ export const TOP_BAR_HEIGHT = 28;
 export const SIDEBAR_WIDTH = 64;
 
 /**
+ * X of the display's true horizontal centre, in app-viewport coordinates. The
+ * sidebar pushes the viewport to the right, so UI the wearer physically aims
+ * with — a compass rose, a calibration crosshair — has to offset by it rather
+ * than use the viewport's own centre.
+ */
+export function screenCenterInViewportX(): number {
+  return Math.round(G2_LENS_WIDTH / 2) - SIDEBAR_WIDTH;
+}
+
+/**
  * On the color-key shell surface, pixel value 0 is transparent; 1 is the
  * darkest opaque shade (identical to 0 after 4bpp quantization). Shell
  * painting must use this for intentional black.
