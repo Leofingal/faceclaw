@@ -1,5 +1,5 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import {
@@ -285,7 +285,7 @@ export class MediaBrowseLayer implements Layer {
   }
 }
 
-function truncateRight(font: BdfFont, text: string, maxWidth: number): string {
+function truncateRight(font: UiFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
@@ -294,7 +294,7 @@ function truncateRight(font: BdfFont, text: string, maxWidth: number): string {
   return `${out}...`;
 }
 
-function truncateLeft(font: BdfFont, text: string, maxWidth: number): string {
+function truncateLeft(font: UiFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {

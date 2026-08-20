@@ -18,7 +18,7 @@ import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import { prepareFrameDraws } from "../graphics/glyph-wire";
-import { getDefaultMediumFont } from "../graphics/bdffont";
+import { getDefaultMediumFont } from "../graphics/ui-fonts";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
@@ -1427,6 +1427,13 @@ class DashboardController {
       submitFrame: (planes, paintMs, frameId) => this.submitWindowFrame(surfaceId, planes, paintMs, frameId),
       setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: () => this.removeWindowSurface(surfaceId),
+      reconfigureSurface: (heightMode) => {
+        // Resize the surface rect to the new band; a foreground window stays
+        // visible. The shell re-renders so the chrome (top bar) follows.
+        const visible = shell.foregroundWindow()?.windowId === windowId;
+        void this.configureWindowSurface(surfaceId, visible, heightMode);
+        this.requestShellRender();
+      },
       onClosed: () => {
         this.inProcessApps.delete(windowId);
       },

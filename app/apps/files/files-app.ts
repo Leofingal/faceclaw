@@ -1,5 +1,6 @@
 import { readTextFile, type DirectoryEntry } from "../../native/file-access";
 import { isFontFile } from "../../native/font-files";
+import { installFontFile, isFontInstalled } from "../../graphics/installed-fonts";
 import { isDecodableImageFile } from "../../native/image-files";
 import { readEvenHubPackageManifest } from "../evenhub/installed-apps";
 import { EvenHubPermissionDialogLayer } from "../evenhub/permission-dialog";
@@ -227,6 +228,16 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
     ];
   }
   if (isFontFile(entry.name)) {
+    // Install copies into the app-internal fonts directory, making the face
+    // available in the Settings font pickers. The row relabels itself with
+    // the result (the dialog re-reads labels each paint).
+    const install: FileInfoAction = {
+      label: isFontInstalled(entry.path) ? "Reinstall" : "Install",
+      onSelect: () => {
+        const error = installFontFile(entry.path);
+        install.label = error ?? "Installed";
+      },
+    };
     return [
       {
         label: "Preview here",
@@ -242,6 +253,7 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
           options.openFontWindow(entry.name, entry.path);
         },
       },
+      install,
     ];
   }
   return [];

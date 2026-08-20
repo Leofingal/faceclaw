@@ -2248,6 +2248,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         + " fw=" + tex.fwGlyphs + "/" + tex.fwRuns
                         + " baked=" + tex.bakedCandidates
                         + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
+                        + " cache=" + textureCache.usedBytes() + "B"
                         + " payload=" + tex.payload.length + "B";
                 FrameTimings.getInstance().log(frameId, texLog);
                 finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);

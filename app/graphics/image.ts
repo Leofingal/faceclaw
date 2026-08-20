@@ -1,4 +1,4 @@
-import { BdfFont, Glyph } from "./bdffont";
+import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
 
 export const G2_LENS_WIDTH = 640;
@@ -22,6 +22,35 @@ export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayIm
 }
 
 /**
+ * The font behind a deferred glyph draw: what rasterizeGlyph and the wire
+ * encoder (glyph-wire.ts) need from it. BdfFont satisfies this directly;
+ * TtfFont (ttf-font.ts) implements it for antialiased glyphs. Structural so
+ * image.ts needs no imports beyond BdfFont's Glyph shape.
+ */
+export interface GlyphFont {
+  /** Process-local identity for content fingerprints (see BdfFont). */
+  readonly fingerprintId: number;
+  /** Stable cross-context identity for the on-glasses glyph atlas, or null. */
+  readonly atlasKey: string | null;
+  readonly ascent: number;
+  readonly lineHeight: number;
+}
+
+/**
+ * A general text-drawing font: what GrayImage.drawText and the shared list
+ * UI helpers need. BdfFont (bitmap) and TtfFont (antialiased) both implement
+ * it. The font owns text layout (drawText) because layout rules differ by
+ * kind — BDF advances are integers, TTF advances are fractional and kerned.
+ */
+export interface UiFont extends GlyphFont {
+  readonly descent: number;
+  measureText(text: string): number;
+  getGlyph(codePoint: number): Glyph | undefined;
+  hasGlyph(codePoint: number): boolean;
+  drawText(image: GrayImage, x: number, y: number, text: string, value: number): void;
+}
+
+/**
  * One deferred glyph draw. Text drawn through drawGlyph/drawText/
  * drawTextWrapped is retained here rather than baked into the pixel buffer,
  * so the compositor can ship glyphs as on-glasses cached draws instead of
@@ -30,7 +59,7 @@ export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayIm
  */
 export type PlacedGlyph = {
   kind: "glyph";
-  font: BdfFont;
+  font: GlyphFont;
   glyph: Glyph;
   x: number;
   y: number;
@@ -202,23 +231,12 @@ export class GrayImage {
     }
   }
 
-  drawText(font: BdfFont, x: number, y: number, text: string, value: number): void {
-    let cursorX = x;
-    for (const char of text) {
-      if (char === "\n") {
-        cursorX = x;
-        y += font.lineHeight;
-        continue;
-      }
-      const glyph = font.getGlyph(char.codePointAt(0) ?? 32);
-      if (!glyph) continue;
-      this.drawGlyph(font, glyph, cursorX, y, value);
-      cursorX += glyph.dwidthX;
-    }
+  drawText(font: UiFont, x: number, y: number, text: string, value: number): void {
+    font.drawText(this, x, y, text, value);
   }
 
   drawTextWrapped({font, x, y, width, text, value }: {
-    font: BdfFont;
+    font: UiFont;
     x: number;
     y: number;
     width: number;
@@ -227,7 +245,7 @@ export class GrayImage {
   }): void {
     const lines = wrapText(font, text, width);
     for (let i = 0; i < lines.length; i++) {
-      this.drawText(font, x, y + i * font.lineHeight, lines[i]!, value);
+      font.drawText(this, x, y + i * font.lineHeight, lines[i]!, value);
     }
   }
 
@@ -414,7 +432,7 @@ export class GrayImage {
    * (rendered above all raster pixels) instead of being baked into the
    * buffer.
    */
-  drawGlyph(font: BdfFont, glyph: Glyph, x: number, y: number, value: number): void {
+  drawGlyph(font: GlyphFont, glyph: Glyph, x: number, y: number, value: number): void {
     this.drawList.push({ kind: "glyph", font, glyph, x, y, value: clampByte(value) });
   }
 
@@ -492,10 +510,19 @@ export class GrayImage {
   }
 }
 
-/** Bake one BDF glyph into an image's pixel buffer (y is the top of the line). */
+/**
+ * The 4bpp level an 8-bit gray value packs to (BmpUtil's GRAY_TO_NIBBLE).
+ * Shared by every phone-side bake that must match the firmware's draw-time
+ * LUT math bit-for-bit (AA glyphs here, EvenHubFont's mode-15 bakes).
+ */
+export function grayToNibble(value: number): number {
+  return value <= 0 ? 0 : Math.min(15, (value + 8) >> 4);
+}
+
+/** Bake one glyph into an image's pixel buffer (y is the top of the line). */
 function rasterizeGlyph(
   target: GrayImage,
-  font: BdfFont,
+  font: GlyphFont,
   glyph: Glyph,
   x: number,
   y: number,
@@ -504,6 +531,24 @@ function rasterizeGlyph(
   const baselineY = y + font.ascent;
   const top = baselineY - (glyph.bbxHeight + glyph.bbxY);
   const left = x + glyph.bbxX;
+  if (glyph.coverage) {
+    // Firmware-exact AA shading (see EvenHubFont.drawGlyph): the CFW draws
+    // cached glyphs through a LUT mapping source nibble n to n*top/15
+    // (integer), skipping only n == 0. Writing 16*level makes the composite
+    // quantize (grayToNibble) back to exactly that level, so the
+    // texture-cache planner's pixel checks — and the shadow after an
+    // on-glasses mode-14 draw — match this bake bit-for-bit.
+    const top4 = grayToNibble(value);
+    for (let row = 0; row < glyph.bbxHeight; row++) {
+      const rowStart = row * glyph.bbxWidth;
+      for (let col = 0; col < glyph.bbxWidth; col++) {
+        const nibble = glyph.coverage[rowStart + col]!;
+        if (nibble === 0) continue;
+        target.setPixel(left + col, top + row, Math.floor((nibble * top4) / 15) * 16);
+      }
+    }
+    return;
+  }
   const rowBitWidth = ((glyph.bbxWidth + 7) >> 3) << 3;
   for (let row = 0; row < glyph.bbxHeight; row++) {
     const bits = glyph.bitmapRows[row] ?? 0;

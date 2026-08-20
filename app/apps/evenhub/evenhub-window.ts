@@ -58,6 +58,7 @@ export function createEvenHubWindow(
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
+    reconfigureSurface: options.reconfigureSurface,
     onClosed: () => {
       options.onClosed();
       session.windowClosed();
@@ -69,6 +70,10 @@ export function createEvenHubWindow(
     closeWindow: () => shell.closeWindow(windowId),
     focusSwitcher: () => shell.yieldFocusToSidebar(),
     pushOverlay: (layer) => created.stack.push(layer),
+    // The extended layout uses the full 576x452 app area ("max"); stock apps
+    // stay in the 576x288 band ("medium").
+    setTallCanvas: (tall) => created.setHeightMode(tall ? "max" : "medium"),
+    windowId,
   });
 
   // FOREGROUND_ENTER/EXIT for the app on shell focus changes.

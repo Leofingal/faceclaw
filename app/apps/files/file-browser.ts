@@ -1,6 +1,6 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, truncateLeft } from "../../graphics/textwrap";
-import { GrayImage } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
@@ -149,7 +149,7 @@ export class FileBrowserLayer implements Layer {
     return image;
   }
 
-  private paintList(image: GrayImage, font: BdfFont, rows: BrowserItem[], ctx: LayerContext): void {
+  private paintList(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
     this.listIndex = clamp(this.listIndex, 0, Math.max(0, rows.length - 1));
 
@@ -172,7 +172,7 @@ export class FileBrowserLayer implements Layer {
     image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
   }
 
-  private paintIcons(image: GrayImage, font: BdfFont, rows: BrowserItem[], ctx: LayerContext): void {
+  private paintIcons(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
     const focused = ctx.stack.isFocused();
     const iconRows = buildIconRows(rows);

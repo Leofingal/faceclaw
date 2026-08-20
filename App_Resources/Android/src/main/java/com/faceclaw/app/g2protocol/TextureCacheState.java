@@ -61,6 +61,15 @@ public final class TextureCacheState {
         return generation;
     }
 
+    /**
+     * Bytes currently allocated out of CACHE_SIZE, for logging/tuning (a
+     * sudden drop in the frame log means a reset-on-full re-upload cycle —
+     * the signal that the 64 KiB budget is being outgrown).
+     */
+    public int usedBytes() {
+        return allocEnd;
+    }
+
     /** The font's 96-entry table offset in the cache, or -1 when it exists but this glyph can't fit. */
     public int fontTableOffset(int fontId) {
         Integer existing = fontTableOffsets.get(fontId);

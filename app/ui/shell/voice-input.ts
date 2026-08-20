@@ -1,6 +1,7 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { refineDictation, type AnthropicStreamHandle } from "../../native/anthropic";
 import { anthropicApiKeySetting } from "../dashboard-settings";

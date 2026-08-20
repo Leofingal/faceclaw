@@ -1,8 +1,8 @@
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
-import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
+import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { truncateText } from "../graphics/textwrap";
-import { GrayImage } from "../graphics/image";
+import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import {
@@ -237,7 +237,7 @@ export class SingleNotificationLayer implements Layer {
 
 
 function buildNotificationCardLayout(
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   selected: boolean,
   cardTextWidth: number,
@@ -273,7 +273,7 @@ function buildNotificationCardLayout(
 
 function drawNotificationCard(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   layout: CardLayout,
   x: number,
   y: number,
@@ -313,7 +313,7 @@ function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewpor
 
 function drawDetailContent(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   icon: GrayImage | null,
   width: number,
@@ -353,7 +353,7 @@ function drawDetailContent(
   }
 }
 
-function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
+function drawDetailMenu(image: GrayImage, font: UiFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
   const menuX = width - DETAIL_MENU_WIDTH - 24;
   const menuY = 24;
   for (let index = 0; index < menu.length; index++) {

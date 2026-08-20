@@ -1,4 +1,4 @@
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import { NightscoutLayer } from "./nightscout";

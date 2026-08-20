@@ -1,6 +1,6 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
-import { getDefaultSmallFont, type BdfFont } from "../graphics/bdffont";
+import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { clamp } from "../util/numeric-util";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
 
@@ -121,7 +121,7 @@ export function drawListScrollbar(
  */
 export function drawSubmenuIndicator(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   highlightX: number,
   highlightY: number,
   highlightWidth: number,
@@ -136,7 +136,7 @@ export function drawSubmenuIndicator(
 
 export function drawToggleMenuItem(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   x: number,
   y: number,
   width: number,
@@ -159,7 +159,7 @@ export function drawToggleMenuItem(
 
 export function drawRightValueMenuItem(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   x: number,
   y: number,
   width: number,

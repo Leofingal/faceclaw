@@ -44,6 +44,7 @@ import {
   readString,
   type EvenHubImageContainer,
   type EvenHubListContainer,
+  type EvenHubContainer,
   type EvenHubPage,
 } from "./containers";
 import { compositePage } from "./compositor";
@@ -51,7 +52,9 @@ import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
 import { evenHubImuRouter, type EvenHubImuClient } from "./imu-router";
+import { evenHubCompassRouter, type EvenHubCompassClient } from "./compass-router";
 import { type ImuReading } from "../../native/imu";
+import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { getCurrentLocation } from "../../native/location";
 import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
 import { ensureFineLocationPermission } from "../../g2/android-permissions";
@@ -225,6 +228,48 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
       if (i >= 0) arr.splice(i, 1);
     };
   }
+  // Compass: enable on first listener, disable when the last one leaves.
+  var compassListeners = [];
+  function addCompass(cb) {
+    compassListeners.push(cb);
+    if (compassListeners.length === 1) send("setCompass", [true]);
+    var off = on("compass", cb);
+    return function () {
+      off();
+      var i = compassListeners.indexOf(cb);
+      if (i >= 0) compassListeners.splice(i, 1);
+      if (compassListeners.length === 0) send("setCompass", [false]);
+    };
+  }
+  // Voice-assistant tools: specs go to the host; handlers stay here and run when
+  // the host invokes a tool via __fcExtInvokeTool.
+  var toolHandlers = {};
+  window.__fcExtInvokeTool = function (id, name, args) {
+    var handler = toolHandlers[name];
+    function reply(ok, value) {
+      window.__faceclawEvenHub.postMessage("faceclawExtToolResult", JSON.stringify([id, ok, value]), 0);
+    }
+    if (!handler) { reply(false, "unknown tool " + name); return; }
+    Promise.resolve().then(function () { return handler(args); }).then(
+      function (res) { reply(true, res == null ? "" : res); },
+      function (err) { reply(false, String((err && err.message) || err)); }
+    );
+  };
+  function setAssistantTools(tools) {
+    toolHandlers = {};
+    var specs = [];
+    (tools || []).forEach(function (t) {
+      if (!t || !t.name || typeof t.handler !== "function") return;
+      toolHandlers[t.name] = t.handler;
+      specs.push({
+        name: t.name,
+        description: t.description || "",
+        parameters: t.parameters || { type: "object", properties: {} },
+        availability: t.availability === "open" ? "open" : "foreground"
+      });
+    });
+    send("setAssistantTools", [specs]);
+  }
   var extensions = {
     getVersion: function () { return VERSION; },
     returnToAppSwitcher: function () { send("returnToAppSwitcher"); },
@@ -232,7 +277,11 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
     addWindowLifecycleListener: function (cb) { return on("windowLifecycle", cb); },
     getConfiguredApiKeys: function () { return call("getConfiguredApiKeys"); },
     requestApiKeyAccess: function (services) { return call("requestApiKeyAccess", [services || []]); },
-    playBuzzer: function (steps) { return call("playBuzzer", [steps || []]); }
+    playBuzzer: function (steps) { return call("playBuzzer", [steps || []]); },
+    addCompassListener: addCompass,
+    createLayout: function (layout) { return call("createLayout", [layout || {}]); },
+    replaceLayout: function (layout) { return call("replaceLayout", [layout || {}]); },
+    setAssistantTools: setAssistantTools
   };
   window.getFaceclawExtensions = function () { return extensions; };
 })();
@@ -256,9 +305,13 @@ export type EvenHubWindowHooks = {
   focusSwitcher: () => void;
   /** Push a modal overlay layer onto the app window (e.g. a consent prompt). */
   pushOverlay: (layer: Layer) => void;
+  /** Switch the window between the stock 576x288 band and the full 576x452 canvas. */
+  setTallCanvas: (tall: boolean) => void;
+  /** The shell window id (unique per running instance; used for tool registration). */
+  windowId: string;
 };
 
-export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
+export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenHubCompassClient {
   readonly manifest: EvenHubManifest;
   readonly distDir: string;
 
@@ -269,6 +322,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   private closed = false;
   private launchContextPushed = false;
   private systemExitSent = false;
+  /** The one-shot launch FOREGROUND_ENTER has been delivered (page exists). */
+  private launchEnterSent = false;
   /** Shell focus state; true from launch (apps open focused). */
   private foreground = true;
   /** Phone screen state; the mic goes silent while the screen is off. */
@@ -277,8 +332,17 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   private micRequested = false;
   /** The app has enabled the accelerometer via imuControl(true). */
   private imuRequested = false;
+  /** The app has activated the compass (extension addCompassListener). */
+  private compassRequested = false;
   /** Non-null while the app has an active location subscription. */
   private locationTracker: LocationTracker | null = null;
+  /** The shell window id, for tool registration (falls back to packageId). */
+  private shellWindowId = "";
+  /** Whether this app has contributed assistant tools (for cleanup). */
+  private hasAppTools = false;
+  /** Pending host→app tool invocations, keyed by call id. */
+  private readonly pendingToolCalls = new Map<number, (result: ToolResult) => void>();
+  private nextToolCallId = 1;
   // Window-lifecycle tracking for the extension API (apps launch visible+focused).
   private lastVisible = true;
   private lastFocused = true;
@@ -321,6 +385,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
 
   attachWindow(hooks: EvenHubWindowHooks): void {
     this.windowHooks = hooks;
+    this.shellWindowId = hooks.windowId;
   }
 
   windowClosed(): void {
@@ -402,6 +467,9 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
     // reads the accelerometer).
     if (this.micRequested) evenHubMicRouter.notifyEligibilityChanged();
     if (this.imuRequested) evenHubImuRouter.notifyEligibilityChanged();
+    if (this.compassRequested) evenHubCompassRouter.notifyEligibilityChanged();
+    // Foreground gates which app tools are live; re-list on change.
+    if (this.hasAppTools) toolRegistry.fireToolsChanged();
     // Focus is unknown until the next paint (a re-shown window repaints and
     // re-asserts it; a hidden one won't, so treat it as unfocused meanwhile).
     this.shellFocused = false;
@@ -450,7 +518,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
   // ----- microphone (EvenHubMicClient) -----
 
   get windowId(): string {
-    return this.manifest.packageId;
+    return this.shellWindowId || this.manifest.packageId;
   }
 
   isForeground(): boolean {
@@ -593,6 +661,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
       this.handleExtensionCall(argsJson, callId);
       return;
     }
+    if (handlerName === "faceclawExtToolResult") {
+      this.handleToolResult(argsJson);
+      return;
+    }
     void (async () => {
       let result: unknown = null;
       try {
@@ -676,7 +748,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
     this.page = page;
     this.pageCreated = true;
     // The launch focus arrived before the page existed; deliver the ENTER now.
-    if (this.foreground) this.emitSysEvent(FOREGROUND_ENTER_EVENT, 0);
+    if (this.foreground && !this.launchEnterSent) {
+      this.launchEnterSent = true;
+      this.emitSysEvent(FOREGROUND_ENTER_EVENT, 0);
+    }
     this.windowHooks?.requestRender();
     return 0;
   }
@@ -842,9 +917,123 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
       case "playBuzzer":
         await this.playBuzzer(Array.isArray(params[0]) ? params[0] : []);
         return null;
+      case "setCompass":
+        this.setCompass(params[0] === true);
+        return null;
+      case "createLayout":
+      case "replaceLayout":
+        return this.applyExtensionLayout(asRecord(params[0]));
+      case "setAssistantTools":
+        this.setAssistantTools(Array.isArray(params[0]) ? params[0] : []);
+        return null;
       default:
         this.log(`evenhub: unknown extension method ${method}`);
         return null;
+    }
+  }
+
+  // ----- compass (EvenHubCompassClient) -----
+
+  deliverCompass(headingDegrees: number): void {
+    this.pushExtEvent("compass", { headingDegrees });
+  }
+
+  private setCompass(enable: boolean): void {
+    if (enable) {
+      if (!this.compassRequested) {
+        this.compassRequested = true;
+        evenHubCompassRouter.requestCompass(this);
+      }
+    } else if (this.compassRequested) {
+      this.compassRequested = false;
+      evenHubCompassRouter.releaseCompass(this);
+    }
+  }
+
+  // ----- extended layout -----
+
+  /**
+   * Build/replace the page from an extended layout: full 576x452 canvas, no
+   * container-count limit, and per-container `preserve` (inherit content from a
+   * same-named container in the outgoing layout). Returns true on success.
+   */
+  private applyExtensionLayout(data: Record<string, unknown>): boolean {
+    const previous = this.page;
+    const page = parsePage(data);
+    for (const container of page.containers) {
+      if (container.preserve) preserveContent(container, previous);
+    }
+    this.page = page;
+    this.pageCreated = true;
+    // The extended layout uses the taller app area.
+    this.windowHooks?.setTallCanvas(true);
+    if (this.foreground && !this.launchEnterSent) {
+      this.launchEnterSent = true;
+      this.emitSysEvent(FOREGROUND_ENTER_EVENT, 0);
+    }
+    this.windowHooks?.requestRender();
+    return true;
+  }
+
+  // ----- assistant tools -----
+
+  private setAssistantTools(rawSpecs: unknown[]): void {
+    const specs: ToolSpec[] = [];
+    for (const raw of rawSpecs) {
+      const record = asRecord(raw);
+      const name = readString(record, "name", "");
+      if (!name) continue;
+      const availability = record.availability === "open" ? "open" : "foreground";
+      specs.push({
+        name,
+        description: readString(record, "description", ""),
+        inputSchema: asRecord(record.parameters),
+        availability,
+      });
+    }
+    if (specs.length === 0 && !this.hasAppTools) return;
+    toolRegistry.setAppTools({
+      windowId: this.windowId,
+      // Prefix tools with the app's package name, per the extension contract.
+      appId: this.manifest.packageId,
+      specs,
+      invoke: (toolName, args) => this.invokeAppTool(toolName, args),
+      isForeground: () => this.foreground,
+    });
+    this.hasAppTools = specs.length > 0;
+  }
+
+  /** Invoke one of the app's tools by dispatching into the webview and awaiting its reply. */
+  private invokeAppTool(toolName: string, args: unknown): Promise<ToolResult> {
+    return new Promise((resolve) => {
+      if (!this.webViewHandle || this.closed) {
+        resolve({ ok: false, error: "app not available" });
+        return;
+      }
+      const id = this.nextToolCallId++;
+      this.pendingToolCalls.set(id, resolve);
+      this.webViewHandle.evaluateJs(
+        `window.__fcExtInvokeTool && window.__fcExtInvokeTool(${id}, ${JSON.stringify(toolName)}, ${JSON.stringify(args ?? {})})`,
+      );
+    });
+  }
+
+  private handleToolResult(argsJson: string): void {
+    try {
+      const args = JSON.parse(argsJson) as unknown[];
+      const id = Number(args[0]);
+      const ok = args[1] === true;
+      const value = args[2];
+      const resolve = this.pendingToolCalls.get(id);
+      if (!resolve) return;
+      this.pendingToolCalls.delete(id);
+      if (ok) {
+        resolve({ ok: true, content: typeof value === "string" ? value : JSON.stringify(value ?? null) });
+      } else {
+        resolve({ ok: false, error: typeof value === "string" ? value : "tool failed" });
+      }
+    } catch (error) {
+      this.log(`evenhub: bad tool result: ${error}`);
     }
   }
 
@@ -916,6 +1105,16 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient {
       this.imuRequested = false;
       evenHubImuRouter.releaseImu(this);
     }
+    if (this.compassRequested) {
+      this.compassRequested = false;
+      evenHubCompassRouter.releaseCompass(this);
+    }
+    if (this.hasAppTools) {
+      this.hasAppTools = false;
+      toolRegistry.removeAppTools(this.windowId);
+    }
+    for (const resolve of this.pendingToolCalls.values()) resolve({ ok: false, error: "app closed" });
+    this.pendingToolCalls.clear();
     this.locationTracker?.stop();
     this.locationTracker = null;
     if (!this.systemExitSent) {
@@ -993,6 +1192,26 @@ function activeCommunicator(): any {
     return com.faceclaw.app.FaceclawBleCommunicator.getActive();
   } catch {
     return null;
+  }
+}
+
+/**
+ * Copy content into a `preserve` container from the same-named, same-kind
+ * container in the previous page (if any), so a replaceLayout keeps its pixels /
+ * text / list state instead of blanking.
+ */
+function preserveContent(target: EvenHubContainer, previous: EvenHubPage | null): void {
+  const source = previous?.containers.find((c) => c.kind === target.kind && c.name === target.name);
+  if (!source) return;
+  if (target.kind === "text" && source.kind === "text") {
+    target.content = source.content;
+  } else if (target.kind === "image" && source.kind === "image") {
+    target.pixels = source.pixels;
+    target.pixelsWidth = source.pixelsWidth;
+    target.pixelsHeight = source.pixelsHeight;
+  } else if (target.kind === "list" && source.kind === "list") {
+    target.itemNames = source.itemNames;
+    target.selectedIndex = Math.min(source.selectedIndex, Math.max(0, target.itemNames.length - 1));
   }
 }
 

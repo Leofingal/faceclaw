@@ -7,7 +7,8 @@ import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { getFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import {
   cancelTimerNotification,

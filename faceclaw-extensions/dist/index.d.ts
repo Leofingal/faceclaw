@@ -62,6 +62,67 @@ export type WindowLifecycleEventType = "visible" | "hidden" | "focused" | "blurr
 export interface WindowLifecycleEvent {
     type: WindowLifecycleEventType;
 }
+/** A magnetometer heading sample from {@link FaceclawExtensions.addCompassListener}. */
+export interface CompassReading {
+    /** Magnetic heading in degrees [0, 360). */
+    headingDegrees: number;
+}
+export interface FaceclawContainerCommon {
+    containerID: number;
+    containerName: string;
+    xPosition: number;
+    yPosition: number;
+    width: number;
+    height: number;
+    zOrderIndex?: number;
+    isEventCapture?: 0 | 1 | boolean;
+    /** Inherit content from the same-named container in the previous layout. */
+    preserve?: boolean;
+}
+export interface FaceclawTextContainer extends FaceclawContainerCommon {
+    content?: string;
+    borderWidth?: number;
+    borderRadius?: number;
+    paddingLength?: number;
+}
+/** Image containers may be up to 576x452 in the extended layout. */
+export type FaceclawImageContainer = FaceclawContainerCommon;
+export interface FaceclawListContainer extends FaceclawContainerCommon {
+    itemContainer?: {
+        itemName?: string[];
+        itemWidth?: number;
+        isItemSelectBorderEn?: 0 | 1 | boolean;
+    };
+}
+export interface FaceclawLayout {
+    textObject?: FaceclawTextContainer[];
+    imageObject?: FaceclawImageContainer[];
+    listObject?: FaceclawListContainer[];
+}
+/**
+ * A tool the app contributes to Faceclaw's voice assistant. The assistant sees
+ * it namespaced by the app's package name (`app.<packageName>.<name>`); `name`
+ * here is the bare, un-prefixed name.
+ */
+export interface AssistantTool {
+    /** Bare tool name (no package prefix), e.g. `"set_color"`. */
+    name: string;
+    /** What the tool does — the assistant reads this to decide when to call it. */
+    description: string;
+    /** JSON Schema for the arguments object the assistant will pass to `handler`. */
+    parameters?: object;
+    /**
+     * When the tool is callable: `"foreground"` (default) only while the app owns
+     * the visible window; `"open"` any time the app is running (even backgrounded).
+     */
+    availability?: "open" | "foreground";
+    /**
+     * Invoked when the assistant calls the tool. Return a string (or any
+     * JSON-serializable value) to report back to the assistant; throw to report an
+     * error. May be async.
+     */
+    handler: (args: any) => unknown | Promise<unknown>;
+}
 /**
  * The Faceclaw-only capability surface. Obtained via {@link getFaceclawExtensions}.
  * Every method is additive to the standard EvenHub SDK.
@@ -106,6 +167,35 @@ export interface FaceclawExtensions {
      * Resolves once every message has been queued.
      */
     playBuzzer(steps: BuzzerStep[]): Promise<void>;
+    /**
+     * Activate the glasses' magnetometer compass and receive heading samples.
+     * Returns an unsubscribe function; the sensor stays on while at least one
+     * listener is registered and the app is the foreground window.
+     *
+     * NOT pre-calibrated: the magnetometer sits inside the right arm, which rests
+     * against the wearer's head with a slight curl that differs between wearers
+     * (and between wears). Treat `headingDegrees` as relative — let the user zero
+     * it against a known direction rather than trusting it as true/magnetic north.
+     */
+    addCompassListener(listener: (reading: CompassReading) => void): () => void;
+    /**
+     * Build the app's initial page from an extended layout (superset of the stock
+     * createStartUpPageContainer — full 576x452 canvas, no container-count limit,
+     * per-container `preserve`). Resolves true on success.
+     */
+    createLayout(layout: FaceclawLayout): Promise<boolean>;
+    /**
+     * Replace the current page with a new extended layout (superset of the stock
+     * rebuildPageContainer). Containers marked `preserve` inherit their content
+     * from the same-named container in the outgoing layout. Resolves true on success.
+     */
+    replaceLayout(layout: FaceclawLayout): Promise<boolean>;
+    /**
+     * Declare the app's voice-assistant tools, replacing any previously set. Each
+     * tool's `handler` runs in the app when the assistant calls it. The assistant
+     * sees the tools namespaced by the app's package name. Pass `[]` to remove all.
+     */
+    setAssistantTools(tools: AssistantTool[]): void;
 }
 declare global {
     interface Window {

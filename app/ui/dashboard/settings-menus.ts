@@ -1,5 +1,5 @@
 import { knownFolders } from "@nativescript/core";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
@@ -44,13 +44,13 @@ import {
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
-  uiFontSetting,
   verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -78,8 +78,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(batteryDisplayModeSetting),
         // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
-        // Selects the UI body typeface (Terminus vs proportional TerminusV).
-        enumSettingMenuItem(uiFontSetting),
+        // Opens the modal font picker (face, weight, size) for UI text.
+        uiFontPickerMenuItem(),
       ],
     },
     {
@@ -120,6 +120,7 @@ function settingsSections(): SettingsSection[] {
       // Connections (g2mirror:// strings) are managed inside the Terminal
       // app's Manage Connections section, not here.
       items: [
+        terminalFontPickerMenuItem(),
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),

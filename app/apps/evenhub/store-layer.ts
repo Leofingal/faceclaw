@@ -1,4 +1,4 @@
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";

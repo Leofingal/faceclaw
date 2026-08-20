@@ -1,5 +1,6 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GESTURE_DOUBLE_CLICK } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";

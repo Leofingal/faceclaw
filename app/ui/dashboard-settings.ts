@@ -6,12 +6,7 @@ import {
   setBooleanSetting,
   setStringSetting,
 } from "~/native/settings-store";
-import {
-  getDefaultSmallFont,
-  UI_FONT_SETTING_KEY,
-  UI_FONT_VALUES,
-  type UiFontChoice,
-} from "~/graphics/bdffont";
+import { getDefaultSmallFont } from "~/graphics/ui-fonts";
 import { wrapText } from "~/graphics/textwrap";
 import {
   ASSISTANT_MODEL_VALUES,
@@ -215,16 +210,6 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   values: ["icon", "percentage"],
   formatValue: batteryDisplayModeLabel,
   description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
-});
-
-export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
-  id: "uiFont",
-  label: "Font",
-  storageKey: UI_FONT_SETTING_KEY,
-  defaultValue: "terminus",
-  values: UI_FONT_VALUES,
-  formatValue: uiFontLabel,
-  description: "Typeface for UI text on the glasses. Terminus is fixed-width; TerminusV is a proportional variant that fits more text per line.",
 });
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
@@ -629,10 +614,6 @@ export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
 
 export function timeFormatLabel(value: TimeFormat): string {
   return value === "12h" ? "12-hour" : "24-hour";
-}
-
-export function uiFontLabel(value: UiFontChoice): string {
-  return value === "terminusv" ? "TerminusV" : "Terminus";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {

@@ -1,5 +1,5 @@
-import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
@@ -167,7 +167,7 @@ export class WeatherLayer implements Layer {
 
   private drawMessage(
     image: GrayImage,
-    font: BdfFont,
+    font: UiFont,
     width: number,
     height: number,
     message: string,

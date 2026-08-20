@@ -457,8 +457,10 @@ public final class TexturePlanner {
     }
 
     /**
-     * Whether every in-panel ink pixel of the glyph equals `top` in the packed
-     * new frame — i.e. the draw's writes all land correct. Ink outside the
+     * Whether every in-panel ink pixel of the glyph lands correct in the
+     * packed new frame: the composite's 4bpp value must equal the firmware's
+     * LUT output source*top/15 (integer). For 1bpp glyphs (source 15) this is
+     * exactly `== top`; AA glyphs get the general check. Ink outside the
      * panel is clipped by the firmware and irrelevant.
      */
     private static boolean glyphMatchesComposite(byte[] packed, int stride, int width, int height,
@@ -467,10 +469,11 @@ public final class TexturePlanner {
             int y = lineY + row;
             if (y < 0 || y >= height) continue;
             for (int col = 0; col < atlas.width; col++) {
-                if (!atlas.inkAt(col, row)) continue;
+                int source = atlas.nibbleAt(col, row);
+                if (source == 0) continue;
                 int x = gx + col;
                 if (x < 0 || x >= width) continue;
-                if (nibbleAt(packed, stride, x, y) != top) {
+                if (nibbleAt(packed, stride, x, y) != (source * top) / 15) {
                     return false;
                 }
             }

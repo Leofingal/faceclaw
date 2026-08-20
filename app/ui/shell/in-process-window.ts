@@ -41,6 +41,8 @@ export type InProcessWindowOptions = {
   submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface?: () => void;
+  /** Resize this window's compositor surface after a height-mode change. */
+  reconfigureSurface?: (heightMode: WindowHeightMode) => void;
   onClosed?: () => void;
 };
 
@@ -48,6 +50,8 @@ export type InProcessWindow = {
   window: ShellWindow;
   stack: LayerStack;
   requestRender: () => void;
+  /** Change the window's height band at runtime (resizes the viewport + surface). */
+  setHeightMode: (mode: WindowHeightMode) => void;
 };
 
 /** The controller-provided plumbing common to every in-process app window. */
@@ -56,6 +60,7 @@ export type InProcessAppOptions = {
   submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface: () => void;
+  reconfigureSurface?: (heightMode: WindowHeightMode) => void;
   onClosed: () => void;
 };
 
@@ -65,7 +70,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       console.error(`${options.windowId} render failed: ${error}`);
     });
   };
-  const heightMode = options.heightMode ?? "min";
+  let heightMode = options.heightMode ?? "min";
   const stack = new LayerStack(
     options.baseLayer,
     { ...options.actions, requestRender },
@@ -168,7 +173,15 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.setSurfaceVisible(foreground);
     },
   };
-  return { window, stack, requestRender };
+  const setHeightMode = (mode: WindowHeightMode) => {
+    if (heightMode === mode) return;
+    heightMode = mode;
+    window.heightMode = mode;
+    stack.setBaseSize(appViewportSize(mode));
+    options.reconfigureSurface?.(mode);
+    requestRender();
+  };
+  return { window, stack, requestRender, setHeightMode };
 }
 
 /**

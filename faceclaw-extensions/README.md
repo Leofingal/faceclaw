@@ -79,8 +79,46 @@ brief:
 | `getConfiguredApiKeys(): Promise<ApiKeyService[]>` | Which keys the user configured (names only). |
 | `requestApiKeyAccess(services): Promise<Partial<Record<ApiKeyService, string>>>` | Prompt for and return key values. |
 | `playBuzzer(steps): Promise<void>` | Play a piezo tone sequence. |
+| `addCompassListener(fn): () => void` | Activate the magnetometer; receive heading samples. Uncalibrated (see note). |
+| `createLayout(layout): Promise<boolean>` | Build the initial page (extended layout: full 576×452, no count limit, `preserve`). |
+| `replaceLayout(layout): Promise<boolean>` | Replace the page; `preserve` containers inherit content by name. |
+| `setAssistantTools(tools): void` | Contribute voice-assistant tools (namespaced by package name). |
 
 `ApiKeyService` is one of `"openai" | "anthropic" | "soniox" | "elevenlabs" | "mapbox"`.
+
+### Compass
+
+`addCompassListener` is **not pre-calibrated**: the magnetometer is inside the
+right arm, which rests on the head with a slight curl that differs between
+wearers and wears. Treat the heading as relative — let the user zero it.
+
+### Extended layout
+
+`createLayout` / `replaceLayout` accept the same `textObject` / `imageObject` /
+`listObject` shape as the stock `createStartUpPageContainer` /
+`rebuildPageContainer` (so you can keep using the SDK's container builders),
+plus: the canvas is the full **576×452** app area (image containers may fill it),
+there is **no container-count limit**, and any container may set `preserve: true`
+to inherit its content from the same-named container in the previous layout.
+`containerID` remains the identity for `updateImageRawData` / `textContainerUpgrade`.
+
+### Voice-assistant tools
+
+```ts
+fc.setAssistantTools([
+  {
+    name: "set_bpm",
+    description: "Set the metronome tempo.",
+    parameters: { type: "object", properties: { bpm: { type: "number" } }, required: ["bpm"] },
+    availability: "open", // or "foreground" (default)
+    handler: ({ bpm }) => { setTempo(bpm); return `tempo is now ${bpm}`; },
+  },
+]);
+```
+
+The assistant sees each tool namespaced by your package name
+(`app.<packageName>.set_bpm`). The handler's return value is reported back to the
+assistant; throwing reports an error.
 
 ## Stability
 

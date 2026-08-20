@@ -21,7 +21,7 @@ import { File, knownFolders } from "@nativescript/core";
 import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
 import { toUint8Array } from "../util/array-util";
-import { GrayImage, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
+import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 
 declare const com: any;
 
@@ -83,9 +83,7 @@ function inMode15UncertainRange(cp: number): boolean {
 }
 
 /** The 4bpp level an 8-bit value packs to (BmpUtil's GRAY_TO_NIBBLE). */
-function quantNibble(value: number): number {
-  return value <= 0 ? 0 : Math.min(15, (value + 8) >> 4);
-}
+const quantNibble = grayToNibble;
 
 export class EvenHubFont implements FwTextFont {
   /** One builtin firmware font today; see FwTextFont. */

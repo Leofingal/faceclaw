@@ -103,8 +103,8 @@ export interface Layer {
 export class LayerStack {
   private readonly layers: Layer[];
   private readonly ctx: LayerContext;
-  private readonly baseWidth: number;
-  private readonly baseHeight: number;
+  private baseWidth: number;
+  private baseHeight: number;
   private readonly focusedFn: () => boolean;
 
   constructor(
@@ -166,6 +166,12 @@ export class LayerStack {
 
   getBaseSize(): { width: number; height: number } {
     return { width: this.baseWidth, height: this.baseHeight };
+  }
+
+  /** Resize the base viewport (e.g. an EvenHub window switching to the tall canvas). */
+  setBaseSize(size: { width: number; height: number }): void {
+    this.baseWidth = size.width;
+    this.baseHeight = size.height;
   }
 
   setActions(actions: Partial<LayerActions>): void {

@@ -1,5 +1,5 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
@@ -90,7 +90,7 @@ export class CalendarLayer implements Layer {
     }
   }
 
-  private paintPermissionPrompt(image: GrayImage, font: BdfFont, width: number, height: number): void {
+  private paintPermissionPrompt(image: GrayImage, font: UiFont, width: number, height: number): void {
     const message = "Grant calendar permission on your phone to see your events on the glasses.";
     const lines = wrapText(font, message, width - 48);
     for (let index = 0; index < lines.length; index++) {
@@ -127,7 +127,7 @@ function buildEventRows(events: CalendarEvent[]): EventRow[] {
 
 function drawEventRow(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   row: EventRow,
   x: number,
   y: number,

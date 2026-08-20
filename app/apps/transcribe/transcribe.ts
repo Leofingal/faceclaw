@@ -1,5 +1,5 @@
-import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { GrayImage, type UiFont } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
@@ -112,7 +112,7 @@ function transcriptTimestamp(): string {
   );
 }
 
-function wrapTranscribeText(font: BdfFont, text: string, maxWidth: number): string[] {
+function wrapTranscribeText(font: UiFont, text: string, maxWidth: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";

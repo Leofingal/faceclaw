@@ -15,8 +15,10 @@ import java.util.Map;
  *  - as the ink mask for the "would this draw land correctly" check against
  *    the composited frame,
  *  - to punch the ink pixels out of the baked delta rect it replaces,
- *  - pre-encoded as the CFW cached-image bytes ([w][h][4bpp RLE], ink = 15)
- *    uploaded via mode 12 and drawn via mode 14 with a top-color LUT.
+ *  - pre-encoded as the CFW cached-image bytes ([w][h][4bpp RLE]) uploaded
+ *    via mode 12 and drawn via mode 14 with a top-color LUT. 1bpp (BDF)
+ *    glyphs store ink at 15 so the LUT maps them to exactly the requested
+ *    level; AA (TTF) glyphs store true coverage nibbles the LUT scales.
  *
  * Fonts are identified by a stable string key (the embedded font name), NOT a
  * per-JS-context counter: worker threads register independently and must agree
@@ -44,36 +46,50 @@ public final class GlyphAtlas {
         public final int inkHeight;
         /** Horizontal bearing: draw x = pen x + bbxX. */
         public final int bbxX;
-        /** Ink bitmap rows (inkHeight entries), bit (rowBitWidth-1-col) = ink. */
+        /** 1bpp ink rows (inkHeight entries), bit (rowBitWidth-1-col) = ink; null for AA glyphs. */
         final int[] rows;
         final int rowBitWidth;
-        /** CFW cached-image bytes: [w][cellHeight][RLE(w*cellHeight px, ink=15)]. */
+        /** AA coverage, width*inkHeight nibble values 0..15; null for 1bpp glyphs. */
+        final byte[] coverage;
+        /** CFW cached-image bytes: [w][cellHeight][RLE(w*cellHeight px)]. */
         public final byte[] cachedBytes;
 
-        Glyph(int width, int cellHeight, int inkTop, int inkHeight, int bbxX, int[] rows) {
+        Glyph(int width, int cellHeight, int inkTop, int inkHeight, int bbxX,
+              int[] rows, byte[] coverage) {
             this.width = width;
             this.cellHeight = cellHeight;
             this.inkTop = inkTop;
             this.inkHeight = inkHeight;
             this.bbxX = bbxX;
             this.rows = rows;
+            this.coverage = coverage;
             this.rowBitWidth = ((width + 7) >> 3) << 3;
             this.cachedBytes = encodeCachedImage();
         }
 
-        /** Whether the cell pixel at (col, row) is ink (row is cell-relative). */
-        public boolean inkAt(int col, int row) {
-            if (col < 0 || col >= width) return false;
+        /**
+         * The cell pixel's 4bpp source value at (col, row), row cell-relative.
+         * 1bpp glyphs are stored at 15 so the draw-time LUT (source*top/15)
+         * maps them to exactly the requested top color; AA glyphs carry their
+         * true coverage level.
+         */
+        public int nibbleAt(int col, int row) {
+            if (col < 0 || col >= width) return 0;
             int inkRow = row - inkTop;
-            if (inkRow < 0 || inkRow >= inkHeight) return false;
-            return ((rows[inkRow] >>> (rowBitWidth - 1 - col)) & 1) != 0;
+            if (inkRow < 0 || inkRow >= inkHeight) return 0;
+            if (coverage != null) return coverage[inkRow * width + col];
+            return ((rows[inkRow] >>> (rowBitWidth - 1 - col)) & 1) != 0 ? 15 : 0;
+        }
+
+        /** Whether the cell pixel at (col, row) has any ink (row is cell-relative). */
+        public boolean inkAt(int col, int row) {
+            return nibbleAt(col, row) != 0;
         }
 
         /**
          * The firmware cached-image encoding: [width][height][RLE tokens]
-         * covering exactly width*cellHeight pixels (no row padding), ink pixels
-         * as color 15 so the draw-time LUT (top-color scaling) maps them to any
-         * requested 4bpp level.
+         * covering exactly width*cellHeight pixels (no row padding), each
+         * pixel's stored color being its nibbleAt value.
          */
         private byte[] encodeCachedImage() {
             int total = width * cellHeight;
@@ -84,9 +100,9 @@ public final class GlyphAtlas {
             int o = 2;
             int i = 0;
             while (i < total) {
-                int color = inkAt(i % width, i / width) ? 15 : 0;
+                int color = nibbleAt(i % width, i / width);
                 int j = i + 1;
-                while (j < total && (inkAt(j % width, j / width) ? 15 : 0) == color) j++;
+                while (j < total && nibbleAt(j % width, j / width) == color) j++;
                 int run = j - i;
                 while (run > 0) {
                     int c = Math.min(run, 0xffff);
@@ -183,7 +199,66 @@ public final class GlyphAtlas {
                     long k = key(id, encoding);
                     if (!glyphs.containsKey(k) && width > 0 && cellHeight > 0
                             && inkTop + inkHeight <= cellHeight) {
-                        glyphs.put(k, new Glyph(width, cellHeight, inkTop, inkHeight, bbxX, rows));
+                        glyphs.put(k, new Glyph(width, cellHeight, inkTop, inkHeight, bbxX,
+                                rows, null));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Register a batch of antialiased (4bpp) glyph rasters, e.g. TTF renders.
+     * Same font-group framing as register(), but each glyph record carries
+     * packed coverage instead of 1bpp rows:
+     *   [encoding u32][bbxX s8][inkTop u8][width u8][inkHeight u8]
+     *   [inkHeight x ceil(width/2) packed bytes, high nibble = left pixel]
+     * Nibble values are the final 4bpp source levels (the draw-time LUT
+     * scales them by the top color). Already-registered (font, encoding)
+     * records are skipped, as in register().
+     */
+    public static void registerAa(ByteBuffer buffer) {
+        if (buffer == null) return;
+        ByteBuffer in = buffer.order(ByteOrder.LITTLE_ENDIAN);
+        synchronized (lock) {
+            while (in.remaining() > 0) {
+                int keyLen = in.get() & 0xff;
+                byte[] keyBytes = new byte[keyLen];
+                in.get(keyBytes);
+                String fontKey = new String(keyBytes, StandardCharsets.UTF_8);
+                int cellHeight = in.get() & 0xff;
+                int count = in.getShort() & 0xffff;
+                Integer idBoxed = fontIds.get(fontKey);
+                int id;
+                if (idBoxed == null) {
+                    id = nextFontId++;
+                    fontIds.put(fontKey, id);
+                } else {
+                    id = idBoxed;
+                }
+                for (int g = 0; g < count; g++) {
+                    int encoding = in.getInt();
+                    int bbxX = in.get();
+                    int inkTop = in.get() & 0xff;
+                    int width = in.get() & 0xff;
+                    int inkHeight = in.get() & 0xff;
+                    int stride = (width + 1) >> 1;
+                    byte[] coverage = new byte[width * inkHeight];
+                    for (int r = 0; r < inkHeight; r++) {
+                        for (int b = 0; b < stride; b++) {
+                            int packed = in.get() & 0xff;
+                            int col = b * 2;
+                            coverage[r * width + col] = (byte) (packed >> 4);
+                            if (col + 1 < width) {
+                                coverage[r * width + col + 1] = (byte) (packed & 0x0f);
+                            }
+                        }
+                    }
+                    long k = key(id, encoding);
+                    if (!glyphs.containsKey(k) && width > 0 && cellHeight > 0
+                            && inkTop + inkHeight <= cellHeight) {
+                        glyphs.put(k, new Glyph(width, cellHeight, inkTop, inkHeight, bbxX,
+                                null, coverage));
                     }
                 }
             }

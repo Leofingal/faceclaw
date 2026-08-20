@@ -1,5 +1,5 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import type { ToolDebugEntry } from "../../assistant/tool-registry";

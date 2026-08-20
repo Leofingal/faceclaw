@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";

@@ -19,8 +19,8 @@
  * their pixels are baked into the submitted frame either way, so exclusion
  * only means "no wire savings for this draw".
  */
-import { BdfFont, Glyph } from "./bdffont";
-import { GrayImage, type DeferredDraw, type PlacedFwText, type PlacedImage } from "./image";
+import { Glyph } from "./bdffont";
+import { GrayImage, type DeferredDraw, type GlyphFont, type PlacedFwText, type PlacedImage } from "./image";
 
 declare const com: any;
 
@@ -36,7 +36,7 @@ type FontWireState = {
   registered: Set<number>;
 };
 
-const fontStates = new Map<BdfFont, FontWireState>();
+const fontStates = new Map<GlyphFont, FontWireState>();
 
 /**
  * Java-side image id per source image object, or null for images that can't
@@ -46,7 +46,7 @@ const fontStates = new Map<BdfFont, FontWireState>();
  */
 const imageIds = new WeakMap<GrayImage, number | null>();
 
-function fontWireState(font: BdfFont): FontWireState | null {
+function fontWireState(font: GlyphFont): FontWireState | null {
   if (!global.isAndroid || !font.atlasKey) return null;
   if (font.lineHeight <= 0 || font.lineHeight > 255) return null;
   let state = fontStates.get(font);
@@ -67,7 +67,7 @@ function fontWireState(font: BdfFont): FontWireState | null {
  * line cell (the cached image is bbxWidth x lineHeight with the ink placed at
  * inkTop), and metrics that fit the wire fields.
  */
-function representableGlyph(font: BdfFont, glyph: Glyph): boolean {
+function representableGlyph(font: GlyphFont, glyph: Glyph): boolean {
   if (glyph.encoding < 32 || glyph.encoding > 127) return false;
   if (glyph.bbxWidth <= 0 || glyph.bbxWidth > 255) return false;
   if (glyph.bbxHeight <= 0 || glyph.bbxHeight > 255) return false;
@@ -155,7 +155,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   if (!global.isAndroid || draws.length === 0) return null;
 
   // Pass 1: resolve ids, register unseen rasters, size the buffer.
-  let registration: Map<FontWireState, { font: BdfFont; glyphs: Glyph[] }> | null = null;
+  let registration: Map<FontWireState, RegistrationGroup> | null = null;
   const fwRunOk = new Map<PlacedFwText, boolean>();
   let bytes = 0;
   for (const placed of draws) {
@@ -169,10 +169,10 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       registration ??= new Map();
       let group = registration.get(state);
       if (!group) {
-        group = { font: placed.font, glyphs: [] };
+        group = { font: placed.font, glyphs: [], aaGlyphs: [] };
         registration.set(state, group);
       }
-      group.glyphs.push(placed.glyph);
+      (placed.glyph.coverage ? group.aaGlyphs : group.glyphs).push(placed.glyph);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
@@ -183,7 +183,10 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
     }
   }
   if (registration) {
-    com.faceclaw.app.GlyphAtlas.register(buildRegistrationBuffer(registration));
+    const plainBuffer = buildRegistrationBuffer(registration);
+    if (plainBuffer) com.faceclaw.app.GlyphAtlas.register(plainBuffer);
+    const aaBuffer = buildAaRegistrationBuffer(registration);
+    if (aaBuffer) com.faceclaw.app.GlyphAtlas.registerAa(aaBuffer);
   }
   if (bytes === 0) return null;
 
@@ -230,51 +233,129 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   return out.buffer;
 }
 
+type RegistrationGroup = {
+  font: GlyphFont;
+  /** 1bpp (BDF) glyphs for GlyphAtlas.register. */
+  glyphs: Glyph[];
+  /** Antialiased (coverage) glyphs for GlyphAtlas.registerAa. */
+  aaGlyphs: Glyph[];
+};
+
 /**
- * Registration buffer: per font group
+ * 1bpp registration buffer: per font group
  *   [keyLen u8][key utf8][cellHeight u8][count u16]
  * then per glyph
  *   [encoding u32][bbxX s8][inkTop u8][width u8][inkHeight u8]
  *   [inkHeight x row u32]   (bit (ceil(width/8)*8 - 1 - col) = ink)
- * mirroring GlyphAtlas.register on the Java side.
+ * mirroring GlyphAtlas.register on the Java side. Null when the groups hold
+ * no 1bpp glyphs.
  */
 function buildRegistrationBuffer(
-  registration: Map<FontWireState, { font: BdfFont; glyphs: Glyph[] }>,
-): ArrayBuffer {
-  let total = 0;
-  const encodedKeys = new Map<FontWireState, Uint8Array>();
-  registration.forEach((group, state) => {
-    const keyBytes = utf8Encode(group.font.atlasKey ?? "");
-    encodedKeys.set(state, keyBytes);
-    total += 1 + keyBytes.length + 1 + 2;
-    for (const glyph of group.glyphs) {
-      total += 8 + 4 * glyph.bbxHeight;
-    }
-  });
-  const buffer = new ArrayBuffer(total);
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  let offset = 0;
-  registration.forEach((group, state) => {
-    const keyBytes = encodedKeys.get(state)!;
-    view.setUint8(offset, keyBytes.length);
-    bytes.set(keyBytes, offset + 1);
-    offset += 1 + keyBytes.length;
-    view.setUint8(offset, state.cellHeight);
-    view.setUint16(offset + 1, group.glyphs.length, true);
-    offset += 3;
-    for (const glyph of group.glyphs) {
-      const inkTop = group.font.ascent - (glyph.bbxHeight + glyph.bbxY);
-      view.setUint32(offset, glyph.encoding, true);
-      view.setInt8(offset + 4, glyph.bbxX);
-      view.setUint8(offset + 5, inkTop);
-      view.setUint8(offset + 6, glyph.bbxWidth);
-      view.setUint8(offset + 7, glyph.bbxHeight);
+  registration: Map<FontWireState, RegistrationGroup>,
+): ArrayBuffer | null {
+  return buildGroupedBuffer(
+    registration,
+    (group) => group.glyphs,
+    (glyph) => 8 + 4 * glyph.bbxHeight,
+    (view, _bytes, offset, group, glyph) => {
+      writeGlyphHeader(view, offset, group, glyph);
       offset += 8;
       for (let row = 0; row < glyph.bbxHeight; row++) {
         view.setUint32(offset, (glyph.bitmapRows[row] ?? 0) >>> 0, true);
         offset += 4;
       }
+      return offset;
+    },
+  );
+}
+
+/**
+ * AA registration buffer: same group framing, but each glyph record carries
+ * packed 4bpp coverage instead of 1bpp rows:
+ *   [encoding u32][bbxX s8][inkTop u8][width u8][inkHeight u8]
+ *   [inkHeight x ceil(width/2) packed bytes, high nibble = left pixel]
+ * mirroring GlyphAtlas.registerAa. Null when the groups hold no AA glyphs.
+ */
+function buildAaRegistrationBuffer(
+  registration: Map<FontWireState, RegistrationGroup>,
+): ArrayBuffer | null {
+  return buildGroupedBuffer(
+    registration,
+    (group) => group.aaGlyphs,
+    (glyph) => 8 + ((glyph.bbxWidth + 1) >> 1) * glyph.bbxHeight,
+    (view, bytes, offset, group, glyph) => {
+      writeGlyphHeader(view, offset, group, glyph);
+      offset += 8;
+      const coverage = glyph.coverage!;
+      const stride = (glyph.bbxWidth + 1) >> 1;
+      for (let row = 0; row < glyph.bbxHeight; row++) {
+        const rowStart = row * glyph.bbxWidth;
+        for (let b = 0; b < stride; b++) {
+          const col = b * 2;
+          const high = coverage[rowStart + col]! & 0x0f;
+          const low = col + 1 < glyph.bbxWidth ? coverage[rowStart + col + 1]! & 0x0f : 0;
+          bytes[offset++] = (high << 4) | low;
+        }
+      }
+      return offset;
+    },
+  );
+}
+
+/** [encoding u32][bbxX s8][inkTop u8][width u8][inkHeight u8], shared by both formats. */
+function writeGlyphHeader(view: DataView, offset: number, group: RegistrationGroup, glyph: Glyph): void {
+  const inkTop = group.font.ascent - (glyph.bbxHeight + glyph.bbxY);
+  view.setUint32(offset, glyph.encoding, true);
+  view.setInt8(offset + 4, glyph.bbxX);
+  view.setUint8(offset + 5, inkTop);
+  view.setUint8(offset + 6, glyph.bbxWidth);
+  view.setUint8(offset + 7, glyph.bbxHeight);
+}
+
+/** Shared group-framing walk for the two registration formats. */
+function buildGroupedBuffer(
+  registration: Map<FontWireState, RegistrationGroup>,
+  glyphsOf: (group: RegistrationGroup) => Glyph[],
+  glyphBytes: (glyph: Glyph) => number,
+  writeGlyph: (
+    view: DataView,
+    bytes: Uint8Array,
+    offset: number,
+    group: RegistrationGroup,
+    glyph: Glyph,
+  ) => number,
+): ArrayBuffer | null {
+  let total = 0;
+  let glyphCount = 0;
+  const encodedKeys = new Map<FontWireState, Uint8Array>();
+  registration.forEach((group, state) => {
+    const glyphs = glyphsOf(group);
+    if (glyphs.length === 0) return;
+    const keyBytes = utf8Encode(group.font.atlasKey ?? "");
+    encodedKeys.set(state, keyBytes);
+    total += 1 + keyBytes.length + 1 + 2;
+    glyphCount += glyphs.length;
+    for (const glyph of glyphs) {
+      total += glyphBytes(glyph);
+    }
+  });
+  if (glyphCount === 0) return null;
+  const buffer = new ArrayBuffer(total);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  let offset = 0;
+  registration.forEach((group, state) => {
+    const glyphs = glyphsOf(group);
+    if (glyphs.length === 0) return;
+    const keyBytes = encodedKeys.get(state)!;
+    view.setUint8(offset, keyBytes.length);
+    bytes.set(keyBytes, offset + 1);
+    offset += 1 + keyBytes.length;
+    view.setUint8(offset, state.cellHeight);
+    view.setUint16(offset + 1, glyphs.length, true);
+    offset += 3;
+    for (const glyph of glyphs) {
+      offset = writeGlyph(view, bytes, offset, group, glyph);
     }
   });
   return buffer;

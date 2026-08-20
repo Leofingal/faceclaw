@@ -1,4 +1,5 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";

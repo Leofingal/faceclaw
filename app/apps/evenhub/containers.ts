@@ -19,6 +19,8 @@ export type EvenHubTextContainer = {
   paddingLength: number;
   isEventCapture: boolean;
   zOrderIndex: number | undefined;
+  /** Extended-layout: inherit content from a same-named container on replace. */
+  preserve: boolean;
   content: string;
 };
 
@@ -31,6 +33,7 @@ export type EvenHubImageContainer = {
   width: number;
   height: number;
   zOrderIndex: number | undefined;
+  preserve: boolean;
   /** Decoded 8bpp grayscale, set by updateImageRawData; null until first update. */
   pixels: Uint8Array | null;
   pixelsWidth: number;
@@ -50,6 +53,7 @@ export type EvenHubListContainer = {
   paddingLength: number;
   isEventCapture: boolean;
   zOrderIndex: number | undefined;
+  preserve: boolean;
   itemNames: string[];
   itemWidth: number;
   selectBorder: boolean;
@@ -117,6 +121,7 @@ function parseTextContainer(json: Record<string, unknown>): EvenHubTextContainer
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readNumber(json, "isEventCapture", 0) !== 0,
     zOrderIndex: readOptionalNumber(json, "zOrderIndex"),
+    preserve: readNumber(json, "preserve", 0) !== 0,
     content: readString(json, "content", ""),
   };
 }
@@ -131,6 +136,7 @@ function parseImageContainer(json: Record<string, unknown>): EvenHubImageContain
     width: readNumber(json, "width", 0),
     height: readNumber(json, "height", 0),
     zOrderIndex: readOptionalNumber(json, "zOrderIndex"),
+    preserve: readNumber(json, "preserve", 0) !== 0,
     pixels: null,
     pixelsWidth: 0,
     pixelsHeight: 0,
@@ -154,6 +160,7 @@ function parseListContainer(json: Record<string, unknown>): EvenHubListContainer
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readNumber(json, "isEventCapture", 0) !== 0,
     zOrderIndex: readOptionalNumber(json, "zOrderIndex"),
+    preserve: readNumber(json, "preserve", 0) !== 0,
     itemNames,
     itemWidth: readNumber(itemContainer, "itemWidth", 0),
     selectBorder: readNumber(itemContainer, "isItemSelectBorderEn", 0) !== 0,
