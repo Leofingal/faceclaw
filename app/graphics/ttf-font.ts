@@ -23,7 +23,6 @@
  * rasters as immutable — safe because renderGlyphCell is deterministic for a
  * given (path, size, gamma), all of which are baked into the atlasKey.
  */
-import { knownFolders } from "@nativescript/core";
 import { allocateFontFingerprintId, type Glyph } from "./bdffont";
 import { GrayImage, grayToNibble, type GlyphFont } from "./image";
 import { toUint8Array } from "../util/array-util";
@@ -37,12 +36,6 @@ declare const global: any;
  * per-font is safe but changing it per-draw is not possible.
  */
 const DEFAULT_TTF_GAMMA = 1.0;
-
-/** Fonts bundled as app assets (paths relative to the app folder). */
-const BUNDLED_FONTS = {
-  "inter-light": "fonts/ttf/Inter_18pt-Light.ttf",
-} as const;
-export type BundledTtfName = keyof typeof BUNDLED_FONTS;
 
 const loadedFonts = new Map<string, TtfFont | null>();
 
@@ -96,12 +89,6 @@ export class TtfFont implements GlyphFont {
     }
     loadedFonts.set(key, font);
     return font;
-  }
-
-  /** A font bundled with the app, or null when it can't load. */
-  static bundled(name: BundledTtfName, sizePx: number, gamma = DEFAULT_TTF_GAMMA): TtfFont | null {
-    if (!global.isAndroid) return null;
-    return TtfFont.load(`${knownFolders.currentApp().path}/${BUNDLED_FONTS[name]}`, sizePx, gamma);
   }
 
   /**

@@ -11,7 +11,7 @@
 import { getFont, type BdfFont } from "./bdffont";
 import type { UiFont } from "./image";
 import { TtfFont } from "./ttf-font";
-import { getInstalledFont, installedFontPath } from "./installed-fonts";
+import { ensurePreinstalledFonts, getInstalledFont, installedFontPath } from "./installed-fonts";
 import { getStringSetting, onSettingsStoreChanged, setStringSetting } from "../native/settings-store";
 
 export type BitmapFace = "terminus" | "terminusv";
@@ -42,6 +42,7 @@ export const SMALL_FONT_MAX_LINE_HEIGHT = 21;
 
 /** Whether a small-font selection at this path+size satisfies the UI bound. */
 export function uiFontSizeAllowed(path: string, size: number): boolean {
+  ensurePreinstalledFonts(); // the default selection may precede any picker use
   const font = TtfFont.load(path, size);
   return (
     font !== null &&
@@ -71,11 +72,19 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
   return null;
 }
 
+/** Default UI font when the user has never picked one. */
+const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 };
+
 export function getUiFontSelection(): UiFontSelection {
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
   if (parsed) return parsed;
-  const legacy = getStringSetting(LEGACY_UI_FONT_KEY, "terminus");
-  return { kind: "bitmap", face: legacy === "terminusv" ? "terminusv" : "terminus" };
+  // A pre-picker-era explicit bitmap choice is honored; fresh states get the
+  // bundled default.
+  const legacy = getStringSetting(LEGACY_UI_FONT_KEY, "");
+  if (legacy === "terminus" || legacy === "terminusv") {
+    return { kind: "bitmap", face: legacy };
+  }
+  return DEFAULT_UI_FONT;
 }
 
 export function setUiFontSelection(selection: UiFontSelection): void {
@@ -126,6 +135,10 @@ function installInvalidation(): void {
  */
 function resolveTtf(selection: UiFontSelection, minLineHeight = 0): TtfFont | null {
   if (selection.kind !== "ttf") return null;
+  // The default selection can be resolved before the picker (whose listing
+  // preinstalls bundled faces) has ever been opened, so make sure the
+  // bundled files exist first. Cheap after the first call per isolate.
+  ensurePreinstalledFonts();
   const path = installedFontPath(selection.file);
   for (let size = selection.size; size <= selection.size + MAX_SIZE_GROWTH; size++) {
     const font = TtfFont.load(path, size);

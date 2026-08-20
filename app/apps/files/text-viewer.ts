@@ -1,5 +1,5 @@
 import { wrapText, truncateText } from "../../graphics/textwrap";
-import { getDefaultSmallFont, getUiFontSelection } from "../../graphics/ui-fonts";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { TtfFont } from "../../graphics/ttf-font";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
@@ -10,18 +10,12 @@ const BODY_X = 18;
 const BODY_Y = 44;
 const FOOTER_MARGIN = 36;
 
-/**
- * Body text: the user's UI font when it's a TTF; otherwise bundled Inter
- * Light (the document viewer stays antialiased even while the UI default is
- * still a bitmap face), with the bitmap UI font as the last fallback.
- */
-const FALLBACK_BODY_FONT_SIZE_PX = 16;
-/** Line step for the BDF fallback (the 12px font plus leading, as before). */
+/** Line step for a bitmap face (the 12px font plus leading, as before). */
 const BDF_LINE_STEP = 14;
 
+/** Body text follows the UI font (a TTF by default; see ui-fonts.ts). */
 function getViewerFont(): UiFont {
-  if (getUiFontSelection().kind === "ttf") return getDefaultSmallFont();
-  return TtfFont.bundled("inter-light", FALLBACK_BODY_FONT_SIZE_PX) ?? getDefaultSmallFont();
+  return getDefaultSmallFont();
 }
 
 function lineStepOf(font: UiFont): number {

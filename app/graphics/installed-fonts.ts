@@ -211,10 +211,16 @@ function isMonospaceFont(path: string): boolean {
 // Plain stream/channel copy: java.nio.file.Paths.get is a varargs overload
 // set that NativeScript's JNI overload resolution picks wrong (it tries the
 // (URI) form for a JS string), so java.nio.file is avoided here.
+//
+// Written to a temp name and renamed into place (atomic on the same
+// filesystem): preinstallation can be triggered concurrently from several JS
+// isolates on first launch (each resolving the default UI font), and readers
+// must never see a half-written font file.
 function copyFileBytes(source: string, target: string): void {
+  const temp = `${target}.tmp-${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
   const input = new java.io.FileInputStream(source);
   try {
-    const output = new java.io.FileOutputStream(target);
+    const output = new java.io.FileOutputStream(temp);
     try {
       const inChannel = input.getChannel();
       output.getChannel().transferFrom(inChannel, 0, inChannel.size());
@@ -223,5 +229,9 @@ function copyFileBytes(source: string, target: string): void {
     }
   } finally {
     input.close();
+  }
+  if (!new java.io.File(temp).renameTo(new java.io.File(target))) {
+    new java.io.File(temp).delete();
+    throw new Error(`rename to ${target} failed`);
   }
 }
