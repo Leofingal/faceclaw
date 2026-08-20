@@ -6,12 +6,7 @@ import {
   setBooleanSetting,
   setStringSetting,
 } from "~/native/settings-store";
-import {
-  getDefaultSmallFont,
-  UI_FONT_SETTING_KEY,
-  UI_FONT_VALUES,
-  type UiFontChoice,
-} from "~/graphics/bdffont";
+import { getDefaultSmallFont } from "~/graphics/ui-fonts";
 import { wrapText } from "~/graphics/textwrap";
 import {
   ASSISTANT_MODEL_VALUES,
@@ -21,6 +16,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
+import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
@@ -167,6 +163,7 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
 type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<string, TId> & {
   editorTitle?: string;
   glassesEditTitle?: string;
+  inputKind?: "text" | "email" | "password";
   normalize?: (value: string | null | undefined) => string;
 };
 
@@ -182,12 +179,14 @@ export function getStringSettingById(id: string): ConfigSettingString | null {
 export class ConfigSettingString<TId extends string = string> extends ConfigSetting<string, TId> {
   readonly editorTitle: string;
   readonly glassesEditTitle: string;
+  readonly inputKind: "text" | "email" | "password";
   private readonly normalizer: (value: string | null | undefined) => string;
 
   constructor(options: ConfigSettingStringOptions<TId>) {
     super(options);
     this.editorTitle = options.editorTitle ?? options.label;
     this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
+    this.inputKind = options.inputKind ?? "text";
     this.normalizer = options.normalize ?? ((value) => value ?? "");
     stringSettingsById.set(this.id, this);
   }
@@ -212,16 +211,6 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   values: ["icon", "percentage"],
   formatValue: batteryDisplayModeLabel,
   description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
-});
-
-export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
-  id: "uiFont",
-  label: "Font",
-  storageKey: UI_FONT_SETTING_KEY,
-  defaultValue: "terminus",
-  values: UI_FONT_VALUES,
-  formatValue: uiFontLabel,
-  description: "Typeface for UI text on the glasses. Terminus is fixed-width; TerminusV is a proportional variant that fits more text per line.",
 });
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
@@ -628,10 +617,6 @@ export function timeFormatLabel(value: TimeFormat): string {
   return value === "12h" ? "12-hour" : "24-hour";
 }
 
-export function uiFontLabel(value: UiFontChoice): string {
-  return value === "terminusv" ? "TerminusV" : "Terminus";
-}
-
 export function loadNightscoutSettings(): NightscoutSettings {
   return {
     siteUrl: nightscoutSiteUrlSetting.get(),
@@ -694,7 +679,7 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           image.drawText(
             getDefaultSmallFont(),
             x,
-            y + 3,
+            y + LIST_ROW_TEXT_INSET,
             `${setting.displayValue(value)}${selected}`,
             disabled ? 70 : 200,
           );
@@ -739,7 +724,7 @@ export function textSettingMenuItem<TId extends string = string>(
     render: ({ image, x, y }) => {
       // displayValue honors the setting's formatValue, so secrets (API keys,
       // tokens) can mask themselves instead of rendering in the clear.
-      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
+      image.drawText(getDefaultSmallFont(), x, y + LIST_ROW_TEXT_INSET, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
     }
   };
 }
@@ -758,13 +743,15 @@ export class EditTextSettingLayer implements Layer {
     // viewport in the settings app).
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const step = lineStep(font);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
+    const messageTop = 24 + 2 * font.lineHeight;
     const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
     for (let index = 0; index < message.length; index++) {
-      image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
+      image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
     }
-    image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
-    image.drawText(font, 22, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 22, messageTop + (message.length + 2) * step, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, 22, height - 24 - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

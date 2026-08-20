@@ -54,6 +54,8 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg>',
   music:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+  package:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
   activity:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>',
   bell:
@@ -139,6 +141,11 @@ const cache = new Map<string, GrayImage | null>();
 /** Render an icon SVG to a size×size grayscale bitmap, rendered once and cached. */
 export function renderIcon(name: IconName, size: number): GrayImage | null {
   return renderSvgCached(name, ICON_SVGS[name], size);
+}
+
+/** Render an app-provided SVG using the same small renderer and cache. */
+export function renderSvgIcon(cacheName: string, svg: string, size: number): GrayImage | null {
+  return renderSvgCached(`custom:${cacheName}`, svg, size);
 }
 
 /**

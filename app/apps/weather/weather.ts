@@ -1,11 +1,12 @@
-import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
+import { tightRowHeight } from "../../ui/metrics";
 
 const PAGE_X = 18;
 const HEADER_Y = 8;
@@ -13,7 +14,8 @@ const CURRENT_TOP = 34;
 const CURRENT_TEXT_X = 112;
 const FORECAST_HEADER_Y = 105;
 const FORECAST_TOP = 124;
-const FORECAST_ROW_HEIGHT = 23;
+/** Forecast rows hold a 20px icon; grow with the font past that. */
+const FORECAST_MIN_ROW_HEIGHT = 23;
 const FOOTER_HEIGHT = 18;
 const FORECAST_NAME_WIDTH = 92;
 const FORECAST_TEMP_X = 126;
@@ -133,7 +135,8 @@ export class WeatherLayer implements Layer {
       return;
     }
     this.selectedIndex = clamp(this.selectedIndex, 0, forecast.length - 1);
-    const visibleRows = Math.max(1, Math.floor((height - FOOTER_HEIGHT - FORECAST_TOP) / FORECAST_ROW_HEIGHT));
+    const rowH = Math.max(FORECAST_MIN_ROW_HEIGHT, tightRowHeight(font) + 3);
+    const visibleRows = Math.max(1, Math.floor((height - FOOTER_HEIGHT - FORECAST_TOP) / rowH));
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, forecast.length);
 
     image.drawText(font, PAGE_X, FORECAST_HEADER_Y, "Upcoming", 150);
@@ -144,10 +147,10 @@ export class WeatherLayer implements Layer {
     const last = Math.min(forecast.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < last; index++) {
       const period = forecast[index]!;
-      const y = FORECAST_TOP + (index - this.scrollRow) * FORECAST_ROW_HEIGHT;
+      const y = FORECAST_TOP + (index - this.scrollRow) * rowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), FORECAST_ROW_HEIGHT - 2, ctx.stack.isFocused(), 5);
+        drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), rowH - 2, ctx.stack.isFocused(), 5);
       }
       const shade = selected ? 245 : 190;
       image.drawText(font, PAGE_X, y + 2, truncateText(font, period.name, FORECAST_NAME_WIDTH), shade);
@@ -167,7 +170,7 @@ export class WeatherLayer implements Layer {
 
   private drawMessage(
     image: GrayImage,
-    font: BdfFont,
+    font: UiFont,
     width: number,
     height: number,
     message: string,

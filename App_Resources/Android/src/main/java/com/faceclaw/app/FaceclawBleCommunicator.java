@@ -42,6 +42,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String G2_SCREEN_WAKE_LOCK_TAG = "Faceclaw:G2Screen";
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
+    private static final long CFW_CLEANUP_WAIT_MS = 4_000;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -102,6 +103,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawFramebufferControlGeneration;
     private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
+    private boolean cfwCleanupSupported;
+    private boolean cfwCleanupDelivered;
+    private int lastCfwCleanupAckMagic;
 
     private long reconnectAfterMs;
     private long ringReconnectAfterMs;
@@ -174,12 +178,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int desiredHeight;
     private int desiredPaintMs;
     private int desiredFrameId;
+    // Screen-space deferred draws (glyphs + images) whose pixels are baked
+    // into desiredPacked; the texture-cache planner may replay them as
+    // on-glasses cached draws.
+    private SurfaceCompositor.ScreenDraw[] desiredDraws = new SurfaceCompositor.ScreenDraw[0];
+    // (frame, reason) of the last "waiting to send" line, so a frame that
+    // stalls for seconds records one line per state change (see
+    // noteImageStallLocked). Send-loop thread only.
+    private int stallFrameId;
+    private String stallReason = "";
     // Highest compositor sequence stored as the desired frame; composites that
     // lost a store race to a newer one are discarded (their content is already
     // included in the newer composite).
     private long lastStoredCompositeSeq;
 
     private final SurfaceCompositor compositor = new SurfaceCompositor();
+
+    // Phone-side model of the CFW's 64 KiB texture cache (modes 12/13/14).
+    // Reset whenever the image pipeline / EvenHub session is torn down: the
+    // firmware frees the cache with the fb lease, and after any resync the
+    // cheap safe assumption is an empty cache (glyphs re-upload lazily).
+    private final TextureCacheState textureCache = new TextureCacheState();
+    private boolean textureCacheSupported;
+    private boolean textureImagesSupported;
+    private boolean fwTextSupported;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -226,7 +248,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public void disconnect() {
-        releaseFaceclawFramebufferLease();
+        /* On the normal path DashboardController already sent mode 11 after
+         * quiescing its producers. Also cover direct/early close callers here;
+         * a successful cleanup must remain the final BLE message. Older CFWs
+         * fall back to the standalone framebuffer-lease release. */
+        if (!cfwCleanupDelivered && !sendCfwCleanup()) {
+            releaseFaceclawFramebufferLease();
+        }
         Thread threadToJoin;
         synchronized (lock) {
             userDisconnectRequested = true;
@@ -623,10 +651,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * frame landed while briefly hidden would stay blank until its next repaint.
      */
     public void setSurfaceVisible(String id, boolean visible) {
+        // Its own frame: this recomposite is a real screen update with real
+        // latency, and without one it would show up in other frames' logs only
+        // as an anonymous "superseded by frame#0".
+        int frameId = FrameTimings.getInstance().startFrame(
+                "compositor:visible " + id + "=" + visible);
         compositor.setSurfaceVisible(id, visible);
         SurfaceCompositor.Composite composite = compositor.composite();
         byte[] packed = BmpUtil.pack4bppFromGray8(composite.gray, composite.width, composite.height);
-        storeDesiredComposite(composite, packed, 0, 0);
+        storeDesiredComposite(composite, packed, 0, frameId);
     }
 
     /**
@@ -635,10 +668,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * unblanking restores the previous screen content without repaints.
      */
     public void setScreenBlanked(boolean blanked) {
+        int frameId = FrameTimings.getInstance().startFrame(
+                "compositor:" + (blanked ? "blank" : "unblank"));
         compositor.setBlanked(blanked);
         SurfaceCompositor.Composite composite = compositor.composite();
         byte[] packed = BmpUtil.pack4bppFromGray8(composite.gray, composite.width, composite.height);
-        storeDesiredComposite(composite, packed, 0, 0);
+        storeDesiredComposite(composite, packed, 0, frameId);
     }
 
     /**
@@ -675,10 +710,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             int paintMs,
             int frameId
     ) {
+        submitSurfaceFrame(pixels8bpp, surfaceId, rectX, rectY, rectWidth, rectHeight,
+                contentFingerprint, paintMs, frameId, null);
+    }
+
+    /**
+     * As above, with the frame's glyph draws (see SurfaceCompositor's glyph
+     * overload for the buffer format): the surface's full text content as
+     * structured draws, letting the texture-cache planner ship glyphs as
+     * on-glasses cached draws instead of pixels. Null when the submitter has
+     * no glyph metadata; the pixels alone remain fully correct.
+     */
+    public void submitSurfaceFrame(
+            java.nio.ByteBuffer pixels8bpp,
+            String surfaceId,
+            int rectX,
+            int rectY,
+            int rectWidth,
+            int rectHeight,
+            String contentFingerprint,
+            int paintMs,
+            int frameId,
+            java.nio.ByteBuffer glyphs
+    ) {
         Log.i(TAG, "Received an updated frame for surface " + surfaceId);
+        FrameTimings.getInstance().log(frameId, "surface " + surfaceId + " updated rect="
+                + rectWidth + "x" + rectHeight + "+" + rectX + "+" + rectY
+                + (glyphs == null ? " (no glyph draws)" : ""));
         FrameTimings.getInstance().spanStart(frameId, "composite");
         SurfaceCompositor.Composite composite = compositor.applyAndComposite(
-                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint);
+                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
         FrameTimings.getInstance().spanEnd(frameId, "composite");
         // Pack the composited 8bpp buffer down to the headerless 4bpp frame
         // format the wire planners consume; BMP framing is added later only on
@@ -707,6 +768,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 desiredFingerprint = composite.fingerprint;
                 desiredPaintMs = paintMs;
                 desiredFrameId = frameId;
+                desiredDraws = composite.draws;
             }
         }
         if (stale) {
@@ -761,11 +823,109 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Send CFW image-handler mode 11 after quiescing normal traffic. A successful
+     * return means the cleanup was ACKed and no later Faceclaw message should be
+     * emitted before closing BLE. Unsupported/older CFWs return false so callers
+     * can use the legacy shutdown-and-lease-release path.
+     */
+    public boolean sendCfwCleanup() {
+        int magic;
+        synchronized (lock) {
+            if (cfwCleanupDelivered) {
+                return true;
+            }
+            if (!cfwCleanupSupported || !running || !sessionReady
+                    || shutdownRequested || !fixedLayoutCreated || !warmedUp) {
+                logLine("skip CFW cleanup; mode 11 unavailable or image path not ready");
+                return false;
+            }
+
+            /* Stop auto-renewals, heartbeats, image generation, and control
+             * retries, then discard everything that has not reached BLE yet. */
+            shutdownRequested = true;
+            lastCfwCleanupAckMagic = 0;
+            clearPendingMessagesLocked("CFW cleanup requested");
+            logLine("quiescing transport for CFW cleanup");
+        }
+        interruptibleSleep.interrupt();
+
+        /* WINDOW_SIZE can exceed one, so merely appending cleanup would allow it
+         * to overlap previously-written image fragments. Wait until all of those
+         * ACK or time out; shutdownRequested prevents the drive loop from adding
+         * any fresh automatic traffic meanwhile. */
+        long drainDeadline = SystemClock.elapsedRealtime() + CFW_CLEANUP_WAIT_MS;
+        synchronized (lock) {
+            while (running && sessionReady && !inFlightMessages.isEmpty()) {
+                long remaining = drainDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) break;
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            if (!running || !sessionReady || !inFlightMessages.isEmpty()) {
+                shutdownRequested = false;
+                logLine("CFW cleanup could not drain prior traffic");
+                return false;
+            }
+
+            /* External producers are expected to be stopped by the caller, but
+             * clear once more at the barrier so cleanup is definitely last. */
+            clearPendingMessagesLocked("CFW cleanup barrier");
+            OutboundMessage message = messageBuilder.cfwCleanup(
+                DASHBOARD_TILE,
+                nextMapSessionId(),
+                connectionOptions.sendImagesToLeft
+            );
+            magic = message.magic;
+            message.onAck = () -> {
+                lastCfwCleanupAckMagic = message.magic;
+                cfwCleanupDelivered = true;
+                compassMaybeOn = false;
+                faceclawWakeLeaseEnabled = false;
+                logLine("CFW cleanup completed");
+            };
+            message.onTimeout = () -> logLine("CFW cleanup ack timeout");
+            pendingMessages.addLast(message);
+            logLine("queue CFW cleanup");
+        }
+        interruptibleSleep.interrupt();
+
+        long deadline = SystemClock.elapsedRealtime() + CFW_CLEANUP_WAIT_MS;
+        synchronized (lock) {
+            while (running
+                    && sessionReady
+                    && lastCfwCleanupAckMagic != magic
+                    && hasPendingOrInflightMagicLocked(magic)) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) break;
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            boolean acked = lastCfwCleanupAckMagic == magic;
+            if (!acked) shutdownRequested = false;
+            return acked;
+        }
+    }
+
+    /**
      * End the EvenHub page while retaining both arm GATT connections and all
      * notification subscriptions. A missed ACK is intentionally non-fatal:
      * reconnecting Bluetooth here would defeat the power-saving mode.
      */
     public boolean suspendEvenHubSession() {
+        // Ending the plugin task releases the fb lease, which frees the
+        // on-glasses texture cache; forget it phone-side either way (a lost
+        // ack may still have taken effect).
+        synchronized (lock) {
+            textureCache.reset();
+        }
         if (sendShutdownInternal(0, false)) {
             return true;
         }
@@ -1253,6 +1413,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastAudioControlAckMagic = 0;
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
+                cfwCleanupDelivered = false;
+                lastCfwCleanupAckMagic = 0;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0;
                 enqueueFaceclawFramebufferControlLocked(
@@ -1456,6 +1618,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                if (cfwCleanupDelivered) {
+                    /* Successful mode 11 must be the last Faceclaw write. Drop
+                     * anything a late external producer attempted to enqueue
+                     * while DashboardController was closing the transport. */
+                    clearPendingMessagesLocked("after CFW cleanup");
+                    return 250;
+                }
                 if (sessionReady
                         && now - lastFaceclawFramebufferLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                         && !hasPendingOrInflightKindLocked("framebuffer-lease-control")) {
@@ -1548,10 +1717,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
+                    // "Ready" covers both a fresh composite still to be planned
+                    // and a planned image already queued but not yet written --
+                    // enqueueing sets lastEnqueuedFingerprint, so testing only
+                    // the desired fingerprint left the queued-but-unwritten
+                    // window unprotected and a heartbeat that came due there
+                    // cost the frame a full ack round trip (measured 124ms on
+                    // frame#232 of the 2026-08-20 02:27 capture).
                     boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
                             && !hasPendingOrInflightKindLocked("heartbeat")
                             && now >= imageRetryAfterMs
-                            && !getDesiredFingerprint().equals(lastEnqueuedFingerprint);
+                            && (hasPendingImageLocked()
+                                || !getDesiredFingerprint().equals(lastEnqueuedFingerprint));
+                    noteImageStallLocked(now, windowHasRoom);
                     if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
@@ -2044,12 +2222,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int height;
         int paintMs;
         int frameId;
+        SurfaceCompositor.ScreenDraw[] draws;
         synchronized (desiredTilesLock) {
             packed = desiredPacked;
             width = desiredWidth;
             height = desiredHeight;
             paintMs = desiredPaintMs;
             frameId = desiredFrameId;
+            draws = desiredDraws;
             desiredFrameId = 0;
         }
         if (packed == null) {
@@ -2060,6 +2240,48 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             lastEnqueuedFingerprint = fingerprint;
             finishFrame(frameId, "discarded: image content identical to displayed");
             return;
+        }
+
+        // Texture-cache path: ship text as cached-glyph draws, punching their
+        // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
+        // image message on the ordered transport. Falls through to the plain
+        // paths whenever the planner has nothing to draw.
+        if (textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
+                && draws != null && draws.length > 0 && packed.length > 0) {
+            byte[] deltaBase = (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
+                    && lastEnqueuedWidth == width && lastEnqueuedHeight == height)
+                    ? lastEnqueuedPacked : null;
+            FrameTimings.getInstance().spanStart(frameId, "texture-plan");
+            TexturePlanner.Result tex = TexturePlanner.plan(
+                    deltaBase, packed, width, height, draws, textureCache,
+                    nextImageFrameId,
+                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS,
+                    textureImagesSupported, fwTextSupported);
+            if (tex != null) {
+                nextImageFrameId = tex.nextFid;
+                for (byte[] upload : tex.uploads) {
+                    enqueueTextureUploadLocked(upload);
+                }
+                BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
+                        0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), tex.payload);
+                plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
+                FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
+                String texLog = "texture update " + (tex.fullFrame ? "full" : ("rects=" + tex.rectCount))
+                        + " glyphs=" + tex.drawnGlyphs + " runs=" + tex.runCount
+                        + " images=" + tex.drawnImages
+                        + " fw=" + tex.fwGlyphs + "/" + tex.fwRuns
+                        + " baked=" + tex.bakedCandidates
+                        + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
+                        + " cache=" + textureCache.usedBytes() + "B"
+                        + " payload=" + tex.payload.length + "B"
+                        + " (rects " + tex.rectsMs + "ms, match " + tex.matchMs
+                        + "ms, cache " + tex.cacheMs + "ms, punch " + tex.punchMs
+                        + "ms, encode " + tex.encodeMs + "ms)";
+                FrameTimings.getInstance().log(frameId, texLog);
+                finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
+                return;
+            }
+            FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
         }
 
         FrameTimings.getInstance().spanStart(frameId, "compress-and-plan");
@@ -2110,7 +2332,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (incrementalLog != null) {
             FrameTimings.getInstance().log(frameId, incrementalLog);
         }
+        finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
+    }
 
+    /** Shared tail of enqueueDesiredImageLocked: enqueue fragments, advance the delta base, log. */
+    private void finishEnqueueDesiredImageLocked(
+            BleImageOptimizer.TileImagePlan plan, String fingerprint, int paintMs, int frameId) {
         int updateId = nextImageUpdateId++;
         int messageCount = plan.fragments.size();
         imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1, frameId));
@@ -2131,6 +2358,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " messages=" + messageCount + " payload=" + plan.payload.length + "B");
         logLine("queue image update#" + updateId + " fingerprint=" + fingerprint
                 + " messages=" + messageCount);
+    }
+
+    /**
+     * Enqueue one mode-12 texture-cache upload ahead of the image message that
+     * references its glyphs (the transport is FIFO, so no ack round trip is
+     * needed before use). A timeout means the on-glasses cache state is
+     * unknown; forget everything phone-side (glyphs re-upload lazily) and let
+     * the accompanying image update's own timeout drive the frame resync.
+     */
+    private void enqueueTextureUploadLocked(byte[] payload) {
+        OutboundMessage message = messageBuilder.imagePayload(
+            "texcache",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            "texture upload " + payload.length + "B",
+            connectionOptions.sendImagesToLeft);
+        message.onTimeout = () -> {
+            textureCache.reset();
+            logLine("texture upload ack timeout; texture cache state reset");
+        };
+        pendingMessages.addLast(message);
+        logLine("queue " + message.label);
     }
 
     private void enqueueImageFragmentLocked(
@@ -2221,6 +2471,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
+                cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
+                textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
+                        && hasCapability(firmwareInfo.capabilities, "texstr14");
+                textureImagesSupported = hasCapability(firmwareInfo.capabilities, "teximg13");
+                fwTextSupported = hasCapability(firmwareInfo.capabilities, "font15");
                 emitFirmwareInfo(firmwareInfo);
             }
         };
@@ -2281,6 +2536,117 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return battery >= 0
             ? "Glasses charging. Battery " + battery + "%."
             : "Glasses charging.";
+    }
+
+    /**
+     * Record, into the frame that is waiting, why it did not go out on this
+     * pass of the send loop. Without this the export shows a bare multi-second
+     * jump between "image submitted as desired frame" and the first BLE
+     * packet, with no hint whether we were blocked on warmup, a heartbeat, the
+     * BLE window, or another message queued ahead. Deduped on (frame, reason),
+     * so a frame stalled for seconds gets one line per state change rather
+     * than one per loop pass.
+     */
+    private void noteImageStallLocked(long now, boolean windowHasRoom) {
+        int frameId;
+        synchronized (desiredTilesLock) {
+            frameId = desiredFrameId;
+        }
+        String reason;
+        if (frameId != 0 && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
+            reason = describeEnqueueBlockerLocked(now, windowHasRoom);
+        } else {
+            // Nothing waiting to be planned; an already-planned image may still
+            // be queued behind other traffic.
+            OutboundMessage queuedImage = firstPendingImageLocked();
+            frameId = queuedImage == null ? 0 : imageUpdateFrameIdLocked(queuedImage.imageUpdateId);
+            reason = queuedImage == null ? null : describeWriteBlockerLocked(now, windowHasRoom, queuedImage);
+        }
+        if (frameId == 0 || reason == null) {
+            stallFrameId = 0;
+            stallReason = "";
+            return;
+        }
+        if (frameId == stallFrameId && reason.equals(stallReason)) {
+            return;
+        }
+        stallFrameId = frameId;
+        stallReason = reason;
+        FrameTimings.getInstance().log(frameId, "waiting to send: " + reason);
+    }
+
+    /** Why the desired composite has not been turned into wire messages yet, or null. */
+    private String describeEnqueueBlockerLocked(long now, boolean windowHasRoom) {
+        if (shutdownRequested) {
+            return "shutdown requested";
+        }
+        if (!sessionReady) {
+            return "BLE session not ready";
+        }
+        if (!fixedLayoutCreated) {
+            return "display layout not created yet";
+        }
+        if (!warmedUp) {
+            return "waiting for the warmup frame";
+        }
+        if (now < imageRetryAfterMs) {
+            return "image retry backoff (" + (imageRetryAfterMs - now) + "ms left)";
+        }
+        if (hasPendingImageLocked()) {
+            return "an earlier image is still queued";
+        }
+        if (!windowHasRoom) {
+            return "BLE window full (" + inFlightMessages.size() + " message(s) in flight)";
+        }
+        if (hasPendingOrInflightKindLocked("heartbeat")) {
+            return "heartbeat in flight";
+        }
+        if (!pendingMessages.isEmpty()) {
+            return pendingMessages.size() + " message(s) queued ahead, next "
+                + pendingMessages.peekFirst().label;
+        }
+        return null;
+    }
+
+    /** Why a planned image message has not been written to BLE yet, or null. */
+    private String describeWriteBlockerLocked(long now, boolean windowHasRoom, OutboundMessage queuedImage) {
+        if (!sessionReady) {
+            return "BLE session not ready";
+        }
+        if (!windowHasRoom) {
+            return "BLE window full (" + inFlightMessages.size() + " message(s) in flight)";
+        }
+        if (hasPendingOrInflightKindLocked("heartbeat")) {
+            return "heartbeat in flight";
+        }
+        // handleHeartbeat is a barrier: while one is due it holds back every
+        // other write, so a frame queued at the wrong moment waits a heartbeat
+        // round trip. Reported explicitly because it is otherwise invisible --
+        // heartbeats belong to no frame.
+        long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
+        if (warmedUp && fixedLayoutCreated && !shutdownRequested
+                && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_READY_MS) {
+            return "heartbeat due (" + heartbeatElapsedMs + "ms since the last one acked)";
+        }
+        OutboundMessage head = pendingMessages.peekFirst();
+        if (head != null && head != queuedImage) {
+            return "queued behind " + head.label;
+        }
+        return null;
+    }
+
+    private OutboundMessage firstPendingImageLocked() {
+        for (OutboundMessage message : pendingMessages) {
+            if (message.imageUpdateId > 0) {
+                return message;
+            }
+        }
+        return null;
+    }
+
+    private int imageUpdateFrameIdLocked(int imageUpdateId) {
+        BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(imageUpdateId);
+        return stats == null ? 0 : stats.frameId;
     }
 
     private void finishDesiredFrameLocked(String outcome) {
@@ -2509,6 +2875,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // image is a full keyframe rather than a delta onto a stale base.
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
+        // Queued texture uploads (if any) were dropped with the rest, and the
+        // session churn behind a full clear may have freed the on-glasses
+        // cache; forget it phone-side so glyphs re-upload lazily.
+        textureCache.reset();
     }
 
     /**
@@ -2539,6 +2909,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         clearInFlightMessagesLocked(reason);
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
+        textureCache.reset();
     }
 
     /** Any image update whose fragments are still queued (not yet sent). */
@@ -2656,11 +3027,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
+        cfwCleanupDelivered = false;
+        lastCfwCleanupAckMagic = 0;
         wearState = -1;
         displayedFingerprint = "";
         // Deliberately not clearing silentMode: it is a property of the glasses,
         // not of our session, and silent mode blocks app launches, so it can be
         // the very cause of the session teardown that got us here.
+    }
+
+    private static boolean hasCapability(String capabilities, String token) {
+        if (capabilities == null || token == null || token.isEmpty()) return false;
+        for (String capability : capabilities.trim().split("\\s+")) {
+            if (token.equals(capability)) return true;
+        }
+        return false;
     }
 
     private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {

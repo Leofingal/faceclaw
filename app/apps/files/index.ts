@@ -1,4 +1,10 @@
 import { type AppContext, type AppDefinition } from "../app-definition";
+import { openEvenHubPackage } from "../evenhub";
+import {
+  installEvenHubPackageFile,
+  installedEvenHubAppId,
+} from "../evenhub/installed-apps";
+import { closeRunningPackage } from "../evenhub/manager";
 import {
   createFilesAppWindow,
   createFontDocumentWindow,
@@ -55,6 +61,21 @@ const filesApp: AppDefinition = {
         ...options,
         openDocumentWindow: (title, text) => openTextDocumentWindow(ctx, title, text),
         openImageWindow: (title, path) => openImageDocumentWindow(ctx, title, path),
+        openEhpkApp: (path) => {
+          void openEvenHubPackage(ctx, path).catch((error) => {
+            ctx.appendLog(`evenhub launch failed: ${error}`);
+          });
+        },
+        installEhpkApp: async (path) => {
+          try {
+            const installed = installEvenHubPackageFile(path);
+            ctx.appendLog(`evenhub: installed ${installed.packageId} ${installed.version}`);
+            closeRunningPackage(installed.packageId);
+            await ctx.launchApp(installedEvenHubAppId(installed.packageId));
+          } catch (error) {
+            ctx.appendLog(`evenhub install failed: ${error}`);
+          }
+        },
         openFontWindow: (title, path) => openFontDocumentWindow(ctx, title, path),
       }),
     ),

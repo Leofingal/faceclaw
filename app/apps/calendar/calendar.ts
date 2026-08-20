@@ -1,5 +1,5 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
@@ -7,12 +7,12 @@ import { timeFormatSetting } from "../../ui/dashboard-settings";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
 import { hasCalendarPermission } from "../../g2/android-permissions";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { lineStep } from "../../ui/metrics";
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
 const LIST_TOP = 38;
 const ROW_X = 16;
-const LINE_HEIGHT = 14;
 const DAY_HEADER_HEIGHT = 16;
 const ROW_GAP = 4;
 const MAX_EVENTS = 50;
@@ -57,7 +57,7 @@ export class CalendarLayer implements Layer {
       return image;
     }
 
-    const rows = buildEventRows(events);
+    const rows = buildEventRows(font, events);
     this.selectedIndex = clamp(this.selectedIndex, 0, rows.length - 1);
     image.drawText(font, width - 96, PAGE_Y + 9, `${this.selectedIndex + 1}/${rows.length}`, 150);
 
@@ -81,7 +81,7 @@ export class CalendarLayer implements Layer {
       if (event.type === "click") this.requestPermission();
       return;
     }
-    const rows = buildEventRows(readUpcomingEvents(MAX_EVENTS));
+    const rows = buildEventRows(getDefaultSmallFont(), readUpcomingEvents(MAX_EVENTS));
     if (!rows.length) return;
     if (event.type === "scroll-up") {
       this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -90,17 +90,17 @@ export class CalendarLayer implements Layer {
     }
   }
 
-  private paintPermissionPrompt(image: GrayImage, font: BdfFont, width: number, height: number): void {
+  private paintPermissionPrompt(image: GrayImage, font: UiFont, width: number, height: number): void {
     const message = "Grant calendar permission on your phone to see your events on the glasses.";
     const lines = wrapText(font, message, width - 48);
     for (let index = 0; index < lines.length; index++) {
-      image.drawText(font, 24, 72 + index * LINE_HEIGHT, lines[index]!, 190);
+      image.drawText(font, 24, 72 + index * lineStep(font), lines[index]!, 190);
     }
     image.drawText(font, 24, height - 36, `${GESTURE_CLICK} request   ${GESTURE_DOUBLE_CLICK} back`, 110);
   }
 }
 
-function buildEventRows(events: CalendarEvent[]): EventRow[] {
+function buildEventRows(font: UiFont, events: CalendarEvent[]): EventRow[] {
   const rows: EventRow[] = [];
   let previousDayKey = "";
   for (const event of events) {
@@ -119,7 +119,7 @@ function buildEventRows(events: CalendarEvent[]): EventRow[] {
       event,
       dayHeader,
       lines,
-      height: (dayHeader ? DAY_HEADER_HEIGHT : 0) + 6 + lines.length * LINE_HEIGHT,
+      height: (dayHeader ? DAY_HEADER_HEIGHT : 0) + 6 + lines.length * lineStep(font),
     });
   }
   return rows;
@@ -127,7 +127,7 @@ function buildEventRows(events: CalendarEvent[]): EventRow[] {
 
 function drawEventRow(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   row: EventRow,
   x: number,
   y: number,
@@ -139,7 +139,7 @@ function drawEventRow(
     image.drawText(font, x, cursorY + 2, row.dayHeader, 150);
     cursorY += DAY_HEADER_HEIGHT;
   }
-  const bodyHeight = row.lines.length * LINE_HEIGHT + 4;
+  const bodyHeight = row.lines.length * lineStep(font) + 4;
   if (selected) {
     image.fillRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 15, 6);
     image.drawRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 90, 6);
@@ -147,7 +147,7 @@ function drawEventRow(
   const maxTextWidth = width - 2 * x;
   for (let index = 0; index < row.lines.length; index++) {
     const value = index === 0 ? (selected ? 235 : 205) : 160;
-    image.drawText(font, x, cursorY + 3 + index * LINE_HEIGHT, truncateText(font, row.lines[index]!, maxTextWidth), value);
+    image.drawText(font, x, cursorY + 3 + index * lineStep(font), truncateText(font, row.lines[index]!, maxTextWidth), value);
   }
 }
 

@@ -351,6 +351,9 @@ export class OnboardingFlashViewModel extends Observable {
       case "verifying-base":
         this.status = "Verifying the downloaded firmware...";
         break;
+      case "extracting-fonts":
+        this.status = "Extracting the glasses' fonts for EvenHub apps...";
+        break;
       case "patching":
         this.status = `Applying patches (${progress.applied}/${progress.total})...`;
         break;

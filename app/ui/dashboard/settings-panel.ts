@@ -1,10 +1,11 @@
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
 import { drawSelectionHighlight, isMenuItemDisabled, MenuItem, MenuLayer, openModalMenu } from "../menu";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../metrics";
 import { shell } from "../shell/shell";
 
 /**
@@ -28,7 +29,6 @@ export type SettingsSection = {
 };
 
 const PAD = 8;
-const ROW_H = 20;
 const LEFT_W = 150;
 const MAX_DESCRIPTION_LINES = 3;
 // A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
@@ -74,19 +74,21 @@ export class SettingsPanelLayer implements Layer {
     const rightItems = section.items;
     this.rightIndex = clamp(this.rightIndex, 0, Math.max(0, rightItems.length - 1));
 
+    const rowH = listRowHeight(font);
     const top = PAD;
-    const listBottom = height - PAD - 12; // leave a row for the gesture hint
+    const hintY = height - font.lineHeight + 2;
+    const listBottom = hintY - 8; // leave a band for the gesture hint
 
     // Left column: section labels.
-    const leftRows = Math.max(1, ((listBottom - top) / ROW_H) | 0);
+    const leftRows = Math.max(1, ((listBottom - top) / rowH) | 0);
     this.leftScroll = clampScroll(this.leftIndex, this.leftScroll, leftRows, this.sections.length);
     for (let i = this.leftScroll; i < Math.min(this.sections.length, this.leftScroll + leftRows); i++) {
-      const rowY = top + (i - this.leftScroll) * ROW_H;
+      const rowY = top + (i - this.leftScroll) * rowH;
       const selected = i === this.leftIndex;
       if (selected) {
-        drawSelectionHighlight(image, PAD - 2, rowY, LEFT_W, ROW_H - 2, appFocused && this.focus === "left", 6);
+        drawSelectionHighlight(image, PAD - 2, rowY, LEFT_W, rowH - 2, appFocused && this.focus === "left", 6);
       }
-      image.drawText(font, PAD + 8, rowY + 4, this.sections[i]!.label, selected ? 255 : 200);
+      image.drawText(font, PAD + 8, rowY + LIST_ROW_TEXT_INSET, this.sections[i]!.label, selected ? 255 : 200);
     }
 
     // Column divider (a light rule, not a full border).
@@ -109,19 +111,19 @@ export class SettingsPanelLayer implements Layer {
       const descriptionLines = selectedItem?.description
         ? wrapText(font, selectedItem.description, rightW - 4).slice(0, MAX_DESCRIPTION_LINES)
         : [];
-      const descriptionH = descriptionLines.length ? descriptionLines.length * font.lineHeight + 10 : 0;
+      const descriptionH = descriptionLines.length ? descriptionLines.length * lineStep(font) + 10 : 0;
       const rightListBottom = listBottom - descriptionH;
-      const rightRows = Math.max(1, ((rightListBottom - rightTop) / ROW_H) | 0);
+      const rightRows = Math.max(1, ((rightListBottom - rightTop) / rowH) | 0);
       this.rightScroll = clampScroll(this.rightIndex, this.rightScroll, rightRows, rightItems.length);
       for (let i = this.rightScroll; i < Math.min(rightItems.length, this.rightScroll + rightRows); i++) {
         const item = rightItems[i]!;
-        const rowY = rightTop + (i - this.rightScroll) * ROW_H;
+        const rowY = rightTop + (i - this.rightScroll) * rowH;
         // A selection only appears once focus is in the right column; before
         // that the pane is a preview of what tapping would open.
         const selected = this.focus === "right" && i === this.rightIndex;
         const disabled = isMenuItemDisabled(item);
         if (selected) {
-          drawSelectionHighlight(image, rightX - 2, rowY, rightW + 2, ROW_H - 2, appFocused, 6);
+          drawSelectionHighlight(image, rightX - 2, rowY, rightW + 2, rowH - 2, appFocused, 6);
         }
         if (item.render) {
           item.render({
@@ -129,20 +131,20 @@ export class SettingsPanelLayer implements Layer {
             x: rightX + 8,
             y: rowY,
             width: rightW - 16,
-            height: ROW_H - 3,
+            height: rowH - 3,
             selected,
             disabled,
             text: item.label,
             ctx,
           });
         } else {
-          image.drawText(font, rightX + 8, rowY + 4, item.label, disabled ? 70 : selected ? 255 : 200);
+          image.drawText(font, rightX + 8, rowY + LIST_ROW_TEXT_INSET, item.label, disabled ? 70 : selected ? 255 : 200);
         }
       }
       if (descriptionLines.length) {
         image.drawLine(rightX, rightListBottom, rightX + rightW, rightListBottom, 40);
         for (let i = 0; i < descriptionLines.length; i++) {
-          image.drawText(font, rightX + 4, rightListBottom + 6 + i * font.lineHeight, descriptionLines[i]!, 150);
+          image.drawText(font, rightX + 4, rightListBottom + 6 + i * lineStep(font), descriptionLines[i]!, 150);
         }
       }
     }
@@ -151,7 +153,7 @@ export class SettingsPanelLayer implements Layer {
       this.focus === "left"
         ? `${GESTURE_SCROLL} section   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} exit`
         : `${GESTURE_SCROLL} item   ${GESTURE_CLICK} select   ${GESTURE_DOUBLE_CLICK} back`;
-    image.drawText(font, PAD, height - 10, hint, 110);
+    image.drawText(font, PAD, hintY, hint, 110);
     return image;
   }
 

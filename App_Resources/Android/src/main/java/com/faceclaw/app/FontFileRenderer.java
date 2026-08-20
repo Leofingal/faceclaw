@@ -175,6 +175,136 @@ public final class FontFileRenderer {
     }
 
     /**
+<<<<<<< HEAD
+||||||| d7d12af
+=======
+     * Render one codepoint as a tight-ink-box antialiased glyph cell for the
+     * texture-cache text pipeline (see app/graphics/ttf-font.ts). Ligatures
+     * are disabled so a per-codepoint raster plus pairwise kerning (measured
+     * via measureTextExact) fully describes a line. Little-endian packet:
+     *   [advance u16, 26.6 fixed point]
+     *   [bearingX s16]   ink left relative to the pen position
+     *   [inkTop s16]     ink top relative to the line top (ascent above baseline)
+     *   [width u16][height u16]
+     *   [width*height coverage bytes, gamma-mapped]
+     * An ink-free glyph (space) has width = height = 0 but a valid advance.
+     * Empty array when the font cannot be loaded or the render fails.
+     */
+    public static byte[] renderGlyphCell(String path, float sizePx, int codePoint, double gamma) {
+        Typeface typeface = loadTypeface(path);
+        if (typeface == null || sizePx <= 0 || codePoint < 0 || codePoint > 0x10ffff) {
+            return new byte[0];
+        }
+        try {
+            Paint paint = glyphPaint(typeface, sizePx);
+            String text = new String(Character.toChars(codePoint));
+            float advance = paint.measureText(text);
+            int advanceFixed = Math.max(0, Math.min(0xffff, Math.round(advance * 64f)));
+
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            paint.getTextBounds(text, 0, text.length(), bounds);
+            if (bounds.isEmpty()) {
+                return glyphCellPacket(advanceFixed, 0, 0, 0, 0, null);
+            }
+            // getTextBounds can be off by a hair on AA edges; render with
+            // padding, then trim to the actually painted box.
+            int pad = 2;
+            int bw = bounds.width() + 2 * pad;
+            int bh = bounds.height() + 2 * pad;
+            if (bw <= 0 || bh <= 0 || bw * bh > 1_000_000) {
+                return new byte[0];
+            }
+            int penX = pad - bounds.left;
+            int baselineY = pad - bounds.top;
+            Bitmap bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.drawText(text, penX, baselineY, paint);
+            byte[] pixels = alpha8Pixels(bitmap, bw, bh);
+            bitmap.recycle();
+
+            int x0 = bw, x1 = -1, y0 = bh, y1 = -1;
+            for (int y = 0; y < bh; y++) {
+                int row = y * bw;
+                for (int x = 0; x < bw; x++) {
+                    if (pixels[row + x] != 0) {
+                        if (x < x0) x0 = x;
+                        if (x > x1) x1 = x;
+                        if (y < y0) y0 = y;
+                        if (y > y1) y1 = y;
+                    }
+                }
+            }
+            if (x1 < x0) {
+                return glyphCellPacket(advanceFixed, 0, 0, 0, 0, null);
+            }
+            int width = x1 - x0 + 1;
+            int height = y1 - y0 + 1;
+            Paint.FontMetricsInt fm = paint.getFontMetricsInt();
+            int bearingX = x0 - penX;
+            int inkTop = (-fm.ascent) + (y0 - baselineY);
+
+            byte[] lut = gammaLut(gamma);
+            byte[] coverage = new byte[width * height];
+            for (int y = 0; y < height; y++) {
+                int src = (y0 + y) * bw + x0;
+                int dst = y * width;
+                for (int x = 0; x < width; x++) {
+                    coverage[dst + x] = lut[pixels[src + x] & 0xff];
+                }
+            }
+            return glyphCellPacket(advanceFixed, bearingX, inkTop, width, height, coverage);
+        } catch (Exception | OutOfMemoryError e) {
+            Log.w(TAG, "glyph render failed: " + path + " U+" + Integer.toHexString(codePoint), e);
+            return new byte[0];
+        }
+    }
+
+    /**
+     * Exact (float) advance width of a text run, with the same paint setup as
+     * renderGlyphCell (subpixel advances, ligatures off), so pair kerning can
+     * be derived as measure(ab) - measure(a) - measure(b).
+     */
+    public static double measureTextExact(String path, String text, float sizePx) {
+        Typeface typeface = loadTypeface(path);
+        if (typeface == null || text == null || sizePx <= 0) {
+            return 0;
+        }
+        return glyphPaint(typeface, sizePx).measureText(text);
+    }
+
+    /** Paint used by both the glyph-cell renderer and its measurements. */
+    private static Paint glyphPaint(Typeface typeface, float sizePx) {
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        paint.setTypeface(typeface);
+        paint.setTextSize(sizePx);
+        paint.setColor(Color.WHITE);
+        // Ligatures merge codepoints into one glyph, which the per-codepoint
+        // cache model cannot represent; kerning still applies.
+        paint.setFontFeatureSettings("'liga' off, 'clig' off");
+        return paint;
+    }
+
+    private static byte[] glyphCellPacket(
+            int advanceFixed, int bearingX, int inkTop, int width, int height, byte[] coverage) {
+        byte[] out = new byte[10 + (coverage == null ? 0 : coverage.length)];
+        out[0] = (byte) (advanceFixed & 0xff);
+        out[1] = (byte) ((advanceFixed >> 8) & 0xff);
+        out[2] = (byte) (bearingX & 0xff);
+        out[3] = (byte) ((bearingX >> 8) & 0xff);
+        out[4] = (byte) (inkTop & 0xff);
+        out[5] = (byte) ((inkTop >> 8) & 0xff);
+        out[6] = (byte) (width & 0xff);
+        out[7] = (byte) ((width >> 8) & 0xff);
+        out[8] = (byte) (height & 0xff);
+        out[9] = (byte) ((height >> 8) & 0xff);
+        if (coverage != null) {
+            System.arraycopy(coverage, 0, out, 10, coverage.length);
+        }
+        return out;
+    }
+
+    /**
+>>>>>>> evenhub-compatibility
      * Line metrics for a font at a pixel size, as "ascent descent lineGap"
      * (integers, pixels). Empty string if the font cannot be loaded.
      */

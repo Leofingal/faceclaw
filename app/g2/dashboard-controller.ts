@@ -16,7 +16,9 @@ import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboa
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { getDefaultMediumFont } from "../graphics/bdffont";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
+import { prepareFrameDraws } from "../graphics/glyph-wire";
+import { getDefaultMediumFont } from "../graphics/ui-fonts";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
@@ -34,6 +36,12 @@ import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
+import {
+  getInstalledEvenHubAppById,
+  installedEvenHubPackageId,
+  uninstallEvenHubPackage,
+} from "../apps/evenhub/installed-apps";
+import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -49,8 +57,14 @@ export type DashboardSnapshot = {
    */
   displayPreviewMessage: string;
   activeTextSettingId: string | null;
+  activeTextEditorTitle: string;
   activeTextSettingTitle: string;
   activeTextSettingValue: string;
+  activeTextSettingInputKind: "text" | "email" | "password";
+  secondaryTextSettingId: string | null;
+  secondaryTextSettingTitle: string;
+  secondaryTextSettingValue: string;
+  secondaryTextSettingInputKind: "text" | "email" | "password";
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -134,7 +148,9 @@ class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
   private log = "";
-  private activeTextSetting: ConfigSettingString | null = null;
+  private activeTextSettings: ConfigSettingString[] = [];
+  private activeTextEditorTitle = "";
+  private activeTextEditorOnFinish: (() => void) | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
@@ -184,6 +200,8 @@ class DashboardController {
   private lastSys = "none yet";
   private shellRenderInProgress = false;
   private shellRenderQueued = false;
+  /** Input frame that requested the next shell render; see requestShellRender. */
+  private pendingShellRenderCauseFrameId = 0;
   private nextShellRenderWantsFreshData = false;
   // One shared worker per app hosts all its windows; spawned on first launch.
   private readonly appHosts = new Map<string, WorkerAppHost>();
@@ -204,6 +222,11 @@ class DashboardController {
     const sharedActions = {
       disconnect: () => this.disconnect(),
       startTextSettingEdit: (setting: ConfigSettingString) => this.startTextSettingEdit(setting),
+      startTextSettingsEdit: (
+        settings: readonly ConfigSettingString[],
+        title: string,
+        onFinish?: () => void,
+      ) => this.startTextSettingsEdit(settings, title, onFinish),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
@@ -446,7 +469,14 @@ class DashboardController {
    * visible. Concurrent display-wake, shell, and wakeword callbacks share the
    * same operation.
    */
-  private ensureEvenHubSessionActive(): Promise<boolean> {
+  /**
+   * frameId (0 when the caller has none) attributes the barrier's four
+   * round trips to the input frame waiting on them; a wake barrier is the
+   * largest single input-to-display term there is, so knowing which step
+   * owns the second matters. Callers that join an in-flight barrier share
+   * the first caller's spans.
+   */
+  private ensureEvenHubSessionActive(frameId = 0): Promise<boolean> {
     if (this.evenHubResumePromise) return this.evenHubResumePromise;
     const communicator = this.communicator;
     if (!communicator || this.phase === "charging" || this.phase === "disconnected") {
@@ -454,14 +484,19 @@ class DashboardController {
     }
 
     const operation = (async () => {
-      await communicator.setG2ScreenOn(true);
-      if (!(await communicator.resumeEvenHubSession())) {
+      await frameTimings.spanAsync(frameId, "wake:screen-on", () => communicator.setG2ScreenOn(true));
+      const resumed = await frameTimings.spanAsync(frameId, "wake:resume-session", () =>
+        communicator.resumeEvenHubSession(),
+      );
+      if (!resumed) {
         return false;
       }
       // Resume first: setScreenBlanked(false) then recomposites retained state
       // as the desired first frame for the fresh layout.
-      await communicator.setScreenBlanked(false);
-      const ready = await communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS);
+      await frameTimings.spanAsync(frameId, "wake:unblank", () => communicator.setScreenBlanked(false));
+      const ready = await frameTimings.spanAsync(frameId, "wake:await-ready", () =>
+        communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS),
+      );
       if (ready && this.communicator === communicator) {
         this.evenHubSessionSuspended = false;
       }
@@ -675,15 +710,23 @@ class DashboardController {
   }
 
   snapshot(): DashboardSnapshot {
+    const primaryTextSetting = this.activeTextSettings[0] ?? null;
+    const secondaryTextSetting = this.activeTextSettings[1] ?? null;
     return {
       phase: this.phase,
       status: this.status,
       log: this.log,
       displayPreview: this.displayPreview,
       displayPreviewMessage: this.displayPreviewMessage(),
-      activeTextSettingId: this.activeTextSetting?.id ?? null,
-      activeTextSettingTitle: this.activeTextSetting?.editorTitle ?? "",
-      activeTextSettingValue: this.activeTextSetting?.get() ?? "",
+      activeTextSettingId: primaryTextSetting?.id ?? null,
+      activeTextEditorTitle: this.activeTextEditorTitle,
+      activeTextSettingTitle: primaryTextSetting?.editorTitle ?? "",
+      activeTextSettingValue: primaryTextSetting?.get() ?? "",
+      activeTextSettingInputKind: primaryTextSetting?.inputKind ?? "text",
+      secondaryTextSettingId: secondaryTextSetting?.id ?? null,
+      secondaryTextSettingTitle: secondaryTextSetting?.editorTitle ?? "",
+      secondaryTextSettingValue: secondaryTextSetting?.get() ?? "",
+      secondaryTextSettingInputKind: secondaryTextSetting?.inputKind ?? "text",
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -763,9 +806,11 @@ class DashboardController {
     openEvenAppSettings();
   }
 
-  setActiveTextSettingValue(value: string): void {
+  setActiveTextSettingValue(value: string, settingId?: string): void {
     shell.noteUserActivity();
-    const setting = this.activeTextSetting;
+    const setting = settingId
+      ? this.activeTextSettings.find((candidate) => candidate.id === settingId) ?? null
+      : this.activeTextSettings[0] ?? null;
     if (!setting) return;
     if (setting.get() === value) return;
     setting.set(value);
@@ -1106,18 +1151,33 @@ class DashboardController {
       if (leaseReleased === true) {
         this.faceclawWakeLeaseState = false;
       }
-      const shutdownAcked = await communicator?.sendShutdown(0).catch((error) => {
-        this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
-        return false;
-      });
-      if (shutdownAcked === true) {
-        this.appendLog("Shutdown command completed.");
-      } else if (communicator) {
-        this.appendLog("Shutdown command did not complete before disconnect.");
-      }
+
+      // Quiesce every producer that can enqueue a glasses command before the
+      // firmware cleanup barrier. On cleanup-capable CFW this leaves mode 11 as
+      // Faceclaw's final BLE message before the transport closes.
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
+
+      const cleanupAcked = await communicator?.sendCfwCleanup().catch((error) => {
+        this.appendLog(`CFW cleanup failed: ${this.formatError(error)}`);
+        return false;
+      });
+      if (cleanupAcked === true) {
+        this.appendLog("CFW cleanup completed.");
+      } else if (communicator) {
+        // Older CFWs do not advertise cleanup11. Preserve their established
+        // teardown behavior; close() will also send the legacy FB lease release.
+        const shutdownAcked = await communicator.sendShutdown(0).catch((error) => {
+          this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
+          return false;
+        });
+        if (shutdownAcked) {
+          this.appendLog("Shutdown command completed (legacy cleanup fallback).");
+        } else {
+          this.appendLog("Cleanup did not complete before disconnect.");
+        }
+      }
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
@@ -1159,7 +1219,17 @@ class DashboardController {
   }
 
   private startTextSettingEdit(setting: ConfigSettingString): void {
-    this.activeTextSetting = setting;
+    this.startTextSettingsEdit([setting], setting.editorTitle);
+  }
+
+  private startTextSettingsEdit(
+    settings: readonly ConfigSettingString[],
+    title: string,
+    onFinish?: () => void,
+  ): void {
+    this.activeTextSettings = Array.from(settings.slice(0, 2));
+    this.activeTextEditorTitle = title;
+    this.activeTextEditorOnFinish = onFinish ?? null;
     this.emit();
   }
 
@@ -1213,10 +1283,12 @@ class DashboardController {
   }
 
   private endTextSettingEdit(): void {
-    const finishedSetting = this.activeTextSetting;
-    this.activeTextSetting = null;
+    const finishedSettings = this.activeTextSettings;
+    this.activeTextSettings = [];
+    this.activeTextEditorTitle = "";
+    this.activeTextEditorOnFinish = null;
     this.emit();
-    if (finishedSetting === nightscoutSiteUrlSetting || finishedSetting === nightscoutApiTokenSetting) {
+    if (finishedSettings.includes(nightscoutSiteUrlSetting) || finishedSettings.includes(nightscoutApiTokenSetting)) {
       void this.refreshNightscoutAfterSettingsChange();
     }
   }
@@ -1227,11 +1299,14 @@ class DashboardController {
    * out of the edit page.
    */
   finishActiveTextSettingEdit(): void {
-    if (!this.activeTextSetting) return;
+    if (!this.activeTextSettings.length) return;
+    const onFinish = this.activeTextEditorOnFinish;
+    const closesGlassesEditor = this.activeTextSettings.length === 1;
     this.endTextSettingEdit();
-    if (this.textEditorHost?.closeTextEditor()) {
+    if (closesGlassesEditor && this.textEditorHost?.closeTextEditor()) {
       this.textEditorHost.requestRender();
     }
+    onFinish?.();
   }
 
   private updateTextSetting(setting: ConfigSettingString, value: string): void {
@@ -1262,6 +1337,11 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      // The gesture, plus which app is on screen and whether input goes to it,
+      // the sidebar, or a shell overlay. Java only knows the raw event codes,
+      // and without the target the export says what was pressed but not who
+      // spent the time drawing the answer.
+      frameTimings.annotateFrame(frameId, `${inputEvent.type} ${shell.describeInputTarget()}`);
       if (this.glassesLocked) {
         const ringDoubleTap =
           inputEvent.type === "double-click" &&
@@ -1274,7 +1354,9 @@ class DashboardController {
             if (ringDoubleTap) shell.sleep();
           } else {
             shell.wake("sidebar");
-            const ready = await this.ensureEvenHubSessionActive();
+            const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
+              this.ensureEvenHubSessionActive(frameId),
+            );
             if (!ready) {
               this.appendLog("EvenHub wake barrier timed out for locked display");
             }
@@ -1295,7 +1377,9 @@ class DashboardController {
           shellPreWoke = shell.wake("sidebar");
         }
         if (shellPreWoke || this.evenHubSessionSuspended || this.evenHubResumePromise) {
-          const ready = await this.ensureEvenHubSessionActive();
+          const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
+            this.ensureEvenHubSessionActive(frameId),
+          );
           if (!ready) {
             this.appendLog(`EvenHub wake barrier timed out for ${event.kind}`);
           }
@@ -1330,14 +1414,17 @@ class DashboardController {
       }
 
       if (outcome.shell) {
-        this.requestShellRender();
+        // Pass frameId as the cause, not the owner: the chrome render gets its
+        // own child frame under this one, so the export shows the input and
+        // every render it triggered on a single timeline.
+        this.requestShellRender(frameId);
       }
       if (outcome.window) {
         // The window adapter owned frameId (render or explicit finish).
         frameOwned = true;
       } else if (outcome.shell) {
         frameOwned = true;
-        frameTimings.finishFrame(frameId, "input consumed by shell; chrome render scheduled");
+        frameTimings.finishFrame(frameId, "handled by shell; chrome render spawned");
       }
     } finally {
       if (!frameOwned) {
@@ -1363,9 +1450,16 @@ class DashboardController {
         ...this.sharedActions,
         requestRender: () => {}, // rebound by createInProcessWindow
       },
-      submitFrame: (image, paintMs, frameId) => this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      submitFrame: (planes, paintMs, frameId) => this.submitWindowFrame(surfaceId, planes, paintMs, frameId),
       setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: () => this.removeWindowSurface(surfaceId),
+      reconfigureSurface: (heightMode) => {
+        // Resize the surface rect to the new band; a foreground window stays
+        // visible. The shell re-renders so the chrome (top bar) follows.
+        const visible = shell.foregroundWindow()?.windowId === windowId;
+        void this.configureWindowSurface(surfaceId, visible, heightMode);
+        this.requestShellRender();
+      },
       onClosed: () => {
         this.inProcessApps.delete(windowId);
       },
@@ -1416,10 +1510,11 @@ class DashboardController {
       apps: ALL_APPS,
       actions: this.sharedActions,
       launchApp: (appId, params) => this.launchApp(appId, params),
+      uninstallApp: (appId) => this.uninstallApp(appId),
       launchInProcessApp: (windowId, surfaceId, create) => this.launchInProcessApp(windowId, surfaceId, create),
       ensureWorkerHost: (createWorker) => this.ensureWorkerHost(app.appId, createWorker),
-      submitWindowFrame: (surfaceId, image, paintMs, frameId) =>
-        this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      submitWindowFrame: (surfaceId, planes, paintMs, frameId) =>
+        this.submitWindowFrame(surfaceId, planes, paintMs, frameId),
       setWindowSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       requestShellRender: () => this.requestShellRender(),
       appendLog: (message) => this.appendLog(message),
@@ -1456,7 +1551,7 @@ class DashboardController {
     this.suppressOpenAppsPersist = true;
     try {
       for (const appId of saved.open) {
-        if (!known.has(appId)) continue;
+        if (!known.has(appId) && !getInstalledEvenHubAppById(appId)) continue;
         try {
           await this.launchApp(appId);
         } catch (error) {
@@ -1482,11 +1577,29 @@ class DashboardController {
    */
   private async launchApp(appId: string, params?: AppLaunchParams): Promise<void> {
     const app = ALL_APPS.find((entry) => entry.appId === appId);
-    if (!app) {
-      this.appendLog(`unknown app: ${appId}`);
+    if (app) {
+      await app.launch(this.buildAppContext(app), params);
       return;
     }
-    await app.launch(this.buildAppContext(app), params);
+    const installed = getInstalledEvenHubAppById(appId);
+    if (installed) {
+      const host = ALL_APPS.find((entry) => entry.appId === "evenhub")!;
+      await launchInstalledPackage(this.buildAppContext({ ...host, appId }), installed);
+      return;
+    }
+    this.appendLog(`unknown app: ${appId}`);
+  }
+
+  private async uninstallApp(appId: string): Promise<void> {
+    const packageId = installedEvenHubPackageId(appId);
+    if (!packageId) {
+      this.appendLog(`app is not uninstallable: ${appId}`);
+      return;
+    }
+    closeRunningPackage(packageId);
+    if (uninstallEvenHubPackage(packageId)) {
+      this.appendLog(`evenhub: uninstalled ${packageId}`);
+    }
   }
 
   /** Create/refresh a window surface on the compositor, if connected. */
@@ -1514,21 +1627,26 @@ class DashboardController {
   }
 
   /** Submit a painted frame for an in-process window (e.g. the launcher). */
-  private async submitWindowFrame(surfaceId: string, image: GrayImage, paintMs: number, frameId: number): Promise<void> {
+  private async submitWindowFrame(surfaceId: string, planes: Plane[], paintMs: number, frameId: number): Promise<void> {
     const communicator = this.communicator;
     if (!communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: window frame with no active connection");
       return;
     }
-    const fingerprint = image.fingerprint();
-    const buffer = image.to8bppBuffer();
-    await communicator.submitSurfaceFrame(
-      surfaceId,
-      buffer,
-      { x: 0, y: 0, width: image.width, height: image.height },
-      fingerprint,
-      paintMs,
-      frameId,
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
+    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
+    await frameTimings.spanAsync(frameId, "submit", () =>
+      communicator.submitSurfaceFrame(
+        surfaceId,
+        buffer,
+        { x: 0, y: 0, width: image.width, height: image.height },
+        fingerprint,
+        paintMs,
+        frameId,
+        preparedDraws,
+      ),
     );
   }
 
@@ -1546,7 +1664,14 @@ class DashboardController {
    * overlays). Coalesces like requestRender: one render in flight, at most
    * one queued.
    */
-  requestShellRender(): void {
+  requestShellRender(causeFrameId = 0): void {
+    // Remember the input frame that asked for this chrome repaint so
+    // renderShell can nest its frame under it; without that link an input
+    // event and the shell render it caused show up as two unrelated frames
+    // and the real input-to-pixels latency is never measured.
+    if (causeFrameId > 0 && this.pendingShellRenderCauseFrameId === 0) {
+      this.pendingShellRenderCauseFrameId = causeFrameId;
+    }
     if (this.shellRenderInProgress) {
       this.shellRenderQueued = true;
       return;
@@ -1567,37 +1692,62 @@ class DashboardController {
   }
 
   private async renderShell(): Promise<void> {
-    const frameId = frameTimings.startFrame("render:shell");
+    const causeFrameId = this.pendingShellRenderCauseFrameId;
+    this.pendingShellRenderCauseFrameId = 0;
+    const frameId = frameTimings.startFrame("render:shell", causeFrameId);
+    frameTimings.annotateFrame(frameId, shell.describeInputTarget());
     const wantFreshData = this.nextShellRenderWantsFreshData;
     this.nextShellRenderWantsFreshData = false;
+    if (wantFreshData) frameTimings.logFrame(frameId, "follow-up repaint that must not use cached data");
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
     const paintUsedStaleData = endRenderPass();
     if (paintUsedStaleData) {
       // Repaint with fresh data (e.g. notification icons) once this frame is
-      // out; mirrors renderDashboard's stale-data contract.
+      // out; mirrors renderDashboard's stale-data contract. Linked to this
+      // frame so the export shows one input costing two round trips instead of
+      // an unexplained extra render.
       this.nextShellRenderWantsFreshData = true;
-      this.requestShellRender();
+      this.requestShellRender(frameId);
     }
-    if (!this.communicator || this.phase === "charging") {
+    const communicator = this.communicator;
+    if (!communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
       return;
     }
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    await this.communicator.submitSurfaceFrame(
-      SHELL_SURFACE_ID,
-      buffer,
-      { x: 0, y: 0, width: image.width, height: image.height },
-      fingerprint,
-      paintMs,
-      frameId,
+    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
+    // Spanned because the bridge serializes Java calls: a frame can sit here
+    // behind another surface's submission, which is otherwise an unexplained
+    // jump between the paint spans and the composite.
+    await frameTimings.spanAsync(frameId, "submit", () =>
+      communicator.submitSurfaceFrame(
+        SHELL_SURFACE_ID,
+        buffer,
+        { x: 0, y: 0, width: image.width, height: image.height },
+        fingerprint,
+        paintMs,
+        frameId,
+        preparedDraws,
+      ),
     );
-    await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    // Backpressure: the next shell render waits for this one to reach the
+    // glasses. Timing out here means the loop was blocked for the full timeout
+    // and any input arriving meanwhile had its chrome repaint delayed, so say
+    // so in the frame rather than leaving a silent stall.
+    const outcome = await communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    if (outcome === null) {
+      frameTimings.logFrame(
+        frameId,
+        `still unsent after ${FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS}ms; shell render loop released`,
+      );
+    }
     this.updateCompositePreview();
   }
 

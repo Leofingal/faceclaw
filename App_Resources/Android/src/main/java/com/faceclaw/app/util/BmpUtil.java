@@ -21,6 +21,15 @@ public class BmpUtil {
     }
 
     /**
+     * The 4bpp level an 8-bit gray value packs to. Public so the texture-cache
+     * planner computes a glyph draw's top color with the exact quantization
+     * the composited frame was packed with.
+     */
+    public static int nibbleForGray(int gray) {
+        return GRAY_TO_NIBBLE[gray & 0xff] & 0xff;
+    }
+
+    /**
      * Pack a full-resolution 8bpp grayscale buffer (row-major, top-to-bottom,
      * one byte per pixel) into the headerless 4bpp wire format used by CFW
      * load_image_z modes 3/6/8: top-down rows, stride ceil(width/2), high

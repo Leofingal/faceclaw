@@ -1,6 +1,11 @@
 import { shell } from "../../ui/shell/shell";
 import { type AppDefinition } from "../app-definition";
 import { createLauncherWindow, LAUNCHER_SURFACE_ID, LAUNCHER_WINDOW_ID } from "./launcher-app";
+import {
+  getInstalledEvenHubApps,
+  installedEvenHubAppId,
+  renderInstalledEvenHubIcon,
+} from "../evenhub/installed-apps";
 
 const launcherApp: AppDefinition = {
   appId: "launcher",
@@ -17,11 +22,27 @@ const launcherApp: AppDefinition = {
           ...ctx.actions,
           requestRender: () => shell.foregroundWindow()?.requestRender(),
         },
-        apps: ctx.apps
-          .filter((app) => app.showInLauncher !== false)
-          .map((app) => ({ appId: app.appId, label: app.title, icon: app.icon })),
+        apps: () => [
+          ...ctx.apps
+            .filter((app) => app.showInLauncher !== false)
+            .map((app) => ({
+              appId: app.appId,
+              label: app.title,
+              icon: app.icon,
+              renderIcon: app.renderIcon,
+            })),
+          ...getInstalledEvenHubApps().map((app) => ({
+            appId: installedEvenHubAppId(app.packageId),
+            label: app.name,
+            icon: "package" as const,
+            renderIcon: (size: number) => renderInstalledEvenHubIcon(app.packageId, size, app),
+            iconKey: `${app.installedAt}:${app.iconFile ?? ""}`,
+            uninstallable: true,
+          })),
+        ],
         launchApp: (appId) => ctx.launchApp(appId),
-        submitFrame: (image, paintMs, frameId) => ctx.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
+        uninstallApp: (appId) => ctx.uninstallApp(appId),
+        submitFrame: (planes, paintMs, frameId) => ctx.submitWindowFrame(LAUNCHER_SURFACE_ID, planes, paintMs, frameId),
         setSurfaceVisible: (visible) => ctx.setWindowSurfaceVisible(LAUNCHER_SURFACE_ID, visible),
       }),
     );

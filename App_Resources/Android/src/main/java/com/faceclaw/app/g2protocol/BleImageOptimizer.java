@@ -206,14 +206,67 @@ public final class BleImageOptimizer {
     }
 
     /**
+     * The aligned changed bounding box between two same-size packed frames, or
+     * null when they are identical: pixel-space {left, top, width, height} with
+     * left/width multiples of 4 and top/height multiples of 2 (mode-3 header
+     * quantization). Exposed so the texture-cache planner can reuse the exact
+     * rect geometry the single-bbox path would send.
+     */
+    public static int[] computeChangedBox(byte[] previous, byte[] next, int width, int height) {
+        int stride = (width + 1) >> 1;
+        if (width <= 0 || height <= 0 || previous == null || next == null
+                || previous.length != stride * height || next.length != stride * height) {
+            return null;
+        }
+        int minByteX = stride;
+        int maxByteX = -1;
+        int minY = height;
+        int maxY = -1;
+        for (int y = 0; y < height; y++) {
+            int rowOffset = y * stride;
+            for (int x = 0; x < stride; x++) {
+                if (previous[rowOffset + x] != next[rowOffset + x]) {
+                    if (x < minByteX) minByteX = x;
+                    if (x > maxByteX) maxByteX = x;
+                    if (y < minY) minY = y;
+                    maxY = y;
+                }
+            }
+        }
+        if (maxY < 0) {
+            return null;
+        }
+        int left = (minByteX * 2) & ~3;
+        int rightExclusive = Math.min(width, (((maxByteX + 1) * 2) + 3) & ~3);
+        int top = minY & ~1;
+        int bottomExclusive = Math.min(height, (maxY + 2) & ~1);
+        return new int[]{left, top, rightExclusive - left, bottomExclusive - top};
+    }
+
+    /**
+     * The multi-rect split of the changed region (see computeSplitRects), or null
+     * when it is one region / too fragmented / the frames aren't comparable.
+     * Exposed for the texture-cache planner.
+     */
+    public static List<int[]> computeChangedRects(byte[] previous, byte[] next, int width, int height, int maxRects) {
+        int stride = (width + 1) >> 1;
+        if (width <= 0 || height <= 0 || previous == null || next == null
+                || previous.length != stride * height || next.length != stride * height) {
+            return null;
+        }
+        List<int[]> rects = computeSplitRects(previous, next, stride, width, height, maxRects);
+        return (rects == null || rects.size() < 2) ? null : rects;
+    }
+
+    /**
      * Encode one CFW mode-3 rectangle delta:
      *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib(rle(box pixels))]
      * left/width must be multiples of 4 (=> left>>1, width>>1 are whole bytes), top/
      * height multiples of 2. The box pixels are top-down rows of `next` (4bpp packed,
      * width>>1 bytes/row), run-length encoded before deflate. Shared by the single-bbox
-     * path and each rect of a mode-8 multi-rect batch.
+     * path, each rect of a mode-8 multi-rect batch, and the texture-cache planner.
      */
-    private static byte[] encodeMode3Rect(byte[] next, int stride, int left, int top,
+    static byte[] encodeMode3Rect(byte[] next, int stride, int left, int top,
             int boxWidth, int boxHeight, int fid) {
         int regionStride = boxWidth >> 1;
         byte[] region = new byte[regionStride * boxHeight];

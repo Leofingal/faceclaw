@@ -1,4 +1,4 @@
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { addImuListener, imuSourceLabel, setImuReportEnabled, type ImuReading } from "../../native/imu";

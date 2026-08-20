@@ -1,6 +1,8 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -26,14 +28,19 @@ export type LauncherAppEntry = {
   appId: string;
   label: string;
   icon: IconName;
+  uninstallable?: boolean;
+  /** Dynamic artwork for installed apps; icon remains the fallback. */
+  renderIcon?: (size: number) => GrayImage | null;
+  iconKey?: string;
 };
 
 export type LauncherOptions = {
   actions: LayerActions;
-  apps: LauncherAppEntry[];
+  apps: () => LauncherAppEntry[];
   launchApp: (appId: string) => Promise<void> | void;
-  /** Submit a painted viewport-sized frame to this window's surface. */
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  uninstallApp: (appId: string) => Promise<void> | void;
+  /** Submit a painted viewport-sized frame (as planes) to this window's surface. */
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   /** Flip the launcher's compositor surface visibility on foreground changes. */
   setSurfaceVisible: (visible: boolean) => void;
 };
@@ -58,7 +65,7 @@ type LauncherMode = "row" | "item";
 
 /** One cell of the grid: an app, or a folder holding some of the apps. */
 type LauncherGridEntry =
-  | { kind: "app"; label: string; icon: IconName; appId: string }
+  | { kind: "app"; label: string; icon: IconName; appId: string; renderIcon?: (size: number) => GrayImage | null }
   | { kind: "folder"; label: string; name: string };
 
 /**
@@ -90,14 +97,21 @@ class LauncherGridLayer implements Layer {
    * disbanded it), the view falls back to the top grid.
    */
   private entries(): LauncherGridEntry[] {
-    const byAppId = new Map(this.options.apps.map((app) => [app.appId, app]));
+    const apps = this.options.apps();
+    const byAppId = new Map(apps.map((app) => [app.appId, app]));
     if (this.currentFolder !== null) {
       const members = (getFolders().get(this.currentFolder) ?? [])
         .map((appId) => byAppId.get(appId))
         .filter(Boolean) as LauncherAppEntry[];
       if (members.length > 0) {
         return members
-          .map((app): LauncherGridEntry => ({ kind: "app", label: app.label, icon: app.icon, appId: app.appId }))
+          .map((app): LauncherGridEntry => ({
+            kind: "app",
+            label: app.label,
+            icon: app.icon,
+            appId: app.appId,
+            renderIcon: app.renderIcon,
+          }))
           .sort((a, b) => a.label.localeCompare(b.label));
       }
       this.currentFolder = null;
@@ -111,9 +125,15 @@ class LauncherGridLayer implements Layer {
         entries.push({ kind: "folder", label: name, name });
       }
     }
-    for (const app of this.options.apps) {
+    for (const app of apps) {
       if (!assignments[app.appId]) {
-        entries.push({ kind: "app", label: app.label, icon: app.icon, appId: app.appId });
+        entries.push({
+          kind: "app",
+          label: app.label,
+          icon: app.icon,
+          appId: app.appId,
+          renderIcon: app.renderIcon,
+        });
       }
     }
     return entries.sort((a, b) => a.label.localeCompare(b.label));
@@ -155,6 +175,32 @@ class LauncherGridLayer implements Layer {
           );
         },
       },
+      ...(this.options.apps().find((app) => app.appId === entry.appId)?.uninstallable
+        ? [{
+            label: "Uninstall",
+            onSelect: (ctx: LayerContext) => {
+              ctx.stack.pop();
+              ctx.stack.push(
+                new MenuLayer(
+                  "Uninstall app?",
+                  [
+                    {
+                      label: "Confirm uninstall",
+                      onSelect: async (confirmCtx) => {
+                        confirmCtx.stack.pop();
+                        setAppFolder(entry.appId, null);
+                        await this.options.uninstallApp(entry.appId);
+                        this.mode = "row";
+                      },
+                    },
+                    { label: "Cancel", onSelect: (confirmCtx) => confirmCtx.stack.pop() },
+                  ],
+                  WINDOW_MENU_LAYOUT,
+                ),
+              );
+            },
+          } satisfies MenuItem]
+        : []),
     ];
   }
 
@@ -237,14 +283,24 @@ class LauncherGridLayer implements Layer {
       const blockTop = rowY(row) + Math.max(2, (rowH - ICON_SIZE - font.lineHeight - LABEL_GAP) / 2);
       if (blockTop >= gridBottom) break; // fully below the grid
       const centerX = (index % COLS) * colW + colW / 2;
-      const icon = renderIcon(entry.kind === "app" ? entry.icon : "folder-filled", ICON_SIZE);
+      const icon = entry.kind === "app"
+        ? entry.renderIcon?.(ICON_SIZE) ?? renderIcon(entry.icon, ICON_SIZE)
+        : renderIcon("folder-filled", ICON_SIZE);
       if (icon) {
         // Clip the icon at the grid bottom so a peeking row shows only its top.
-        const clipHeight = Math.min(icon.height, Math.floor(gridBottom - blockTop));
-        image.bitBlt(icon, Math.round(centerX - icon.width / 2), Math.round(blockTop), {
-          height: clipHeight,
-          transparentZero: true,
-        });
+        // A fully visible icon goes through the deferred-image path (texture
+        // cacheable); the clipped peeking row falls back to a raster blit,
+        // since cached draws are whole-image only.
+        // Icons narrower/shorter than ICON_SIZE (a non-square logo scaled to
+        // fit) are centered in the square the row reserves for them.
+        const iconX = Math.round(centerX - icon.width / 2);
+        const iconY = Math.round(blockTop + Math.max(0, (ICON_SIZE - icon.height) / 2));
+        const clipHeight = Math.min(icon.height, Math.floor(gridBottom - iconY));
+        if (clipHeight >= icon.height) {
+          image.drawImage(icon, iconX, iconY);
+        } else if (clipHeight > 0) {
+          image.bitBlt(icon, iconX, iconY, { height: clipHeight, transparentZero: true });
+        }
       }
       const labelY = Math.round(blockTop + ICON_SIZE + LABEL_GAP);
       if (labelY + font.lineHeight <= gridBottom) {
@@ -357,12 +413,18 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
   // keeps every unrelated setting change from repainting the launcher. The
   // launcher is pinned for the app's lifetime, so the subscription never needs
   // tearing down.
-  let lastFolderState = getFolderStateFingerprint();
+  let lastState = `${getFolderStateFingerprint()}\n${launcherAppsFingerprint(options.apps())}`;
   onAnySettingChanged(() => {
-    const state = getFolderStateFingerprint();
-    if (state === lastFolderState) return;
-    lastFolderState = state;
+    const state = `${getFolderStateFingerprint()}\n${launcherAppsFingerprint(options.apps())}`;
+    if (state === lastState) return;
+    lastState = state;
     created.requestRender();
   });
   return created.window;
+}
+
+function launcherAppsFingerprint(apps: LauncherAppEntry[]): string {
+  return apps
+    .map((app) => `${app.appId}:${app.label}:${app.icon}:${app.iconKey ?? ""}:${app.uninstallable ? 1 : 0}`)
+    .join("|");
 }

@@ -1,17 +1,23 @@
 /**
  * Builds the Faceclaw custom firmware on-device: downloads the stock Even
  * Realities G2 2.2.6.10 image from Even's CDN, verifies its SHA-256, applies
- * the committed byte-patch set (cfw-patches.ts), verifies the patched SHA-256,
- * and writes the result to app storage.
+ * the committed byte-patch set (cfw-patches.ts), extracts the stock EvenHub
+ * fonts for phone-side rendering, verifies the patched SHA-256, and writes the
+ * result to app storage.
  *
  * This mirrors g2flash/build_cfw.sh + patches/apply_patches.py exactly (same
  * URL, same pinned hashes, same offset/old/new patch semantics), so a
  * successful run reproduces the reviewed image byte-for-byte. It does NOT flash
  * anything — producing and verifying the image is the whole job here.
  */
-import { knownFolders } from "@nativescript/core";
+import { File, knownFolders } from "@nativescript/core";
 
 import { CFW_PATCH_SET, FirmwarePatchOp } from "./firmware/cfw-patches";
+import {
+  EVENHUB_RUNTIME_FONT_FILENAME,
+  extractEvenHubFontAsset,
+  isEvenHubFontAsset,
+} from "./firmware-fonts";
 
 declare const com: any;
 
@@ -22,6 +28,7 @@ const STOCK_OUTPUT_FILENAME = "g2_2.2.6.10.bin";
 export type FirmwareProgress =
   | { phase: "downloading" }
   | { phase: "verifying-base" }
+  | { phase: "extracting-fonts" }
   | { phase: "patching"; applied: number; total: number }
   | { phase: "verifying-output" }
   | { phase: "writing" }
@@ -34,6 +41,36 @@ export type BuiltFirmware = {
 };
 
 export class FirmwareBuildError extends Error {}
+
+/** True only when a complete, parseable runtime extraction is present. */
+export function hasExtractedEvenHubFonts(): boolean {
+  const path = `${knownFolders.documents().path}/${EVENHUB_RUNTIME_FONT_FILENAME}`;
+  if (!File.exists(path)) return false;
+  try {
+    return isEvenHubFontAsset(JSON.parse(File.fromPath(path).readTextSync()));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Download and verify the pinned stock image, then extract its EvenHub fonts.
+ * Used to repair an existing custom-firmware install without reflashing it.
+ */
+export async function downloadAndExtractEvenHubFonts(
+  onProgress?: (progress: FirmwareProgress) => void,
+): Promise<void> {
+  const report = (progress: FirmwareProgress) => {
+    try {
+      onProgress?.(progress);
+    } catch {
+      // progress reporting must never break extraction
+    }
+  };
+  const base = await downloadAndVerifyBase(report);
+  report({ phase: "extracting-fonts" });
+  persistEvenHubFonts(base);
+}
 
 /**
  * Download → verify → patch → verify → persist. Rejects with a
@@ -52,6 +89,9 @@ export async function buildCustomFirmware(
   };
 
   const base = await downloadAndVerifyBase(report);
+
+  report({ phase: "extracting-fonts" });
+  persistEvenHubFonts(base);
 
   const patched = applyPatches(new Uint8Array(base), CFW_PATCH_SET.patches, (applied, total) =>
     report({ phase: "patching", applied, total }),
@@ -125,6 +165,24 @@ async function downloadFirmware(): Promise<ArrayBuffer> {
     throw new FirmwareBuildError(`Firmware download failed (HTTP ${response.status}).`);
   }
   return response.arrayBuffer();
+}
+
+function persistEvenHubFonts(base: ArrayBuffer): void {
+  try {
+    const asset = extractEvenHubFontAsset(base);
+    let writeError: unknown;
+    knownFolders.documents().getFile(EVENHUB_RUNTIME_FONT_FILENAME).writeTextSync(
+      JSON.stringify(asset),
+      (error) => {
+        writeError = error;
+      },
+    );
+    if (writeError) throw writeError;
+  } catch (error) {
+    throw new FirmwareBuildError(
+      `The firmware was verified, but its EvenHub fonts could not be extracted: ${(error as Error)?.message ?? error}`,
+    );
+  }
 }
 
 /**

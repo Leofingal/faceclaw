@@ -111,6 +111,8 @@ export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
   private javaCallQueue: Promise<void> = Promise.resolve();
+  /** Calls waiting on javaCallQueue; 0 means enqueueJavaCall's fast path is safe. */
+  private queuedJavaCalls = 0;
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   // Recent frame-finished outcomes from the Java side, so waitForFrameFinished
   // does not race against finishes that land before the wait starts.
@@ -227,10 +229,30 @@ export class FaceclawCommunicatorBridge {
     }, 0);
   }
 
-  private enqueueJavaCall<T>(operation: () => T): Promise<T> {
+  /**
+   * Run a Java call, ordered against every other call made through here.
+   *
+   * inlineWhenIdle runs the call on the spot when nothing is queued ahead of
+   * it. Ordering still holds — the fast path only fires when no earlier call
+   * is waiting — and it skips a task-queue hop that measured ~18ms on device
+   * (the gap between "span submit start" and the Java side's own log line in
+   * the frame timings), which is pure latency on a call the caller is already
+   * awaiting. Off by default: a call that might block for a while should keep
+   * yielding to the main looper first.
+   */
+  private enqueueJavaCall<T>(operation: () => T, inlineWhenIdle = false): Promise<T> {
+    if (inlineWhenIdle && this.queuedJavaCalls === 0) {
+      try {
+        return Promise.resolve(operation());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    this.queuedJavaCalls++;
     const run = () =>
       new Promise<T>((resolve, reject) => {
         setTimeout(() => {
+          this.queuedJavaCalls--;
           try {
             resolve(operation());
           } catch (error) {
@@ -515,11 +537,19 @@ export class FaceclawCommunicatorBridge {
     fingerprint: string,
     paintMs = -1,
     frameId = 0,
+    /**
+     * The frame's glyph draws in surface coordinates (see
+     * graphics/glyph-wire.ts prepareFrameGlyphs); lets the texture-cache
+     * pipeline ship text as on-glasses cached draws instead of pixels.
+     */
+    glyphs: ArrayBuffer | null = null,
   ): Promise<void> {
     // Snapshot because the Java call is deferred; the buffer is passed as an
     // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
     // ~150ms per-element copy a byte[] parameter would need.
     const snapshot = new Uint8Array(pixels8bpp);
+    // inlineWhenIdle: this is the frame path, the Java side of it measures
+    // ~5ms (composite + pack), and the caller awaits it either way.
     await this.enqueueJavaCall(() => {
       this.communicator.submitSurfaceFrame(
         snapshot.buffer,
@@ -531,8 +561,9 @@ export class FaceclawCommunicatorBridge {
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),
+        glyphs,
       );
-    });
+    }, true);
   }
 
   async disconnect(): Promise<void> {
@@ -541,6 +572,15 @@ export class FaceclawCommunicatorBridge {
 
   async sendShutdown(exitMode = 0): Promise<boolean> {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
+  }
+
+  /**
+   * Ask CFW mode 11 to release all custom-session state. On success this must
+   * remain the final Faceclaw message before close(); false requests the legacy
+   * shutdown/release fallback for older firmware.
+   */
+  async sendCfwCleanup(): Promise<boolean> {
+    return this.enqueueJavaCall(() => Boolean(this.communicator.sendCfwCleanup()));
   }
 
   /**

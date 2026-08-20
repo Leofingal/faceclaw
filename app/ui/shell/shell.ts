@@ -1,10 +1,12 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { singlePlane, type Plane } from "../../graphics/plane";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
 import { resolveAssistantModel } from "../../assistant/models";
@@ -164,7 +166,7 @@ class ShellAlertLayer implements Layer {
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
-      y: alertY + 34,
+      y: alertY + 18 + font.lineHeight + 4,
       width: ALERT_W - 32,
       text: this.text,
       value: 235,
@@ -469,9 +471,9 @@ class Shell {
   }
 
   /** Paint the shell surface: transparent chrome, or all-transparent when asleep. */
-  paintSurface(): GrayImage {
+  paintSurface(): Plane[] {
     if (!this.screenOn) {
-      return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
     }
     return this.stack.paint();
   }
@@ -597,6 +599,20 @@ class Shell {
     };
   }
 
+  /**
+   * Compact description of where input is currently going, for the frame
+   * timing export: "which app was drawing" is usually the first thing you need
+   * to interpret an input-to-display latency, and it is not recoverable from
+   * the input event itself.
+   */
+  describeInputTarget(): string {
+    const foreground = this.foregroundWindow()?.windowId ?? "none";
+    if (!this.screenOn) return `fg=${foreground} target=screen-off`;
+    if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
+    if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
+    return `fg=${foreground} target=${this.focus}`;
+  }
+
   /** Whether a window is the current input target (foreground + focus in-window). */
   isWindowFocused(windowId: string): boolean {
     return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
@@ -675,6 +691,7 @@ class Shell {
       onClosed: () => {
         if (this.activeVoiceLayer === layer) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           // The idle countdown restarts in full once voice input ends.
           this.noteUserActivity();
         }
@@ -689,6 +706,7 @@ class Shell {
       autoSend,
     });
     this.activeVoiceLayer = layer;
+    voiceActivity.setActive(true);
     this.stack.push(layer);
     layer.startCapture();
   }
@@ -850,6 +868,7 @@ class Shell {
       onClosed: () => {
         if (this.activeVoiceLayer === voice) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           this.noteUserActivity();
         }
       },
@@ -864,6 +883,7 @@ class Shell {
       autoSend: handsFree && assistantSkipConfirmationSetting.get(),
     });
     this.activeVoiceLayer = voice;
+    voiceActivity.setActive(true);
     this.stack.push(voice);
     voice.startCapture();
     this.config.requestShellRender();

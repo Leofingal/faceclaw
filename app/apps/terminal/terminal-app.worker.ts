@@ -31,8 +31,10 @@
  * re-attach snapshot resyncs contents and scrollback only once it's needed.
  */
 import "@nativescript/core/globals";
-import { GrayImage } from "../../graphics/image";
-import { getFont } from "../../graphics/bdffont";
+import { GrayImage, type UiFont } from "../../graphics/image";
+import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
+import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
 import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
@@ -67,6 +69,7 @@ import {
   scrollToKeepSelectionVisible,
   type MenuItem,
 } from "../../ui/menu";
+import { lineStep, listRowHeight } from "../../ui/metrics";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -75,21 +78,26 @@ import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 declare const global: any;
 declare const com: any;
 
-// Terminus-12 has a 6x12 cell; each window derives its grid from the
-// viewport in its open-window message (the hub is min-height, session views
-// full-height). The websocket init handshake declares the view grid.
-const terminalFont = getFont("terminus12");
-const CELL_WIDTH = 6;
-const CELL_HEIGHT = 12;
+// Cell geometry comes from the terminal font setting (Settings > Terminal >
+// Font; the default is Terminus-12's 6x12). Each window derives its grid from
+// the viewport in its open-window message (the hub is min-height, session
+// views full-height). Grid dimensions are baked into each session's websocket
+// handshake, so windows and control connections capture the cell size at
+// creation — a font change applies to ones (re)opened afterwards.
+function chromeFont(): UiFont {
+  return getDefaultSmallFont();
+}
 // Grid of a session view window (full-height); also declared on the control
 // connections so sessions launched from presets come up at view size.
 const VIEW_VIEWPORT = appViewportSize("max");
-const VIEW_GRID = {
-  cols: Math.floor(VIEW_VIEWPORT.width / CELL_WIDTH),
-  rows: Math.floor(VIEW_VIEWPORT.height / CELL_HEIGHT),
-};
+function viewGrid(): { cols: number; rows: number } {
+  const { cellWidth, cellHeight } = getTerminalFontConfig();
+  return {
+    cols: Math.floor(VIEW_VIEWPORT.width / cellWidth),
+    rows: Math.floor(VIEW_VIEWPORT.height / cellHeight),
+  };
+}
 const DEVICE_NAME = "Faceclaw G2";
-const HUB_ROW_HEIGHT = 20;
 const RENDER_COALESCE_MS = 33;
 const HISTORY_PAGE = 200;
 // Auto-reconnect backoff: doubles per failed attempt, resets on success.
@@ -146,6 +154,10 @@ type HubWindow = BaseWindow & {
 
 type ViewWindow = BaseWindow & {
   kind: "view";
+  /** Grid font and integer cell pitch, captured at window creation. */
+  font: UiFont;
+  cellWidth: number;
+  cellHeight: number;
   connectionId: string;
   socket: string;
   label: string;
@@ -308,6 +320,9 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         break;
       }
       window.focused = message.focused;
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
       handleInput(window, message.event as DashboardInputEvent, message.frameId);
       break;
     }
@@ -425,14 +440,15 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     renderHubWindows();
     return;
   }
+  const hubCell = getTerminalFontConfig();
   windows.set(windowId, {
     kind: "hub",
     windowId,
     surfaceId,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
-    gridCols: Math.floor(viewport.width / CELL_WIDTH),
-    gridRows: Math.floor(viewport.height / CELL_HEIGHT),
+    gridCols: Math.floor(viewport.width / hubCell.cellWidth),
+    gridRows: Math.floor(viewport.height / hubCell.cellHeight),
     foreground: false,
     focused: false,
     renderScheduled: false,
@@ -488,8 +504,7 @@ function clientOptionsFor(connection: TerminalConnection): G2MirrorClientOptions
   return {
     ...parsed,
     deviceName: DEVICE_NAME,
-    cols: VIEW_GRID.cols,
-    rows: VIEW_GRID.rows,
+    ...viewGrid(),
   };
 }
 
@@ -684,8 +699,12 @@ function createViewWindow(
   view: PendingView,
 ): ViewWindow {
   const { connectionId, socket, label, glyph } = view;
-  const gridCols = Math.floor(viewport.width / CELL_WIDTH);
-  const gridRows = Math.floor(viewport.height / CELL_HEIGHT);
+  // Capture the terminal font at open time: the grid dims go into the
+  // websocket handshake and the emulator, so they must not change under a
+  // live window (a font-setting change applies to the next window).
+  const cell = getTerminalFontConfig();
+  const gridCols = Math.floor(viewport.width / cell.cellWidth);
+  const gridRows = Math.floor(viewport.height / cell.cellHeight);
   const client = new G2MirrorClient({ ...view.options, cols: gridCols, rows: gridRows });
   const window: ViewWindow = {
     kind: "view",
@@ -695,6 +714,9 @@ function createViewWindow(
     viewportHeight: viewport.height,
     gridCols,
     gridRows,
+    font: cell.font,
+    cellWidth: cell.cellWidth,
+    cellHeight: cell.cellHeight,
     foreground: false,
     focused: false,
     renderScheduled: false,
@@ -1367,11 +1389,11 @@ async function launchAndOpenView(control: ControlConnection, preset: string): Pr
   return socket;
 }
 
-function paint(window: TerminalWindow): GrayImage {
+function paint(window: TerminalWindow): Plane[] {
   if (window.menu?.isOpen()) {
     return window.menu.paint();
   }
-  return paintContent(window);
+  return singlePlane(paintContent(window));
 }
 
 function paintContent(window: TerminalWindow): GrayImage {
@@ -1383,64 +1405,72 @@ function paintHub(window: HubWindow): GrayImage {
     return paintAddConnection(window);
   }
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const font = chromeFont();
+  const step = lineStep(font);
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  image.drawText(terminalFont, 18, 10, window.mode === "connections" ? "Terminal - Connections" : "Terminal", 220);
-  image.drawText(terminalFont, 24, 30, hubStatusLine(window), 170);
+  image.drawText(font, 18, 10, window.mode === "connections" ? "Terminal - Connections" : "Terminal", 220);
+  const statusY = 16 + step;
+  image.drawText(font, 24, statusY, hubStatusLine(window), 170);
 
-  let listTop = 52;
+  let listTop = statusY + step + 8;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(terminalFont, 24, 46, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(terminalFont, 24, 60, "https://github.com/jimrandomh/g2mirror", 190);
-    listTop += 28;
+    image.drawText(font, 24, statusY + step + 2, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, 24, statusY + 2 * step + 2, "https://github.com/jimrandomh/g2mirror", 190);
+    listTop += 2 * step;
   }
 
   const items = hubItems(window);
   clampHubSelection(window, items);
-  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
+  const hubRowH = listRowHeight(chromeFont());
+  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / hubRowH) | 0);
   window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
   const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
   for (let index = window.scrollRow; index < lastVisibleRow; index++) {
-    const y = listTop + (index - window.scrollRow) * HUB_ROW_HEIGHT;
+    const y = listTop + (index - window.scrollRow) * hubRowH;
     const item = items[index]!;
     if (item.heading) {
-      image.drawText(terminalFont, 20, y + 2, item.label, 140);
+      image.drawText(chromeFont(), 20, y + 2, item.label, 140);
       continue;
     }
     const selected = index === window.selectedIndex;
     if (selected) {
       // Match the shell convention: fill only when this window has focus, so
       // an outline-only selection signals the sidebar owns input.
-      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, HUB_ROW_HEIGHT - 1, window.focused, 8);
+      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, hubRowH - 1, window.focused, 8);
     }
-    image.drawText(terminalFont, 32, y + 2, item.label, selected ? 255 : 200);
+    image.drawText(chromeFont(), 32, y + 2, item.label, selected ? 255 : 200);
   }
   if (items.length > visibleRowCount) {
     drawListScrollbar(
       image,
       window.viewportWidth - 10,
       listTop,
-      visibleRowCount * HUB_ROW_HEIGHT - 4,
+      visibleRowCount * hubRowH - 4,
       window.scrollRow,
       visibleRowCount,
       items.length,
     );
   }
 
-  image.drawText(terminalFont, 24, window.viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);
+  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `${GESTURE_DOUBLE_CLICK} back`, 110);
   return image;
 }
 
 function paintAddConnection(window: HubWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
-  image.drawText(terminalFont, 18, 10, "Add connection", 220);
-  image.drawText(terminalFont, 24, 34, "Type the g2mirror://token@host string in the", 170);
-  image.drawText(terminalFont, 24, 48, "phone app (or use voice input from the menu).", 170);
+  const font = chromeFont();
+  const step = lineStep(font);
+  image.drawText(font, 18, 10, "Add connection", 220);
+  const instructionsY = 20 + step;
+  image.drawText(font, 24, instructionsY, "Type the g2mirror://token@host string in the", 170);
+  image.drawText(font, 24, instructionsY + step, "phone app (or use voice input from the menu).", 170);
+  const draftY = instructionsY + 3 * step;
   const draft = terminalNewConnectionSetting.get();
-  image.drawText(terminalFont, 24, 76, truncateLabel(draft || "(empty)", 52), 220);
+  image.drawText(font, 24, draftY, truncateLabel(draft || "(empty)", 52), 220);
   if (window.addError) {
-    image.drawText(terminalFont, 24, 96, window.addError, 150);
+    image.drawText(font, 24, draftY + step + 6, window.addError, 150);
   }
-  image.drawText(terminalFont, 24, window.viewportHeight - 24, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
+  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
   return image;
 }
 
@@ -1465,11 +1495,38 @@ function hubStatusLine(window: HubWindow): string {
   return anyRetrying ? `${summary} Retrying...` : summary;
 }
 
+/**
+ * Draw one terminal row at a fixed integer cell pitch, so glyph columns stay
+ * aligned with the emulator's grid arithmetic even when a TTF face has
+ * fractional advances. Identical to drawText for the 6px bitmap default.
+ */
+function drawGridRow(
+  image: GrayImage,
+  font: UiFont,
+  cellWidth: number,
+  rowY: number,
+  text: string,
+  value: number,
+): void {
+  let col = 0;
+  for (const char of text) {
+    const codePoint = char.codePointAt(0) ?? 32;
+    if (codePoint !== 32) {
+      const glyph = font.getGlyph(codePoint);
+      if (glyph && glyph.bbxWidth > 0) {
+        image.drawGlyph(font, glyph, col * cellWidth, rowY, value);
+      }
+    }
+    col++;
+  }
+}
+
 function paintView(window: ViewWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   if (!window.receivedData) {
-    image.drawText(terminalFont, 24, 110, window.status, 170);
-    image.drawText(terminalFont, 24, 130, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    const font = chromeFont();
+    image.drawText(font, 24, 110, window.status, 170);
+    image.drawText(font, 24, 116 + lineStep(font), `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
@@ -1483,10 +1540,20 @@ function paintView(window: ViewWindow): GrayImage {
   // Draw the cursor only if its line is within the visible window.
   const cursorScreenRow = historyNext + window.emulator.cursorRow() - top;
   if (cursorScreenRow >= 0 && cursorScreenRow < rows) {
-    image.fillRect(window.emulator.cursorCol() * CELL_WIDTH, cursorScreenRow * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT, 70);
+    image.fillRect(window.emulator.cursorCol() * window.cellWidth, cursorScreenRow * window.cellHeight, window.cellWidth, window.cellHeight, 70);
   }
 
+  // Stale content stays visible across a disconnect, so flag it: a status
+  // line over the bottom row whenever the session isn't actually attached.
+  // Text is deferred glyphs (always on top of raster), so the covered rows
+  // must be suppressed rather than painted over.
+  const statusBannerY = window.client.state().phase !== "attached"
+    ? window.viewportHeight - window.cellHeight
+    : null;
+
   for (let row = 0; row < rows; row++) {
+    const rowY = row * window.cellHeight;
+    if (statusBannerY !== null && rowY + window.cellHeight > statusBannerY) continue;
     const absolute = top + row;
     let text = "";
     if (absolute >= historyNext) {
@@ -1495,18 +1562,15 @@ function paintView(window: ViewWindow): GrayImage {
     } else if (absolute >= window.archiveStart) {
       text = window.archive[absolute - window.archiveStart] ?? "";
     }
-    if (text.length) image.drawText(terminalFont, 0, row * CELL_HEIGHT, text, 200);
+    if (text.length) drawGridRow(image, window.font, window.cellWidth, rowY, text, 200);
   }
 
   if (!following) {
     drawScrollIndicator(image, top, window.archiveStart, bottomTop);
   }
-  // Stale content stays visible across a disconnect, so flag it: a status
-  // line over the bottom row whenever the session isn't actually attached.
-  if (window.client.state().phase !== "attached") {
-    const y = window.viewportHeight - CELL_HEIGHT;
-    image.fillRect(0, y, window.viewportWidth, CELL_HEIGHT, 0);
-    image.drawText(terminalFont, 0, y, window.status, 170);
+  if (statusBannerY !== null) {
+    image.fillRect(0, statusBannerY, window.viewportWidth, window.cellHeight, 0);
+    image.drawText(chromeFont(), 0, statusBannerY, window.status, 170);
   }
   return image;
 }
@@ -1539,11 +1603,11 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: terminal content unchanged");
       return;
@@ -1553,7 +1617,8 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: no active communicator");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       window.surfaceId,
@@ -1564,6 +1629,7 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

@@ -1,9 +1,10 @@
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
-import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
+import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { truncateText } from "../graphics/textwrap";
-import { GrayImage } from "../graphics/image";
+import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
+import { lineStep, listRowHeight } from "./metrics";
 import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import {
   dismissNotification,
@@ -24,7 +25,6 @@ const CARD_X = 20;
 const ICON_SIZE = 24;
 const ICON_TEXT_GAP = 8;
 const CARD_TEXT_X = 10 + ICON_SIZE + ICON_TEXT_GAP;
-const LINE_HEIGHT = 14;
 const CARD_GAP = 6;
 const MAX_NOTIFICATIONS = 50;
 // Right-hand action menu of the detail view.
@@ -88,7 +88,7 @@ export class NotificationsListLayer implements Layer {
         : "Grant permission on your phone to view notifications on the glasses.";
       const messageLines = wrapText(font, message, width - 48);
       for (let index = 0; index < messageLines.length; index++) {
-        image.drawText(font, 24, 72 + index * LINE_HEIGHT, messageLines[index]!, 190);
+        image.drawText(font, 24, 72 + index * lineStep(font), messageLines[index]!, 190);
       }
       image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
@@ -237,7 +237,7 @@ export class SingleNotificationLayer implements Layer {
 
 
 function buildNotificationCardLayout(
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   selected: boolean,
   cardTextWidth: number,
@@ -267,13 +267,13 @@ function buildNotificationCardLayout(
   return {
     notification,
     lines,
-    height: Math.max(42, 12 + lines.length * LINE_HEIGHT),
+    height: Math.max(ICON_SIZE + 18, 12 + lines.length * lineStep(font)),
   };
 }
 
 function drawNotificationCard(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   layout: CardLayout,
   x: number,
   y: number,
@@ -294,7 +294,7 @@ function drawNotificationCard(
   }
   for (let index = 0; index < layout.lines.length; index++) {
     const value = index === 0 ? 140 : selected ? 235 : 185;
-    image.drawText(font, x + CARD_TEXT_X, y + 7 + index * LINE_HEIGHT, layout.lines[index]!, value);
+    image.drawText(font, x + CARD_TEXT_X, y + 7 + index * lineStep(font), layout.lines[index]!, value);
   }
 }
 
@@ -313,7 +313,7 @@ function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewpor
 
 function drawDetailContent(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   icon: GrayImage | null,
   width: number,
@@ -343,25 +343,28 @@ function drawDetailContent(
     lines.push(...wrapText(font, meta, contentWidth));
   }
 
-  const maxLines = Math.max(1, ((height - 64 - 14) / LINE_HEIGHT) | 0);
+  const step = lineStep(font);
+  const bodyTop = 48 + font.lineHeight + 4;
+  const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
   for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
     const line = lines[index]!;
-    image.drawText(font, contentX, 64 + index * LINE_HEIGHT, line, index === 0 ? 230 : 190);
+    image.drawText(font, contentX, bodyTop + index * step, line, index === 0 ? 230 : 190);
   }
   if (lines.length > maxLines) {
     image.drawText(font, contentX, height - 24, "...", 140);
   }
 }
 
-function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
+function drawDetailMenu(image: GrayImage, font: UiFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
   const menuX = width - DETAIL_MENU_WIDTH - 24;
   const menuY = 24;
+  const rowH = listRowHeight(font);
   for (let index = 0; index < menu.length; index++) {
-    const y = menuY + index * 22;
+    const y = menuY + index * (rowH + 2);
     const selected = index === selectedIndex;
     if (selected) {
-      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 18, 6);
-      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 60, 6);
+      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, rowH - 1, 18, 6);
+      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, rowH - 1, 60, 6);
     }
     const label = truncateText(font, menu[index]!.label, DETAIL_MENU_WIDTH - 12);
     image.drawText(font, menuX, y + 2, label, selected ? 255 : 185);

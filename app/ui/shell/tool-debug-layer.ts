@@ -1,11 +1,12 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import type { ToolDebugEntry } from "../../assistant/tool-registry";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
 import { MenuLayer, drawListScrollbar, type MenuItem } from "../menu";
 import { MIN_WINDOW_HEIGHT, minWindowTop, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
+import { lineStep } from "../metrics";
 
 /**
  * Shell-overlay debug dialog (escape menu > Debug): lists the voice assistant
@@ -26,7 +27,6 @@ function dialogY(): number {
   return minWindowTop() + TOP_BAR_HEIGHT + 8;
 }
 const DETAIL_PADDING = 14;
-const DETAIL_LINE_HEIGHT = 14;
 
 export class ToolDebugMenuLayer extends MenuLayer {
   constructor(appId: string | null, entries: ToolDebugEntry[], private readonly onClosed: () => void) {
@@ -85,13 +85,14 @@ class ToolDetailLayer implements Layer {
     const textX = DIALOG_X + DETAIL_PADDING;
     const textWidth = DETAIL_WIDTH - 2 * DETAIL_PADDING - 8;
     const lines = this.buildLines(textWidth);
-    const visibleRowCount = Math.max(1, ((DETAIL_HEIGHT - 2 * DETAIL_PADDING) / DETAIL_LINE_HEIGHT) | 0);
+    const detailLineH = lineStep(font);
+    const visibleRowCount = Math.max(1, ((DETAIL_HEIGHT - 2 * DETAIL_PADDING) / detailLineH) | 0);
     this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, lines.length - visibleRowCount));
 
     const lastVisibleRow = Math.min(lines.length, this.scrollRow + visibleRowCount);
     for (let index = this.scrollRow; index < lastVisibleRow; index++) {
       const line = lines[index]!;
-      const y = top + DETAIL_PADDING + (index - this.scrollRow) * DETAIL_LINE_HEIGHT;
+      const y = top + DETAIL_PADDING + (index - this.scrollRow) * detailLineH;
       image.drawText(font, textX, y, line.text, line.value);
     }
     if (lines.length > visibleRowCount) {

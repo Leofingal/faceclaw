@@ -3,6 +3,7 @@ import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { appViewportSize, type WindowHeightMode } from "./geometry";
+import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -293,6 +294,7 @@ export class WorkerAppHost {
       },
       drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph),
       handleInput: (event, frameId) => {
+        frameTimings.logFrame(frameId, `input posted to the ${this.options.appId} worker`);
         this.post({
           type: "input",
           windowId: spec.windowId,

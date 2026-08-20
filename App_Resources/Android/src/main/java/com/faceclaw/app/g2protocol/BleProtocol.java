@@ -46,6 +46,7 @@ public class BleProtocol {
     public static final int FACECLAW_FB_OP_ACQUIRE = 5;
     public static final int FACECLAW_FB_OP_RELEASE = 6;
     public static final int FACECLAW_WEAR_OP_QUERY = 7;
+    public static final int CFW_IMAGE_MODE_CLEANUP = 11;
     private static final int FACECLAW_WAKE_EVENT = 1;
     private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a

@@ -1,5 +1,5 @@
-import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/bdffont";
-import { GrayImage, imageFromAsciiArt } from "../../graphics/image";
+import { getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, imageFromAsciiArt, type UiFont } from "../../graphics/image";
 import { DashboardInputEvent, Layer, LayerContext } from "../../ui/layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import {
@@ -20,7 +20,7 @@ const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
 function drawDirectionIndicator(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   x: number,
   y: number,
   direction: string,
@@ -43,7 +43,7 @@ function drawDirectionIndicator(
   }
 }
 
-function directionGlyphLabel(font: BdfFont, direction: string): string {
+function directionGlyphLabel(font: UiFont, direction: string): string {
   switch (direction) {
     case "DoubleUp":
       return font.hasGlyph("↑".codePointAt(0)!) ? "↑↑" : "";
@@ -98,7 +98,7 @@ function drawNightscoutGraph(
   bounds: { x: number; y: number; width: number; height: number },
   nightscout: NightscoutState,
   nowMs: number,
-  font: BdfFont,
+  font: UiFont,
 ): void {
   if (bounds.width <= 2 || bounds.height <= 2) {
     return;
@@ -195,7 +195,7 @@ function drawNightscoutBasalOverlay(
 function drawNightscoutCarbMarkers(
   image: GrayImage,
   bounds: { x: number; y: number; width: number; height: number },
-  font: BdfFont,
+  font: UiFont,
   carbEvents: NightscoutState["carbs"],
   nowMs: number,
 ): void {
@@ -216,7 +216,7 @@ function drawNightscoutCarbMarkers(
 function drawNightscoutBolusMarkers(
   image: GrayImage,
   bounds: { x: number; y: number; width: number; height: number },
-  font: BdfFont,
+  font: UiFont,
   bolusEvents: NightscoutState["boluses"],
   nowMs: number,
 ): void {
@@ -246,7 +246,7 @@ function drawNightscoutBolusMarkers(
 
 function drawTextCentered(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   centerX: number,
   y: number,
   text: string,

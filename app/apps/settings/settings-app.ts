@@ -1,4 +1,4 @@
-import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import { LayerActions } from "../../ui/layers";
 import { EditTextSettingLayer } from "../../ui/dashboard-settings";
 import { createSettingsPanelLayer } from "../../ui/dashboard/settings-menus";
@@ -10,7 +10,7 @@ export const SETTINGS_SURFACE_ID = "window:settings";
 
 export type SettingsAppOptions = {
   actions: LayerActions;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface: () => void;
   onClosed: () => void;

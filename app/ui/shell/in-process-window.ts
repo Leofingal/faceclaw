@@ -1,4 +1,5 @@
 import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import * as frameTimings from "../../native/frame-timings";
 import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
@@ -23,6 +24,8 @@ export type InProcessWindowOptions = {
   iconLetter: string;
   /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
   icon?: IconName;
+  /** App-supplied sidebar icon renderer; takes precedence over icon/iconLetter. */
+  drawIcon?: ShellWindow["drawIcon"];
   closeable: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
@@ -35,9 +38,11 @@ export type InProcessWindowOptions = {
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
   baseLayer: Layer;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface?: () => void;
+  /** Resize this window's compositor surface after a height-mode change. */
+  reconfigureSurface?: (heightMode: WindowHeightMode) => void;
   onClosed?: () => void;
 };
 
@@ -45,24 +50,37 @@ export type InProcessWindow = {
   window: ShellWindow;
   stack: LayerStack;
   requestRender: () => void;
+  /** Change the window's height band at runtime (resizes the viewport + surface). */
+  setHeightMode: (mode: WindowHeightMode) => void;
 };
 
 /** The controller-provided plumbing common to every in-process app window. */
 export type InProcessAppOptions = {
   actions: LayerActions;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface: () => void;
+  reconfigureSurface?: (heightMode: WindowHeightMode) => void;
   onClosed: () => void;
 };
 
 export function createInProcessWindow(options: InProcessWindowOptions): InProcessWindow {
-  const requestRender = () => {
-    void render(0).catch((error) => {
+  /**
+   * Repaint under a new frame. causeFrameId links it to the frame that made it
+   * necessary (a stale-cache paint asking for a redo); 0 for an app-initiated
+   * repaint. Each repaint gets a frame either way: an app-initiated one (a
+   * clock tick, arriving data) is a real screen update with real latency, and
+   * submitting it under frame 0 made it invisible in the timing export except
+   * as an anonymous "superseded by frame#0" line in some other frame's log.
+   */
+  const renderInNewFrame = (causeFrameId: number) => {
+    void render(frameTimings.startFrame(`render:${options.windowId}`, causeFrameId)).catch((error) => {
       console.error(`${options.windowId} render failed: ${error}`);
     });
   };
-  const heightMode = options.heightMode ?? "min";
+  // Handed to app code as a bare callback, so it takes no arguments.
+  const requestRender = () => renderInNewFrame(0);
+  let heightMode = options.heightMode ?? "min";
   const stack = new LayerStack(
     options.baseLayer,
     { ...options.actions, requestRender },
@@ -83,16 +101,21 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       frameTimings.finishFrame(frameId, "discarded: window closed");
       return;
     }
+    frameTimings.annotateFrame(frameId, `window=${options.windowId}`);
     const wantFreshData = nextRenderWantsFreshData;
     nextRenderWantsFreshData = false;
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const image = stack.paint();
+    // runWithFrame so leaf data sources (notification icons, calendar) attach
+    // their own spans to this frame.
+    const planes = frameTimings.span(frameId, "paint", () =>
+      frameTimings.runWithFrame(frameId, () => stack.paint()),
+    );
     const paintUsedStaleData = endRenderPass();
-    await options.submitFrame(image, Date.now() - paintStartedAtMs, frameId);
+    await options.submitFrame(planes, Date.now() - paintStartedAtMs, frameId);
     if (paintUsedStaleData) {
       nextRenderWantsFreshData = true;
-      requestRender();
+      renderInNewFrame(frameId);
     }
   }
 
@@ -101,7 +124,19 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   // items act on the shell directly (workers post messages instead).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    const items: MenuItem[] = [...(options.menuItems?.() ?? [])];
+    // "Focus app switcher" first: long-press then tap defocuses the app
+    // (hands focus to the sidebar) without closing it — the reliable way out
+    // for apps that consume double-click.
+    const items: MenuItem[] = [
+      {
+        label: "Focus app switcher",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          shell.yieldFocusToSidebar();
+        },
+      },
+      ...(options.menuItems?.() ?? []),
+    ];
     items.push({
       label: "Voice input",
       onSelect: (ctx) => {
@@ -136,7 +171,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.onClosed?.();
       options.removeSurface?.();
     },
-    drawIcon: windowIcon(options.icon, options.iconLetter),
+    drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
       // The default long-press response: the window menu. Handled here (not
       // per-layer) so it works over submenus and app content alike.
@@ -145,7 +180,12 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         await render(frameId);
         return;
       }
-      await stack.handleInput(event);
+      // Spanned separately from the paint: an app's input handler may await
+      // real work (launching an app, a network call), and that used to show up
+      // as a bare multi-second gap inside the shell's handle-input span.
+      await frameTimings.spanAsync(frameId, `app-input:${options.windowId}`, () =>
+        stack.handleInput(event),
+      );
       await render(frameId);
     },
     requestRender,
@@ -153,7 +193,15 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.setSurfaceVisible(foreground);
     },
   };
-  return { window, stack, requestRender };
+  const setHeightMode = (mode: WindowHeightMode) => {
+    if (heightMode === mode) return;
+    heightMode = mode;
+    window.heightMode = mode;
+    stack.setBaseSize(appViewportSize(mode));
+    options.reconfigureSurface?.(mode);
+    requestRender();
+  };
+  return { window, stack, requestRender, setHeightMode };
 }
 
 /**

@@ -1,4 +1,5 @@
-import { GrayImage } from "../graphics/image";
+import { type GrayImage } from "../graphics/image";
+import { type Plane } from "../graphics/plane";
 import { type IconName } from "../graphics/icons";
 import { type LayerActions } from "../ui/layers";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
@@ -18,6 +19,8 @@ export type AppDefinition = {
   title: string;
   /** Launcher-grid icon. */
   icon: IconName;
+  /** App-supplied launcher icon renderer; icon remains the fallback. */
+  renderIcon?: (size: number) => GrayImage | null;
   /** Open the app's window (or focus it if already open). */
   launch: (ctx: AppContext, params?: AppLaunchParams) => Promise<void>;
   /**
@@ -50,6 +53,8 @@ export type AppContext = {
   actions: Omit<LayerActions, "requestRender">;
   /** Launch (or focus) any app by id through the shell. */
   launchApp: (appId: string, params?: AppLaunchParams) => Promise<void>;
+  /** Uninstall a dynamically registered app, if the app id supports it. */
+  uninstallApp: (appId: string) => Promise<void>;
   /** Launch-or-focus a main-thread singleton window keyed by windowId. */
   launchInProcessApp: (
     windowId: string,
@@ -58,8 +63,8 @@ export type AppContext = {
   ) => Promise<void>;
   /** Get this app's shared worker host, spawning the worker on first use. */
   ensureWorkerHost: (createWorker: () => Worker) => WorkerAppHost;
-  /** Submit a painted frame for a window surface (windows created outside launchInProcessApp). */
-  submitWindowFrame: (surfaceId: string, image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  /** Submit a window surface's painted frame, as planes (windows created outside launchInProcessApp). */
+  submitWindowFrame: (surfaceId: string, planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setWindowSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   requestShellRender: () => void;
   appendLog: (message: string) => void;

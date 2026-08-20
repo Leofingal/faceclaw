@@ -105,15 +105,31 @@
             visibility="{{ textSettingEditorVisibility }}"
             horizontalAlignment="stretch"
             verticalAlignment="top">
+            <Label text="{{ activeTextEditorTitle }}" class="h2" />
             <Label text="{{ activeTextSettingTitle }}" />
             <TextField
                 id="settingsTextField"
                 text="{{ activeTextSettingValue }}"
                 textChange="{{ onTextSettingTextChange }}"
-                returnPress="{{ onTextSettingReturnPress }}"
+                returnPress="{{ onPrimaryTextSettingReturnPress }}"
                 autocorrect="false"
                 autocapitalizationType="none"
-                returnKeyType="done" />
+                keyboardType="{{ activeTextSettingKeyboardType }}"
+                secure="{{ activeTextSettingSecure }}"
+                returnKeyType="{{ primaryTextSettingReturnKeyType }}" />
+            <StackLayout visibility="{{ secondaryTextSettingVisibility }}">
+                <Label text="{{ secondaryTextSettingTitle }}" />
+                <TextField
+                    id="secondarySettingsTextField"
+                    text="{{ secondaryTextSettingValue }}"
+                    textChange="{{ onSecondaryTextSettingTextChange }}"
+                    returnPress="{{ onSecondaryTextSettingReturnPress }}"
+                    autocorrect="false"
+                    autocapitalizationType="none"
+                    keyboardType="{{ secondaryTextSettingKeyboardType }}"
+                    secure="{{ secondaryTextSettingSecure }}"
+                    returnKeyType="done" />
+            </StackLayout>
         </StackLayout>
     </GridLayout>
 </Page>

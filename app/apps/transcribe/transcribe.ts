@@ -1,5 +1,6 @@
-import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { GrayImage, type UiFont } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { lineStep } from "../../ui/metrics";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
@@ -41,12 +42,13 @@ export class TranscribeLayer implements Layer {
     image.drawText(font, 24, 20, "Transcribe", 200);
     image.drawText(font, 24, 40, this.saveNotice || this.status, 110);
 
+    const step = lineStep(font) + 2;
     const bodyTop = 62;
-    const footerY = height - 18;
-    const bodyLines = Math.max(1, Math.floor((footerY - bodyTop) / 16));
+    const footerY = height - font.lineHeight - 6;
+    const bodyLines = Math.max(1, Math.floor((footerY - bodyTop) / step));
     const firstLine = Math.max(0, wrapped.length - bodyLines);
     for (let index = firstLine; index < wrapped.length; index++) {
-      const y = bodyTop + (index - firstLine) * 16;
+      const y = bodyTop + (index - firstLine) * step;
       image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
@@ -112,7 +114,7 @@ function transcriptTimestamp(): string {
   );
 }
 
-function wrapTranscribeText(font: BdfFont, text: string, maxWidth: number): string[] {
+function wrapTranscribeText(font: UiFont, text: string, maxWidth: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";
