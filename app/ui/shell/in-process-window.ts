@@ -65,11 +65,21 @@ export type InProcessAppOptions = {
 };
 
 export function createInProcessWindow(options: InProcessWindowOptions): InProcessWindow {
-  const requestRender = () => {
-    void render(0).catch((error) => {
+  /**
+   * Repaint under a new frame. causeFrameId links it to the frame that made it
+   * necessary (a stale-cache paint asking for a redo); 0 for an app-initiated
+   * repaint. Each repaint gets a frame either way: an app-initiated one (a
+   * clock tick, arriving data) is a real screen update with real latency, and
+   * submitting it under frame 0 made it invisible in the timing export except
+   * as an anonymous "superseded by frame#0" line in some other frame's log.
+   */
+  const renderInNewFrame = (causeFrameId: number) => {
+    void render(frameTimings.startFrame(`render:${options.windowId}`, causeFrameId)).catch((error) => {
       console.error(`${options.windowId} render failed: ${error}`);
     });
   };
+  // Handed to app code as a bare callback, so it takes no arguments.
+  const requestRender = () => renderInNewFrame(0);
   let heightMode = options.heightMode ?? "min";
   const stack = new LayerStack(
     options.baseLayer,
@@ -91,16 +101,21 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       frameTimings.finishFrame(frameId, "discarded: window closed");
       return;
     }
+    frameTimings.annotateFrame(frameId, `window=${options.windowId}`);
     const wantFreshData = nextRenderWantsFreshData;
     nextRenderWantsFreshData = false;
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const planes = stack.paint();
+    // runWithFrame so leaf data sources (notification icons, calendar) attach
+    // their own spans to this frame.
+    const planes = frameTimings.span(frameId, "paint", () =>
+      frameTimings.runWithFrame(frameId, () => stack.paint()),
+    );
     const paintUsedStaleData = endRenderPass();
     await options.submitFrame(planes, Date.now() - paintStartedAtMs, frameId);
     if (paintUsedStaleData) {
       nextRenderWantsFreshData = true;
-      requestRender();
+      renderInNewFrame(frameId);
     }
   }
 
@@ -165,7 +180,12 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         await render(frameId);
         return;
       }
-      await stack.handleInput(event);
+      // Spanned separately from the paint: an app's input handler may await
+      // real work (launching an app, a network call), and that used to show up
+      // as a bare multi-second gap inside the shell's handle-input span.
+      await frameTimings.spanAsync(frameId, `app-input:${options.windowId}`, () =>
+        stack.handleInput(event),
+      );
       await render(frameId);
     },
     requestRender,

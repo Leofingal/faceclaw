@@ -175,6 +175,9 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         break;
       }
       window.focused = message.focused;
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
       handleInput(window, message.event as DashboardInputEvent, message.frameId);
       break;
     case "text-input":
@@ -876,7 +879,7 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
-    const buffer = image.to8bppBuffer();
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       win.surfaceId,
@@ -887,7 +890,7 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
-      prepareFrameDraws(draws),
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     win.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

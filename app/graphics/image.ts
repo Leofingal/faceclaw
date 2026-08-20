@@ -141,6 +141,8 @@ export class GrayImage {
   readonly height: number;
   readonly pixels: Uint8Array;
   private readonly drawList: DeferredDraw[] = [];
+  /** See sourceContentHash32; null until this image is hashed as a draw source. */
+  private memoizedSourceHash: number | null = null;
 
   constructor(width: number, height: number, fill = 0) {
     this.width = width;
@@ -378,11 +380,7 @@ export class GrayImage {
 
   /** 32-bit content hash over pixels and deferred draws (fingerprint's core). */
   contentHash32(): number {
-    let hash = 2166136261;
-    for (let i = 0; i < this.pixels.length; i++) {
-      hash ^= this.pixels[i]!;
-      hash = Math.imul(hash, 16777619);
-    }
+    let hash = this.pixelsHash32();
     for (const placed of this.drawList) {
       if (placed.kind === "glyph") {
         hash = mixInt(hash, placed.font.fingerprintId);
@@ -392,7 +390,7 @@ export class GrayImage {
         hash = mixInt(hash, 0x1c0e5);
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
-        hash = mixInt(hash, placed.source.contentHash32());
+        hash = mixInt(hash, placed.source.sourceContentHash32());
       } else {
         hash = mixInt(hash, 0xf17e);
         hash = mixInt(hash, placed.font.atlasTag);
@@ -408,6 +406,44 @@ export class GrayImage {
     return hash >>> 0;
   }
 
+  /**
+   * FNV-1a over the raster pixels. Four bytes at a time where alignment
+   * allows: this runs on every frame's fingerprint, over the whole screen, on
+   * the thread that is about to hand the frame to the transport.
+   */
+  private pixelsHash32(): number {
+    const pixels = this.pixels;
+    let hash = 2166136261;
+    let i = 0;
+    if ((pixels.byteOffset & 3) === 0) {
+      const words = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.length >>> 2);
+      for (let w = 0; w < words.length; w++) {
+        hash ^= words[w]!;
+        hash = Math.imul(hash, 16777619);
+      }
+      i = words.length << 2;
+    }
+    for (; i < pixels.length; i++) {
+      hash ^= pixels[i]!;
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  /**
+   * contentHash32 for an image being used as another image's deferred-draw
+   * source, memoized. drawImage/drawFwText document their source as immutable
+   * from the call onwards (glyph-wire's ImageAtlas id cache already depends on
+   * that), so the hash of a long-lived icon asset can be computed once instead
+   * of on every frame that draws it.
+   */
+  sourceContentHash32(): number {
+    if (this.memoizedSourceHash === null) {
+      this.memoizedSourceHash = this.contentHash32();
+    }
+    return this.memoizedSourceHash;
+  }
+
   fingerprint(): string {
     return `fnv:${this.contentHash32().toString(16)}`;
   }
@@ -421,7 +457,8 @@ export class GrayImage {
    */
   to8bppBuffer(): Uint8Array {
     if (!this.drawList.length) {
-      return Uint8Array.from(this.pixels);
+      // slice() is a memcpy; Uint8Array.from walks the buffer element by element.
+      return this.pixels.slice();
     }
     // withDrawsBaked's buffer is a private temporary, safe to hand out.
     return this.withDrawsBaked().pixels;

@@ -200,6 +200,8 @@ class DashboardController {
   private lastSys = "none yet";
   private shellRenderInProgress = false;
   private shellRenderQueued = false;
+  /** Input frame that requested the next shell render; see requestShellRender. */
+  private pendingShellRenderCauseFrameId = 0;
   private nextShellRenderWantsFreshData = false;
   // One shared worker per app hosts all its windows; spawned on first launch.
   private readonly appHosts = new Map<string, WorkerAppHost>();
@@ -467,7 +469,14 @@ class DashboardController {
    * visible. Concurrent display-wake, shell, and wakeword callbacks share the
    * same operation.
    */
-  private ensureEvenHubSessionActive(): Promise<boolean> {
+  /**
+   * frameId (0 when the caller has none) attributes the barrier's four
+   * round trips to the input frame waiting on them; a wake barrier is the
+   * largest single input-to-display term there is, so knowing which step
+   * owns the second matters. Callers that join an in-flight barrier share
+   * the first caller's spans.
+   */
+  private ensureEvenHubSessionActive(frameId = 0): Promise<boolean> {
     if (this.evenHubResumePromise) return this.evenHubResumePromise;
     const communicator = this.communicator;
     if (!communicator || this.phase === "charging" || this.phase === "disconnected") {
@@ -475,14 +484,19 @@ class DashboardController {
     }
 
     const operation = (async () => {
-      await communicator.setG2ScreenOn(true);
-      if (!(await communicator.resumeEvenHubSession())) {
+      await frameTimings.spanAsync(frameId, "wake:screen-on", () => communicator.setG2ScreenOn(true));
+      const resumed = await frameTimings.spanAsync(frameId, "wake:resume-session", () =>
+        communicator.resumeEvenHubSession(),
+      );
+      if (!resumed) {
         return false;
       }
       // Resume first: setScreenBlanked(false) then recomposites retained state
       // as the desired first frame for the fresh layout.
-      await communicator.setScreenBlanked(false);
-      const ready = await communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS);
+      await frameTimings.spanAsync(frameId, "wake:unblank", () => communicator.setScreenBlanked(false));
+      const ready = await frameTimings.spanAsync(frameId, "wake:await-ready", () =>
+        communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS),
+      );
       if (ready && this.communicator === communicator) {
         this.evenHubSessionSuspended = false;
       }
@@ -1323,6 +1337,11 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      // The gesture, plus which app is on screen and whether input goes to it,
+      // the sidebar, or a shell overlay. Java only knows the raw event codes,
+      // and without the target the export says what was pressed but not who
+      // spent the time drawing the answer.
+      frameTimings.annotateFrame(frameId, `${inputEvent.type} ${shell.describeInputTarget()}`);
       if (this.glassesLocked) {
         const ringDoubleTap =
           inputEvent.type === "double-click" &&
@@ -1335,7 +1354,9 @@ class DashboardController {
             if (ringDoubleTap) shell.sleep();
           } else {
             shell.wake("sidebar");
-            const ready = await this.ensureEvenHubSessionActive();
+            const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
+              this.ensureEvenHubSessionActive(frameId),
+            );
             if (!ready) {
               this.appendLog("EvenHub wake barrier timed out for locked display");
             }
@@ -1356,7 +1377,9 @@ class DashboardController {
           shellPreWoke = shell.wake("sidebar");
         }
         if (shellPreWoke || this.evenHubSessionSuspended || this.evenHubResumePromise) {
-          const ready = await this.ensureEvenHubSessionActive();
+          const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
+            this.ensureEvenHubSessionActive(frameId),
+          );
           if (!ready) {
             this.appendLog(`EvenHub wake barrier timed out for ${event.kind}`);
           }
@@ -1391,14 +1414,17 @@ class DashboardController {
       }
 
       if (outcome.shell) {
-        this.requestShellRender();
+        // Pass frameId as the cause, not the owner: the chrome render gets its
+        // own child frame under this one, so the export shows the input and
+        // every render it triggered on a single timeline.
+        this.requestShellRender(frameId);
       }
       if (outcome.window) {
         // The window adapter owned frameId (render or explicit finish).
         frameOwned = true;
       } else if (outcome.shell) {
         frameOwned = true;
-        frameTimings.finishFrame(frameId, "input consumed by shell; chrome render scheduled");
+        frameTimings.finishFrame(frameId, "handled by shell; chrome render spawned");
       }
     } finally {
       if (!frameOwned) {
@@ -1607,17 +1633,20 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: window frame with no active connection");
       return;
     }
-    const fingerprint = planesFingerprint(planes);
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
-    const buffer = image.to8bppBuffer();
-    await communicator.submitSurfaceFrame(
-      surfaceId,
-      buffer,
-      { x: 0, y: 0, width: image.width, height: image.height },
-      fingerprint,
-      paintMs,
-      frameId,
-      prepareFrameDraws(draws),
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
+    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
+    await frameTimings.spanAsync(frameId, "submit", () =>
+      communicator.submitSurfaceFrame(
+        surfaceId,
+        buffer,
+        { x: 0, y: 0, width: image.width, height: image.height },
+        fingerprint,
+        paintMs,
+        frameId,
+        preparedDraws,
+      ),
     );
   }
 
@@ -1635,7 +1664,14 @@ class DashboardController {
    * overlays). Coalesces like requestRender: one render in flight, at most
    * one queued.
    */
-  requestShellRender(): void {
+  requestShellRender(causeFrameId = 0): void {
+    // Remember the input frame that asked for this chrome repaint so
+    // renderShell can nest its frame under it; without that link an input
+    // event and the shell render it caused show up as two unrelated frames
+    // and the real input-to-pixels latency is never measured.
+    if (causeFrameId > 0 && this.pendingShellRenderCauseFrameId === 0) {
+      this.pendingShellRenderCauseFrameId = causeFrameId;
+    }
     if (this.shellRenderInProgress) {
       this.shellRenderQueued = true;
       return;
@@ -1656,9 +1692,13 @@ class DashboardController {
   }
 
   private async renderShell(): Promise<void> {
-    const frameId = frameTimings.startFrame("render:shell");
+    const causeFrameId = this.pendingShellRenderCauseFrameId;
+    this.pendingShellRenderCauseFrameId = 0;
+    const frameId = frameTimings.startFrame("render:shell", causeFrameId);
+    frameTimings.annotateFrame(frameId, shell.describeInputTarget());
     const wantFreshData = this.nextShellRenderWantsFreshData;
     this.nextShellRenderWantsFreshData = false;
+    if (wantFreshData) frameTimings.logFrame(frameId, "follow-up repaint that must not use cached data");
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
     const planes = frameTimings.span(frameId, "paint", () =>
@@ -1668,27 +1708,46 @@ class DashboardController {
     const paintUsedStaleData = endRenderPass();
     if (paintUsedStaleData) {
       // Repaint with fresh data (e.g. notification icons) once this frame is
-      // out; mirrors renderDashboard's stale-data contract.
+      // out; mirrors renderDashboard's stale-data contract. Linked to this
+      // frame so the export shows one input costing two round trips instead of
+      // an unexplained extra render.
       this.nextShellRenderWantsFreshData = true;
-      this.requestShellRender();
+      this.requestShellRender(frameId);
     }
-    if (!this.communicator || this.phase === "charging") {
+    const communicator = this.communicator;
+    if (!communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
       return;
     }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    await this.communicator.submitSurfaceFrame(
-      SHELL_SURFACE_ID,
-      buffer,
-      { x: 0, y: 0, width: image.width, height: image.height },
-      fingerprint,
-      paintMs,
-      frameId,
-      prepareFrameDraws(draws),
+    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
+    // Spanned because the bridge serializes Java calls: a frame can sit here
+    // behind another surface's submission, which is otherwise an unexplained
+    // jump between the paint spans and the composite.
+    await frameTimings.spanAsync(frameId, "submit", () =>
+      communicator.submitSurfaceFrame(
+        SHELL_SURFACE_ID,
+        buffer,
+        { x: 0, y: 0, width: image.width, height: image.height },
+        fingerprint,
+        paintMs,
+        frameId,
+        preparedDraws,
+      ),
     );
-    await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    // Backpressure: the next shell render waits for this one to reach the
+    // glasses. Timing out here means the loop was blocked for the full timeout
+    // and any input arriving meanwhile had its chrome repaint delayed, so say
+    // so in the frame rather than leaving a silent stall.
+    const outcome = await communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    if (outcome === null) {
+      frameTimings.logFrame(
+        frameId,
+        `still unsent after ${FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS}ms; shell render loop released`,
+      );
+    }
     this.updateCompositePreview();
   }
 

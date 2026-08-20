@@ -182,6 +182,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // into desiredPacked; the texture-cache planner may replay them as
     // on-glasses cached draws.
     private SurfaceCompositor.ScreenDraw[] desiredDraws = new SurfaceCompositor.ScreenDraw[0];
+    // (frame, reason) of the last "waiting to send" line, so a frame that
+    // stalls for seconds records one line per state change (see
+    // noteImageStallLocked). Send-loop thread only.
+    private int stallFrameId;
+    private String stallReason = "";
     // Highest compositor sequence stored as the desired frame; composites that
     // lost a store race to a newer one are discarded (their content is already
     // included in the newer composite).
@@ -646,10 +651,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * frame landed while briefly hidden would stay blank until its next repaint.
      */
     public void setSurfaceVisible(String id, boolean visible) {
+        // Its own frame: this recomposite is a real screen update with real
+        // latency, and without one it would show up in other frames' logs only
+        // as an anonymous "superseded by frame#0".
+        int frameId = FrameTimings.getInstance().startFrame(
+                "compositor:visible " + id + "=" + visible);
         compositor.setSurfaceVisible(id, visible);
         SurfaceCompositor.Composite composite = compositor.composite();
         byte[] packed = BmpUtil.pack4bppFromGray8(composite.gray, composite.width, composite.height);
-        storeDesiredComposite(composite, packed, 0, 0);
+        storeDesiredComposite(composite, packed, 0, frameId);
     }
 
     /**
@@ -658,10 +668,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * unblanking restores the previous screen content without repaints.
      */
     public void setScreenBlanked(boolean blanked) {
+        int frameId = FrameTimings.getInstance().startFrame(
+                "compositor:" + (blanked ? "blank" : "unblank"));
         compositor.setBlanked(blanked);
         SurfaceCompositor.Composite composite = compositor.composite();
         byte[] packed = BmpUtil.pack4bppFromGray8(composite.gray, composite.width, composite.height);
-        storeDesiredComposite(composite, packed, 0, 0);
+        storeDesiredComposite(composite, packed, 0, frameId);
     }
 
     /**
@@ -722,6 +734,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             java.nio.ByteBuffer glyphs
     ) {
         Log.i(TAG, "Received an updated frame for surface " + surfaceId);
+        FrameTimings.getInstance().log(frameId, "surface " + surfaceId + " updated rect="
+                + rectWidth + "x" + rectHeight + "+" + rectX + "+" + rectY
+                + (glyphs == null ? " (no glyph draws)" : ""));
         FrameTimings.getInstance().spanStart(frameId, "composite");
         SurfaceCompositor.Composite composite = compositor.applyAndComposite(
                 surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
@@ -1702,10 +1717,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
+                    // "Ready" covers both a fresh composite still to be planned
+                    // and a planned image already queued but not yet written --
+                    // enqueueing sets lastEnqueuedFingerprint, so testing only
+                    // the desired fingerprint left the queued-but-unwritten
+                    // window unprotected and a heartbeat that came due there
+                    // cost the frame a full ack round trip (measured 124ms on
+                    // frame#232 of the 2026-08-20 02:27 capture).
                     boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
                             && !hasPendingOrInflightKindLocked("heartbeat")
                             && now >= imageRetryAfterMs
-                            && !getDesiredFingerprint().equals(lastEnqueuedFingerprint);
+                            && (hasPendingImageLocked()
+                                || !getDesiredFingerprint().equals(lastEnqueuedFingerprint));
+                    noteImageStallLocked(now, windowHasRoom);
                     if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
@@ -2249,7 +2273,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         + " baked=" + tex.bakedCandidates
                         + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
                         + " cache=" + textureCache.usedBytes() + "B"
-                        + " payload=" + tex.payload.length + "B";
+                        + " payload=" + tex.payload.length + "B"
+                        + " (rects " + tex.rectsMs + "ms, match " + tex.matchMs
+                        + "ms, cache " + tex.cacheMs + "ms, punch " + tex.punchMs
+                        + "ms, encode " + tex.encodeMs + "ms)";
                 FrameTimings.getInstance().log(frameId, texLog);
                 finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
                 return;
@@ -2509,6 +2536,117 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return battery >= 0
             ? "Glasses charging. Battery " + battery + "%."
             : "Glasses charging.";
+    }
+
+    /**
+     * Record, into the frame that is waiting, why it did not go out on this
+     * pass of the send loop. Without this the export shows a bare multi-second
+     * jump between "image submitted as desired frame" and the first BLE
+     * packet, with no hint whether we were blocked on warmup, a heartbeat, the
+     * BLE window, or another message queued ahead. Deduped on (frame, reason),
+     * so a frame stalled for seconds gets one line per state change rather
+     * than one per loop pass.
+     */
+    private void noteImageStallLocked(long now, boolean windowHasRoom) {
+        int frameId;
+        synchronized (desiredTilesLock) {
+            frameId = desiredFrameId;
+        }
+        String reason;
+        if (frameId != 0 && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
+            reason = describeEnqueueBlockerLocked(now, windowHasRoom);
+        } else {
+            // Nothing waiting to be planned; an already-planned image may still
+            // be queued behind other traffic.
+            OutboundMessage queuedImage = firstPendingImageLocked();
+            frameId = queuedImage == null ? 0 : imageUpdateFrameIdLocked(queuedImage.imageUpdateId);
+            reason = queuedImage == null ? null : describeWriteBlockerLocked(now, windowHasRoom, queuedImage);
+        }
+        if (frameId == 0 || reason == null) {
+            stallFrameId = 0;
+            stallReason = "";
+            return;
+        }
+        if (frameId == stallFrameId && reason.equals(stallReason)) {
+            return;
+        }
+        stallFrameId = frameId;
+        stallReason = reason;
+        FrameTimings.getInstance().log(frameId, "waiting to send: " + reason);
+    }
+
+    /** Why the desired composite has not been turned into wire messages yet, or null. */
+    private String describeEnqueueBlockerLocked(long now, boolean windowHasRoom) {
+        if (shutdownRequested) {
+            return "shutdown requested";
+        }
+        if (!sessionReady) {
+            return "BLE session not ready";
+        }
+        if (!fixedLayoutCreated) {
+            return "display layout not created yet";
+        }
+        if (!warmedUp) {
+            return "waiting for the warmup frame";
+        }
+        if (now < imageRetryAfterMs) {
+            return "image retry backoff (" + (imageRetryAfterMs - now) + "ms left)";
+        }
+        if (hasPendingImageLocked()) {
+            return "an earlier image is still queued";
+        }
+        if (!windowHasRoom) {
+            return "BLE window full (" + inFlightMessages.size() + " message(s) in flight)";
+        }
+        if (hasPendingOrInflightKindLocked("heartbeat")) {
+            return "heartbeat in flight";
+        }
+        if (!pendingMessages.isEmpty()) {
+            return pendingMessages.size() + " message(s) queued ahead, next "
+                + pendingMessages.peekFirst().label;
+        }
+        return null;
+    }
+
+    /** Why a planned image message has not been written to BLE yet, or null. */
+    private String describeWriteBlockerLocked(long now, boolean windowHasRoom, OutboundMessage queuedImage) {
+        if (!sessionReady) {
+            return "BLE session not ready";
+        }
+        if (!windowHasRoom) {
+            return "BLE window full (" + inFlightMessages.size() + " message(s) in flight)";
+        }
+        if (hasPendingOrInflightKindLocked("heartbeat")) {
+            return "heartbeat in flight";
+        }
+        // handleHeartbeat is a barrier: while one is due it holds back every
+        // other write, so a frame queued at the wrong moment waits a heartbeat
+        // round trip. Reported explicitly because it is otherwise invisible --
+        // heartbeats belong to no frame.
+        long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
+        if (warmedUp && fixedLayoutCreated && !shutdownRequested
+                && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_READY_MS) {
+            return "heartbeat due (" + heartbeatElapsedMs + "ms since the last one acked)";
+        }
+        OutboundMessage head = pendingMessages.peekFirst();
+        if (head != null && head != queuedImage) {
+            return "queued behind " + head.label;
+        }
+        return null;
+    }
+
+    private OutboundMessage firstPendingImageLocked() {
+        for (OutboundMessage message : pendingMessages) {
+            if (message.imageUpdateId > 0) {
+                return message;
+            }
+        }
+        return null;
+    }
+
+    private int imageUpdateFrameIdLocked(int imageUpdateId) {
+        BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(imageUpdateId);
+        return stats == null ? 0 : stats.frameId;
     }
 
     private void finishDesiredFrameLocked(String outcome) {

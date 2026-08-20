@@ -65,6 +65,19 @@ public final class TexturePlanner {
         public final int bakedCandidates;
         public final int uploadBytes;
         public final boolean fullFrame;
+        /**
+         * Where the planning time went, in ms. This runs on the send thread,
+         * directly in the input-to-display path, so the split is reported in
+         * the frame log: rects = finding the changed region, match = checking
+         * each draw against the composite, cache = residency/uploads plus run
+         * building, punch = clearing replayed draws out of a copy of the
+         * frame, encode = compressing the leftover pixels.
+         */
+        public int rectsMs;
+        public int matchMs;
+        public int cacheMs;
+        public int punchMs;
+        public int encodeMs;
 
         Result(byte[] payload, List<byte[]> uploads, int nextFid, int rectCount,
                int drawnGlyphs, int runCount, int drawnImages, int fwGlyphs, int fwRuns,
@@ -121,6 +134,7 @@ public final class TexturePlanner {
         if (next.length != stride * height) {
             return null;
         }
+        long planStartedAtMs = android.os.SystemClock.elapsedRealtime();
 
         // Rect geometry, matching what the plain paths would send.
         boolean fullFrame = previous == null || previous.length != next.length;
@@ -142,6 +156,8 @@ public final class TexturePlanner {
         } else {
             rects = Collections.singletonList(new int[]{0, 0, width, height});
         }
+
+        long matchStartedAtMs = android.os.SystemClock.elapsedRealtime();
 
         // Candidates: draws whose written pixels intersect a sent rect, are
         // representable on the wire, and land correct against the composite.
@@ -210,6 +226,7 @@ public final class TexturePlanner {
         if (selected.isEmpty() && fwSubs.isEmpty()) {
             return null;
         }
+        long cacheStartedAtMs = android.os.SystemClock.elapsedRealtime();
 
         // Residency: ensure every selected draw is in the cache, retrying once
         // after a reset when the bump allocator fills. A draw that still fails
@@ -244,6 +261,7 @@ public final class TexturePlanner {
 
         // Punch the drawn pixels out of a copy of the composite, then encode
         // the rect deltas from the punched content.
+        long punchStartedAtMs = android.os.SystemClock.elapsedRealtime();
         byte[] punched = next.clone();
         for (Selected sel : drawn) {
             punch(punched, stride, width, height, sel);
@@ -252,6 +270,7 @@ public final class TexturePlanner {
             punchFw(punched, stride, width, height, fw);
         }
 
+        long encodeStartedAtMs = android.os.SystemClock.elapsedRealtime();
         List<byte[]> subs = new ArrayList<>();
         int fid = fidStart;
         if (fullFrame) {
@@ -271,9 +290,16 @@ public final class TexturePlanner {
 
         int uploadBytes = cache.pendingUploadBytes();
         List<byte[]> uploads = cache.drainUploadPayloads(UPLOAD_PAYLOAD_MAX);
-        return new Result(payload, uploads, fid, rects.size(), drawnGlyphs.size(), runs.size(),
+        Result result = new Result(payload, uploads, fid, rects.size(), drawnGlyphs.size(), runs.size(),
                 imageDrawable.size(), fwGlyphCount, fwSubs.size(),
                 bakedCandidates, uploadBytes, fullFrame);
+        long doneAtMs = android.os.SystemClock.elapsedRealtime();
+        result.rectsMs = (int) (matchStartedAtMs - planStartedAtMs);
+        result.matchMs = (int) (cacheStartedAtMs - matchStartedAtMs);
+        result.cacheMs = (int) (punchStartedAtMs - cacheStartedAtMs);
+        result.punchMs = (int) (encodeStartedAtMs - punchStartedAtMs);
+        result.encodeMs = (int) (doneAtMs - encodeStartedAtMs);
+        return result;
     }
 
     /** One punch task for an emitted firmware-font glyph. */

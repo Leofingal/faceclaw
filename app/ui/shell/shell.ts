@@ -599,6 +599,20 @@ class Shell {
     };
   }
 
+  /**
+   * Compact description of where input is currently going, for the frame
+   * timing export: "which app was drawing" is usually the first thing you need
+   * to interpret an input-to-display latency, and it is not recoverable from
+   * the input event itself.
+   */
+  describeInputTarget(): string {
+    const foreground = this.foregroundWindow()?.windowId ?? "none";
+    if (!this.screenOn) return `fg=${foreground} target=screen-off`;
+    if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
+    if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
+    return `fg=${foreground} target=${this.focus}`;
+  }
+
   /** Whether a window is the current input target (foreground + focus in-window). */
   isWindowFocused(windowId: string): boolean {
     return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
