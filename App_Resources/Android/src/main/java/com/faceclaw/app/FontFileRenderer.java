@@ -175,9 +175,6 @@ public final class FontFileRenderer {
     }
 
     /**
-<<<<<<< HEAD
-||||||| d7d12af
-=======
      * Render one codepoint as a tight-ink-box antialiased glyph cell for the
      * texture-cache text pipeline (see app/graphics/ttf-font.ts). Ligatures
      * are disabled so a per-codepoint raster plus pairwise kerning (measured
@@ -304,7 +301,6 @@ public final class FontFileRenderer {
     }
 
     /**
->>>>>>> evenhub-compatibility
      * Line metrics for a font at a pixel size, as "ascent descent lineGap"
      * (integers, pixels). Empty string if the font cannot be loaded.
      */
