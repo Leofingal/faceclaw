@@ -291,12 +291,14 @@ class LauncherGridLayer implements Layer {
         // A fully visible icon goes through the deferred-image path (texture
         // cacheable); the clipped peeking row falls back to a raster blit,
         // since cached draws are whole-image only.
-        const clipHeight = Math.min(icon.height, Math.floor(gridBottom - blockTop));
+        // Icons narrower/shorter than ICON_SIZE (a non-square logo scaled to
+        // fit) are centered in the square the row reserves for them.
         const iconX = Math.round(centerX - icon.width / 2);
-        const iconY = Math.round(blockTop);
+        const iconY = Math.round(blockTop + Math.max(0, (ICON_SIZE - icon.height) / 2));
+        const clipHeight = Math.min(icon.height, Math.floor(gridBottom - iconY));
         if (clipHeight >= icon.height) {
           image.drawImage(icon, iconX, iconY);
-        } else {
+        } else if (clipHeight > 0) {
           image.bitBlt(icon, iconX, iconY, { height: clipHeight, transparentZero: true });
         }
       }
