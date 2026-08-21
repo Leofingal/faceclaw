@@ -314,6 +314,12 @@ export type EvenHubWindowHooks = {
 export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenHubCompassClient {
   readonly manifest: EvenHubManifest;
   readonly distDir: string;
+  /**
+   * For a developer-loaded app served from a live web server: the absolute
+   * URL to open. Empty for a packaged app, which is served offline out of
+   * distDir instead (see webview.ts).
+   */
+  readonly remoteUrl: string;
 
   private page: EvenHubPage | null = null;
   private pageCreated = false;
@@ -352,9 +358,15 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private readonly grantedApiKeys = new Set<string>();
   private log: (message: string) => void;
 
-  constructor(manifest: EvenHubManifest, distDir: string, log: (message: string) => void) {
+  constructor(
+    manifest: EvenHubManifest,
+    distDir: string,
+    log: (message: string) => void,
+    remoteUrl = "",
+  ) {
     this.manifest = manifest;
     this.distDir = distDir;
+    this.remoteUrl = remoteUrl;
     this.log = log;
   }
 

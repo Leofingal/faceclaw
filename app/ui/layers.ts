@@ -98,6 +98,13 @@ export interface Layer {
   handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> | void;
   /** Called when the layer leaves the stack by any path (pop or clearToBase). */
   onRemoved?(): void;
+  /**
+   * Accept a finished text string aimed at this window (voice input, and
+   * anything else the shell routes through sendTextToForegroundWindow).
+   * Layers that have somewhere to put text implement it; the rest don't, and
+   * the shell then has no app destination to offer.
+   */
+  receiveTextInput?(text: string, ctx: LayerContext): void;
 }
 
 export class LayerStack {
@@ -190,6 +197,15 @@ export class LayerStack {
   async handleInput(event: DashboardInputEvent): Promise<void> {
     await this.layers[this.layers.length - 1]!.handleInput(event, this.ctx);
   }
+
+  /** Hand text to the top layer; false if it doesn't take text input. */
+  receiveTextInput(text: string): boolean {
+    const layer = this.layers[this.layers.length - 1]!;
+    if (!layer.receiveTextInput) return false;
+    layer.receiveTextInput(text, this.ctx);
+    return true;
+  }
+
 
   private paintLayer(index: number): Plane[] {
     const layer = this.layers[index]!;

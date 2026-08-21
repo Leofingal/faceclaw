@@ -10,7 +10,7 @@
 import { type AppContext, type AppDefinition } from "../app-definition";
 import { shell } from "../../ui/shell/shell";
 import { EvenHubStoreLayer } from "./store-layer";
-import { launchPackage } from "./manager";
+import { launchPackage, launchUrl, normalizeAppUrl } from "./manager";
 import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { renderEvenRealitiesLogo } from "../../graphics/even-realities-logo";
 import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
@@ -24,6 +24,20 @@ const EVENHUB_STORE_SURFACE_ID = "window:evenhub:store";
  */
 export function openEvenHubPackage(ctx: AppContext, ehpkPath: string): Promise<void> {
   return launchPackage(ctx, ehpkPath);
+}
+
+/**
+ * Launch an app straight from a live web server instead of an .ehpk — the
+ * Developer app's "Load app from URL" / "Load app from QR code" entries, for
+ * running an app off a dev server without packaging it first.
+ */
+export function openEvenHubUrl(ctx: AppContext, url: string): Promise<void> {
+  return launchUrl(ctx, url);
+}
+
+/** Whether a string can be loaded by openEvenHubUrl, for validating input. */
+export function isLoadableAppUrl(url: string): boolean {
+  return normalizeAppUrl(url) !== null;
 }
 
 const evenhubApp: AppDefinition = {

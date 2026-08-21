@@ -503,6 +503,23 @@ export const terminalNewConnectionSetting = new ConfigSettingString({
   normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
 });
 
+/**
+ * Staging buffer for the Developer app's "Load app from URL" flow: the app
+ * opens the phone text editor on this setting, the user types (or scans, or
+ * dictates) the URL, and the app reads it back when the load is confirmed on
+ * the glasses. Kept across launches so a reload after an edit-and-rebuild only
+ * takes a click. Deliberately not listed in the Settings app.
+ */
+export const developerAppUrlSetting = new ConfigSettingString({
+  id: "developer-app-url",
+  label: "App URL",
+  storageKey: "developer.appUrl",
+  defaultValue: "",
+  editorTitle: "EvenHub app URL (http:// or https://)",
+  glassesEditTitle: "Load app from URL",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
+});
+
 export const terminalLaunchPresetsSetting = new ConfigSettingString({
   id: "terminal-launch-presets",
   label: "Launch presets",

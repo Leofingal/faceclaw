@@ -18,7 +18,8 @@ import {
   readBinaryFile,
   writeBinaryFile,
 } from "../../native/file-access";
-import { parseEhpk, parseManifest, utf8Decode } from "./ehpk";
+import { parseEhpk, parseManifest, utf8Decode, type EvenHubManifest } from "./ehpk";
+import { type EvenHubPermission } from "./permissions";
 import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
 import { createEvenHubWebView, type EvenHubWebView } from "./webview";
@@ -96,8 +97,23 @@ export async function launchPackage(
     }
   }
 
+  await startApp(ctx, manifest, `${baseDir}/dist`, "", appId);
+}
+
+/**
+ * Shared tail of every launch: build the session and its WebView, register the
+ * pair, and open the glasses window. `distDir` serves a packaged app offline;
+ * `remoteUrl`, when set, loads the app from the network instead.
+ */
+async function startApp(
+  ctx: AppContext,
+  manifest: EvenHubManifest,
+  distDir: string,
+  remoteUrl: string,
+  appId: string,
+): Promise<void> {
   const windowId = `evenhub:app:${nextSerial++}`;
-  const session = new EvenHubSession(manifest, `${baseDir}/dist`, ctx.appendLog);
+  const session = new EvenHubSession(manifest, distDir, ctx.appendLog, remoteUrl);
   const webView = createEvenHubWebView(session);
   session.attachWebView({
     evaluateJs: webView.evaluateJs,
@@ -117,6 +133,61 @@ export async function launchPackage(
   await ctx.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
     createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId)),
   );
+}
+
+/**
+ * Launch an EvenHub app served by a live web server (the Developer app's
+ * "Load app from URL" / QR flows), rather than one unpacked from an .ehpk.
+ *
+ * There is no manifest to read, so one is synthesized: the URL identifies the
+ * app (a stable packageId keeps its localStorage across reloads) and every
+ * permission is treated as declared, on the grounds that the user pointed
+ * Faceclaw at this URL themselves. Loading the same URL again replaces the
+ * running instance, which is what a reload after an edit should do.
+ */
+export async function launchUrl(ctx: AppContext, url: string): Promise<void> {
+  const normalized = normalizeAppUrl(url);
+  if (!normalized) {
+    ctx.appendLog(`evenhub: not an http(s) URL: ${url}`);
+    throw new Error("Not an http:// or https:// URL.");
+  }
+  const manifest = synthesizeUrlManifest(normalized);
+  closeRunningPackage(manifest.packageId);
+  await startApp(ctx, manifest, "", normalized, "evenhub");
+}
+
+/** Accept a bare "example.com/app" as https; reject anything not http(s). */
+export function normalizeAppUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  if (!/^https?:\/\/[^/?#\s]+/i.test(withScheme)) return null;
+  return withScheme;
+}
+
+/** Every permission name the host knows how to honor, granted to URL apps. */
+const DEV_URL_PERMISSIONS: EvenHubPermission[] = [
+  { name: "network" },
+  { name: "location" },
+  { name: "g2-microphone" },
+  { name: "phone-microphone" },
+];
+
+function synthesizeUrlManifest(url: string): EvenHubManifest {
+  const match = /^https?:\/\/([^/?#]+)([^?#]*)/i.exec(url);
+  const authority = match?.[1] ?? url;
+  const path = (match?.[2] ?? "").replace(/\/index\.html?$/i, "").replace(/\/+$/, "");
+  const idSource = `${authority}${path}`.toLowerCase().replace(/[^a-z0-9.-]+/g, "-");
+  return {
+    packageId: `dev.url.${idSource.slice(0, 96)}`,
+    name: authority,
+    version: "dev",
+    entrypoint: "",
+    networkWhitelist: [],
+    permissions: DEV_URL_PERMISSIONS,
+    privacyPolicyUrl: "",
+    raw: { url },
+  };
 }
 
 /** Launch an installed app as a launcher-addressable singleton. */

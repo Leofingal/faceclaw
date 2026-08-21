@@ -10,6 +10,11 @@
  * from a fake per-app origin plus document-start injection of the
  * flutter_inappwebview bridge shim) and so the page keeps running JS while the
  * host app is backgrounded (see FaceclawEvenHubWebView / the host).
+ *
+ * A session with a remoteUrl (the Developer app's "Load app from URL") skips
+ * the offline serving entirely and loads that URL from the network; the shim
+ * is registered as a document-start script instead of being spliced into the
+ * served HTML.
  */
 import { Application, Utils } from "@nativescript/core";
 import { EVENHUB_BRIDGE_INJECT_SCRIPT, buildFaceclawExtensionsScript, type EvenHubSession } from "./session";
@@ -31,6 +36,15 @@ export type EvenHubWebView = {
 function originHost(session: EvenHubSession): string {
   const safe = session.manifest.packageId.toLowerCase().replace(/[^a-z0-9.-]/g, "-");
   return `${safe}.evenhub.invalid`;
+}
+
+/**
+ * The allowed-origin rule for a remote app's document-start script: the
+ * loaded URL's own origin, so the shim isn't handed to third-party frames.
+ */
+function originRule(url: string): string {
+  const match = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return match ? match[1]! : "*";
 }
 
 /**
@@ -56,12 +70,26 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     },
   });
 
-  const host = originHost(session);
+  const remoteUrl = session.remoteUrl;
+  // Remote apps load from their own server, so nothing is intercepted and the
+  // fake per-app origin is unused.
+  const host = remoteUrl ? "" : originHost(session);
   // Stock bridge shim first, then the Faceclaw extensions global (both at
   // document-start, before any app JS).
   const injectScript = EVENHUB_BRIDGE_INJECT_SCRIPT + buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`);
+  const documentStartInstalled = remoteUrl
+    ? com.faceclaw.app.FaceclawEvenHubDocumentStart.install(webView, injectScript, originRule(remoteUrl)) === true
+    : false;
   webView.setWebViewClient(
-    new com.faceclaw.app.FaceclawEvenHubWebViewClient(session.distDir, host, injectScript, listener),
+    new com.faceclaw.app.FaceclawEvenHubWebViewClient(
+      session.distDir,
+      host,
+      injectScript,
+      // onPageStarted injection is the fallback when the document-start API
+      // is unavailable; packaged apps get the shim spliced into their HTML.
+      !!remoteUrl && !documentStartInstalled,
+      listener,
+    ),
   );
   webView.addJavascriptInterface(new com.faceclaw.app.FaceclawEvenHubJsBridge(listener), "__faceclawEvenHub");
 
@@ -79,7 +107,7 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
 
   const nativeHost = com.faceclaw.app.FaceclawEvenHubWebViewHost.getInstance();
   nativeHost.attach(activity, webView);
-  webView.loadUrl(`https://${host}/${session.manifest.entrypoint}`);
+  webView.loadUrl(remoteUrl || `https://${host}/${session.manifest.entrypoint}`);
 
   return {
     native: webView,

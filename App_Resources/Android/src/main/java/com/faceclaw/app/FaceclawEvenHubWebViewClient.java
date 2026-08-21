@@ -28,6 +28,12 @@ import java.util.Locale;
  * shouldInterceptRequest runs on a WebView-internal thread; it only touches
  * files, never the NativeScript runtime. Requests to other hosts fall
  * through to the network (the manifest whitelist is not yet enforced).
+ *
+ * A developer-loaded app ("Load app from URL") has no local root: host is
+ * empty, nothing is intercepted, and the page loads normally from its server.
+ * The shim is registered as a document-start script instead
+ * (FaceclawEvenHubDocumentStart); injectOnPageStarted is the fallback for
+ * WebView versions that lack that API.
  */
 public class FaceclawEvenHubWebViewClient extends WebViewClient {
     private static final String TAG = "FaceclawEvenHub";
@@ -35,19 +41,28 @@ public class FaceclawEvenHubWebViewClient extends WebViewClient {
     private final String rootDir;
     private final String host;
     private final String injectScript;
+    private final boolean injectOnPageStarted;
     private final FaceclawEvenHubListener listener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public FaceclawEvenHubWebViewClient(
-            String rootDir, String host, String injectScript, FaceclawEvenHubListener listener) {
+            String rootDir,
+            String host,
+            String injectScript,
+            boolean injectOnPageStarted,
+            FaceclawEvenHubListener listener) {
         this.rootDir = rootDir;
         this.host = host;
         this.injectScript = injectScript;
+        this.injectOnPageStarted = injectOnPageStarted;
         this.listener = listener;
     }
 
     @Override
     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+        if (host == null || host.isEmpty()) {
+            return null; // Remote app: everything comes from the network.
+        }
         Uri url = request.getUrl();
         if (url == null || !host.equals(url.getHost())) {
             return null; // External hosts: normal network handling.
@@ -77,6 +92,16 @@ public class FaceclawEvenHubWebViewClient extends WebViewClient {
                     "text/plain", "utf-8",
                     new ByteArrayInputStream("error".getBytes(StandardCharsets.UTF_8)));
         }
+    }
+
+    @Override
+    public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+        super.onPageStarted(view, url, favicon);
+        if (!injectOnPageStarted) return;
+        // Best-effort: the document has committed but the parser has not run
+        // the page's own scripts yet, so this usually lands first. Only used
+        // when document-start scripts are unavailable.
+        view.evaluateJavascript(injectScript, null);
     }
 
     @Override

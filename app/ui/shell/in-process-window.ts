@@ -37,6 +37,12 @@ export type InProcessWindowOptions = {
   menuItems?: () => MenuItem[];
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
+  /**
+   * Accept text aimed at this window (voice input). Supply it for apps with a
+   * layer that takes dictation; leaving it out is what tells the shell not to
+   * offer "Type Into App" for this window.
+   */
+  receiveTextInput?: (text: string) => void;
   baseLayer: Layer;
   submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
@@ -189,6 +195,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       await render(frameId);
     },
     requestRender,
+    receiveTextInput: options.receiveTextInput,
     setForeground: (foreground) => {
       options.setSurfaceVisible(foreground);
     },
