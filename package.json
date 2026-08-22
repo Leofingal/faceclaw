@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "private": false,
   "scripts": {
-    "build": "nativescript build android"
+    "build": "nativescript build android",
+    "clean": "rm -rf platforms"
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
