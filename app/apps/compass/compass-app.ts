@@ -58,11 +58,33 @@ const INTERCARDINAL_TIP = 0.54;
 const POINT_BASE_RADIUS = 0.17;
 /** Half-angle of a point's base. 22.5° makes neighbouring bases just meet. */
 const POINT_BASE_HALF_ANGLE = 22.5;
+/**
+ * A polar grid lying in the same plane as the disc, to give it somewhere to
+ * sit and to fill the empty flanks either side of it. Rings are multiples of
+ * the disc's radius; spokes are offset by half a step so none runs up the
+ * middle into the heading tick.
+ */
+const PLANE_RINGS = [1.35, 1.8, 2.5, 3.6, 5.6];
+const PLANE_SPOKE_STEP = 30;
+/** Grid brightness at the disc's rim, and how fast it falls off with distance. */
+const PLANE_NEAR_VALUE = 78;
+const PLANE_FALLOFF = 0.55;
+/** Dimmer than this is left unpainted, so the grid ends by vanishing. */
+const PLANE_CUTOFF = 22;
+/** Height over which the grid fades out as it approaches the readout. */
+const PLANE_FADE_SPAN = 45;
+
 /** Size of the fixed tick that marks the direction the wearer is facing. */
 const TICK_HEIGHT = 7;
 const TICK_HALF_WIDTH = 4;
 /** Depth of the disc's side wall, as a fraction of the ring's radius. */
 const DISC_DEPTH = 0.1;
+/**
+ * Rim angle at which the silhouette turns vertical. Between this and its
+ * mirror the wall faces the wearer; outside it the rim curves back away, so a
+ * wall drawn there would hook inward instead of ending on the vertical edge.
+ */
+const WALL_START_ANGLE = (Math.acos(-TILT_PERSPECTIVE) * 180) / Math.PI;
 /** Side-wall shading, from the edges of the silhouette to the nearest point. */
 const WALL_DARK = 20;
 const WALL_LIT = 62;
@@ -175,6 +197,7 @@ class CompassLayer implements Layer {
       y += smallStep;
     }
 
+    drawPlaneGrid(image, cx, cy, radius, y + 6);
     drawCompassRose(image, cx, cy, radius, heading);
     return image;
   }
@@ -293,29 +316,81 @@ function drawRosePoint(
 }
 
 /**
- * The side wall below the near half of the rim, which turns the tilted disc
- * into a shallow cylinder. Only the near half is drawn — on the far half the
- * wall is hidden behind the disc's own face — and it is shaded from dark at
- * the silhouette's edges to lit at the point nearest the wearer.
+ * The side wall below the wearer-facing arc of the rim, which turns the tilted
+ * disc into a shallow cylinder. The arc runs between the two points where the
+ * silhouette turns vertical, so the wall ends flush with that vertical edge,
+ * and it is shaded from dark there to lit where it faces the wearer head-on.
  */
 function drawDiscWall(image: GrayImage, cx: number, cy: number, radius: number, fade: number): void {
   const depth = discDepth(radius);
   const segments = 48;
-  let previous = projectRose(cx, cy, radius, 1, 90);
+  const sweep = 360 - WALL_START_ANGLE * 2;
+  const rimValue = 105 * fade;
+  let previous = projectRose(cx, cy, radius, 1, WALL_START_ANGLE);
+  image.drawLine(previous.x, previous.y, previous.x, previous.y + depth, rimValue);
   for (let i = 1; i <= segments; i++) {
-    const angle = 90 + (i * 180) / segments;
+    const angle = WALL_START_ANGLE + (i * sweep) / segments;
     const point = projectRose(cx, cy, radius, 1, angle);
     // Quads rather than per-column lines, so no gap opens up where the rim
     // runs nearly horizontal across the bottom of the oval.
-    // 1 where the wall faces the wearer head-on, 0 at the silhouette's edges.
-    const facing = -Math.cos((angle * Math.PI) / 180);
-    const value = (WALL_DARK + (WALL_LIT - WALL_DARK) * facing) * fade;
+    const value = (WALL_DARK + (WALL_LIT - WALL_DARK) * wallFacing(angle)) * fade;
     const top = { x: previous.x, y: previous.y };
     const next = { x: point.x, y: point.y };
     fillTriangle(image, top, next, { x: next.x, y: next.y + depth }, value);
     fillTriangle(image, top, { x: top.x, y: top.y + depth }, { x: next.x, y: next.y + depth }, value);
-    image.drawLine(top.x, top.y + depth, next.x, next.y + depth, 105 * fade);
+    image.drawLine(top.x, top.y + depth, next.x, next.y + depth, rimValue);
     previous = point;
+  }
+  image.drawLine(previous.x, previous.y, previous.x, previous.y + depth, rimValue);
+}
+
+/** 1 where the wall faces the wearer head-on, 0 at the silhouette's edges. */
+function wallFacing(angle: number): number {
+  const towardWearer = -Math.cos((angle * Math.PI) / 180);
+  return (towardWearer - TILT_PERSPECTIVE) / (1 - TILT_PERSPECTIVE);
+}
+
+/**
+ * The grid the disc sits on, drawn before the disc so the disc occludes it.
+ * Brightness falls off with distance and fades to nothing as the plane climbs
+ * towards `clipY`, so the grid dissolves into the black under the readout
+ * rather than stopping at a hard edge.
+ */
+function drawPlaneGrid(image: GrayImage, cx: number, cy: number, radius: number, clipY: number): void {
+  const shade = (point: Point, ringRadius: number): number => {
+    if (point.y > image.height || Math.abs(point.x - cx) > image.width) return 0;
+    const fade = Math.max(0, Math.min(1, (point.y - clipY) / PLANE_FADE_SPAN));
+    const value = (PLANE_NEAR_VALUE / (1 + PLANE_FALLOFF * (ringRadius - 1))) * fade;
+    return value >= PLANE_CUTOFF ? value : 0;
+  };
+  const trace = (
+    steps: number,
+    at: (step: number) => { point: Point; ringRadius: number },
+  ): void => {
+    let previous: Point | null = null;
+    let previousValue = 0;
+    for (let i = 0; i <= steps; i++) {
+      const { point, ringRadius } = at(i);
+      const value = shade(point, ringRadius);
+      if (previous !== null && previousValue > 0 && value > 0) {
+        image.drawLine(previous.x, previous.y, point.x, point.y, (previousValue + value) / 2);
+      }
+      previous = point;
+      previousValue = value;
+    }
+  };
+
+  for (const ringRadius of PLANE_RINGS) {
+    trace(96, (step) => ({ point: projectRose(cx, cy, radius, ringRadius, (step * 360) / 96), ringRadius }));
+  }
+  // Spokes run from just outside the disc to the outermost ring, so the grid
+  // closes on itself instead of trailing off into loose ends.
+  const outer = PLANE_RINGS[PLANE_RINGS.length - 1]!;
+  for (let angle = PLANE_SPOKE_STEP / 2; angle < 360; angle += PLANE_SPOKE_STEP) {
+    trace(24, (step) => {
+      const ringRadius = 1.05 + (step * (outer - 1.05)) / 24;
+      return { point: projectRose(cx, cy, radius, ringRadius, angle), ringRadius };
+    });
   }
 }
 
