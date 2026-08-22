@@ -11,6 +11,7 @@ import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
@@ -217,6 +218,11 @@ class DashboardController {
   // the boot-time registry (just the launcher) never clobbers the saved list.
   private openAppsRestored = false;
   private suppressOpenAppsPersist = false;
+  // connect() is a long sequence of awaits against this.communicator; the
+  // incompatible-firmware disconnect must not tear that communicator down
+  // underneath it, so it waits for this to clear.
+  private connectRunning = false;
+  private incompatibleDisconnectPending = false;
 
   constructor() {
     const sharedActions = {
@@ -823,6 +829,8 @@ class DashboardController {
 
   async connect(): Promise<void> {
     if (this.phase !== "disconnected") return;
+    // Connecting is the explicit way out of the manual-disconnected state.
+    resumeAutoReconnect();
 
     const addresses = loadDeviceAddresses();
     if (!addresses.right || !addresses.left) {
@@ -853,6 +861,7 @@ class DashboardController {
     this.wearNotifySupported = false;
     this.lockSurfaceConfigured = false;
     this.evenHubResumePromise = null;
+    this.connectRunning = true;
 
     try {
       await ensureBlePermissions();
@@ -993,6 +1002,9 @@ class DashboardController {
           }
           this.emit();
         }
+        if (warning) {
+          this.scheduleIncompatibleFirmwareDisconnect();
+        }
       });
       // The Music and Nightscout apps subscribe to their bridges directly and
       // repaint their own windows, so bridge updates need no controller action.
@@ -1091,10 +1103,58 @@ class DashboardController {
       this.setStatus(`Failed: ${message}`);
       this.appendLog(`error: ${message}`);
       throw error;
+    } finally {
+      this.connectRunning = false;
     }
   }
 
-  async disconnect(): Promise<void> {
+  /**
+   * Incompatible firmware means every message Faceclaw sends is one the
+   * glasses may misinterpret, and a live session fights the flash flow's own
+   * connection. Drop the connection (without the CFW-directed cleanup
+   * messages) and hold in the manual-disconnected state until the user
+   * connects explicitly or installs the custom firmware.
+   */
+  private scheduleIncompatibleFirmwareDisconnect(): void {
+    if (this.incompatibleDisconnectPending) return;
+    this.incompatibleDisconnectPending = true;
+    const attempt = () => {
+      // Firmware info can arrive while connect() is still mid-flight; let it
+      // finish so the teardown doesn't race its surface setup.
+      if (this.connectRunning) {
+        setTimeout(attempt, 200);
+        return;
+      }
+      this.incompatibleDisconnectPending = false;
+      if (this.phase === "disconnected" || this.phase === "disconnecting") {
+        // The session ended some other way; still stop auto-reconnect from
+        // re-dialing glasses we know can't run Faceclaw.
+        suppressAutoReconnect();
+        return;
+      }
+      this.appendLog(
+        "Disconnecting: the glasses firmware is incompatible. Auto-reconnect is disabled until you connect manually or install the custom firmware.",
+      );
+      void this.disconnect({ skipFirmwareCleanup: true })
+        .then(() => this.setStatus("Disconnected (incompatible firmware)."))
+        .catch((error) => {
+          this.appendLog(`incompatible-firmware disconnect failed: ${this.formatError(error)}`);
+        });
+    };
+    setTimeout(attempt, 0);
+  }
+
+  /**
+   * Tear down the connection and enter the manual-disconnected state: every
+   * caller is deliberate (the phone/glasses Disconnect actions, entering the
+   * flash flow, an incompatible-firmware bailout), so auto-reconnect stays
+   * off until an explicit connect or a successful firmware install.
+   *
+   * skipFirmwareCleanup: don't send the CFW cleanup/shutdown or wake-lease
+   * messages — used when the firmware is incompatible and would misread them.
+   */
+  async disconnect(options?: { skipFirmwareCleanup?: boolean }): Promise<void> {
+    suppressAutoReconnect();
     if (this.phase === "disconnected" || this.phase === "disconnecting") return;
 
     this.setPhase("disconnecting");
@@ -1144,12 +1204,15 @@ class DashboardController {
     }
 
     try {
-      const leaseReleased = await communicator?.setFaceclawWakeLeaseEnabled(false).catch((error) => {
-        this.appendLog(`wake takeover lease release failed: ${this.formatError(error)}`);
-        return false;
-      });
-      if (leaseReleased === true) {
-        this.faceclawWakeLeaseState = false;
+      const skipFirmwareCleanup = options?.skipFirmwareCleanup === true;
+      if (!skipFirmwareCleanup) {
+        const leaseReleased = await communicator?.setFaceclawWakeLeaseEnabled(false).catch((error) => {
+          this.appendLog(`wake takeover lease release failed: ${this.formatError(error)}`);
+          return false;
+        });
+        if (leaseReleased === true) {
+          this.faceclawWakeLeaseState = false;
+        }
       }
 
       // Quiesce every producer that can enqueue a glasses command before the
@@ -1159,13 +1222,15 @@ class DashboardController {
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
 
-      const cleanupAcked = await communicator?.sendCfwCleanup().catch((error) => {
-        this.appendLog(`CFW cleanup failed: ${this.formatError(error)}`);
-        return false;
-      });
+      const cleanupAcked = skipFirmwareCleanup
+        ? false
+        : await communicator?.sendCfwCleanup().catch((error) => {
+            this.appendLog(`CFW cleanup failed: ${this.formatError(error)}`);
+            return false;
+          });
       if (cleanupAcked === true) {
         this.appendLog("CFW cleanup completed.");
-      } else if (communicator) {
+      } else if (communicator && !skipFirmwareCleanup) {
         // Older CFWs do not advertise cleanup11. Preserve their established
         // teardown behavior; close() will also send the legacy FB lease release.
         const shutdownAcked = await communicator.sendShutdown(0).catch((error) => {

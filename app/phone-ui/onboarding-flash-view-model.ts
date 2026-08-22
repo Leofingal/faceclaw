@@ -15,6 +15,7 @@ import {
 import { buildAddressSet, DeviceDiscoveryBridge } from "../native/device-discovery";
 import { FirmwareFlasher, FlashProgress, FlashState } from "../native/firmware-flasher";
 import { FlashPromptCommunicator, FlashPromptState } from "../native/flash-prompt-communicator";
+import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-policy";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 
 type FlashPhase = "intro" | "prompt" | "building" | "ready" | "flashing" | "flashed" | "error";
@@ -44,6 +45,10 @@ export class OnboardingFlashViewModel extends Observable {
 
   constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean }) {
     super();
+    // The flash flow needs the glasses to itself: from here on the main
+    // page must not auto-reconnect, until an install succeeds (below) or
+    // the user connects explicitly.
+    suppressAutoReconnect();
     this.mode = options?.mode ?? "install";
     this.fromOnboarding = options?.fromOnboarding ?? true;
     this._headline = this.mode === "uninstall" ? "Uninstall Custom Firmware" : "Flash Custom Firmware";
@@ -431,6 +436,13 @@ export class OnboardingFlashViewModel extends Observable {
     this.disposeFlasher();
     this.busy = false;
     if (success) {
+      if (this.mode === "install") {
+        // A successful install ends the manual-disconnected state: the main
+        // page may auto-connect to the freshly flashed glasses. (After an
+        // uninstall the glasses run stock firmware, which Faceclaw would
+        // immediately flag as incompatible, so stay manually disconnected.)
+        resumeAutoReconnect();
+      }
       this.progress = 100;
       this.setPhase("flashed");
       this.headline = "All Done";

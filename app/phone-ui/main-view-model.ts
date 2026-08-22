@@ -1,6 +1,7 @@
 import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
 import { dashboardController } from "../g2/dashboard-controller";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
+import { isAutoReconnectSuppressed } from "../g2/reconnect-policy";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
@@ -487,11 +488,14 @@ export class MainViewModel extends Observable {
 
   /**
    * Try to connect automatically on reaching the main page. No-op if already
-   * connecting/connected, or if no glasses are configured (e.g. preview-only
-   * users, who have nothing to connect to).
+   * connecting/connected, if the app is in the manual-disconnected state
+   * (the user picked Disconnect, the flash flow owns the glasses, or the
+   * firmware was found incompatible), or if no glasses are configured
+   * (e.g. preview-only users, who have nothing to connect to).
    */
   async autoConnect(): Promise<void> {
     if (this.phase !== "disconnected") return;
+    if (isAutoReconnectSuppressed()) return;
     const addresses = loadDeviceAddresses();
     if (!isValidMacAddress(addresses.right) || !isValidMacAddress(addresses.left)) return;
     try {
