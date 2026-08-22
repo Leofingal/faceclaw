@@ -1,25 +1,30 @@
-import { Application } from "@nativescript/core";
+import { Application, Utils } from "@nativescript/core";
 
 declare const android: any;
+declare const com: any;
 declare const global: any;
 
 /**
- * QR scanning by delegating to whatever scanner app the phone has installed,
- * via the de-facto-standard ZXing "SCAN" intent (Barcode Scanner, Binary Eye,
- * QR & Barcode Scanner, and others register for it). Faceclaw ships no decoder
- * and needs no camera permission of its own: the scanner app owns the camera
- * and hands back the decoded text.
+ * QR scanning for the Developer app's "Load app from QR code".
  *
- * The cost is that scanning only works if such an app is installed;
- * isQrScannerAvailable reports that up front so the caller can say so instead
- * of launching into nothing. (resolveActivity can see other apps only because
- * the manifest already holds QUERY_ALL_PACKAGES for notification icons;
- * without it Android 11+ would need a <queries> entry for the action.)
+ * Primary path is Play Services' ML Kit code scanner
+ * (FaceclawQrScanner): the scanner UI and the camera live inside Play
+ * Services, so Faceclaw declares no camera permission and needs no other app
+ * installed. That last part is why it is the primary path — the ZXing "SCAN"
+ * intent, which is the usual delegate-to-a-scanner-app trick, resolves to
+ * nothing on a stock phone because no preinstalled app registers for it.
+ *
+ * The intent is kept as a fallback for a phone without Play Services, where
+ * the user has presumably installed a scanner app of their own.
  */
 
 const SCAN_ACTION = "com.google.zxing.client.android.SCAN";
 // Arbitrary, only has to be distinct from other startActivityForResult callers.
 const SCAN_REQUEST_CODE = 0x51d0;
+
+function currentActivity(): any {
+  return Application.android?.foregroundActivity ?? Application.android?.startActivity ?? null;
+}
 
 function buildScanIntent(): any {
   const intent = new android.content.Intent(SCAN_ACTION);
@@ -29,10 +34,21 @@ function buildScanIntent(): any {
   return intent;
 }
 
-/** Whether any installed app answers the scan intent. */
-export function isQrScannerAvailable(): boolean {
-  if (!global.isAndroid) return false;
-  const activity = Application.android?.foregroundActivity ?? Application.android?.startActivity;
+/** Whether the Play Services scanner is usable on this phone. */
+function isMlKitScannerAvailable(): boolean {
+  const context = Utils.android.getApplicationContext();
+  if (!context) return false;
+  try {
+    return com.faceclaw.app.FaceclawQrScanner.isAvailable(context) === true;
+  } catch (error) {
+    console.warn(`qr: ML Kit availability check failed: ${error}`);
+    return false;
+  }
+}
+
+/** Whether any installed app answers the ZXing scan intent. */
+function isScanIntentAvailable(): boolean {
+  const activity = currentActivity();
   if (!activity) return false;
   try {
     return buildScanIntent().resolveActivity(activity.getPackageManager()) !== null;
@@ -41,19 +57,55 @@ export function isQrScannerAvailable(): boolean {
   }
 }
 
+/** Whether scanning can be attempted at all, by either route. */
+export function isQrScannerAvailable(): boolean {
+  if (!global.isAndroid) return false;
+  return isMlKitScannerAvailable() || isScanIntentAvailable();
+}
+
 /**
- * Launch the scanner and resolve with the decoded text, or null if the user
- * backed out. Rejects when no scanner app is installed or the activity can't
- * be reached.
+ * Open a scanner and resolve with the decoded text, or null if the user backed
+ * out. Rejects when no scanner is reachable or the scan itself fails.
  */
 export function scanQrCode(): Promise<string | null> {
   if (!global.isAndroid) return Promise.reject(new Error("QR scanning needs Android."));
-  const activity = Application.android?.foregroundActivity ?? Application.android?.startActivity;
+  const activity = currentActivity();
   if (!activity) return Promise.reject(new Error("No foreground activity to scan from."));
-  const intent = buildScanIntent();
-  if (intent.resolveActivity(activity.getPackageManager()) === null) {
-    return Promise.reject(new Error("No QR scanner app installed."));
-  }
+  if (isMlKitScannerAvailable()) return scanWithMlKit(activity);
+  if (isScanIntentAvailable()) return scanWithIntent(activity);
+  return Promise.reject(new Error("No QR scanner available (needs Play Services or a scanner app)."));
+}
+
+function scanWithMlKit(activity: any): Promise<string | null> {
+  return new Promise<string | null>((resolve, reject) => {
+    let settled = false;
+    const listener = new com.faceclaw.app.FaceclawQrScannerListener({
+      onResult: (text: string) => {
+        if (settled) return;
+        settled = true;
+        resolve(String(text));
+      },
+      onCancelled: () => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      },
+      onError: (message: string) => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(String(message)));
+      },
+    });
+    try {
+      com.faceclaw.app.FaceclawQrScanner.scan(activity, listener);
+    } catch (error) {
+      settled = true;
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+function scanWithIntent(activity: any): Promise<string | null> {
   return new Promise<string | null>((resolve, reject) => {
     const onResult = (args: { requestCode: number; resultCode: number; intent: any }) => {
       if (args.requestCode !== SCAN_REQUEST_CODE) return;
@@ -67,7 +119,7 @@ export function scanQrCode(): Promise<string | null> {
     };
     Application.android.on(Application.android.activityResultEvent, onResult);
     try {
-      activity.startActivityForResult(intent, SCAN_REQUEST_CODE);
+      activity.startActivityForResult(buildScanIntent(), SCAN_REQUEST_CODE);
     } catch (error) {
       Application.android.off(Application.android.activityResultEvent, onResult);
       reject(error instanceof Error ? error : new Error(String(error)));

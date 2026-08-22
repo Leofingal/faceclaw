@@ -127,7 +127,7 @@ export class LoadAppFromQrLayer implements Layer {
   /** Launches the scanner; call right after pushing the layer. */
   open(ctx: LayerContext): void {
     if (!isQrScannerAvailable()) {
-      this.status = "No QR scanner app is installed on the phone.";
+      this.status = "No QR scanner on this phone (needs Play Services or a scanner app).";
       ctx.actions.requestRender();
       return;
     }

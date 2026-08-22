@@ -8,6 +8,10 @@ dependencies {
   // WebViewCompat.addDocumentStartJavaScript, for injecting the EvenHub bridge
   // shim into remotely hosted apps (developer "Load app from URL").
   implementation 'androidx.webkit:webkit:1.12.1'
+  // Play Services' ML Kit code scanner, for the developer "Load app from QR
+  // code" entry. Scanner UI and camera live in Play Services, so Faceclaw
+  // needs no camera permission and no third-party scanner app.
+  implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"

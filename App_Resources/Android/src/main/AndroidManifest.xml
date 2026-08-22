@@ -55,6 +55,13 @@
 		android:usesCleartextTraffic="true"
 		android:hardwareAccelerated="true">
 
+		<!-- Ask Play Services to fetch the ML Kit barcode scanner module at
+		     install time, so the Developer app's "Load app from QR code" does
+		     not have to download it on first use. -->
+		<meta-data
+			android:name="com.google.mlkit.vision.DEPENDENCIES"
+			android:value="barcode_ui" />
+
 		<!-- Read-only content URIs for cached documents handed to system viewers. -->
 		<provider
 			android:name="androidx.core.content.FileProvider"
