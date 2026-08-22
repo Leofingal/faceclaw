@@ -3,7 +3,6 @@ package com.faceclaw.app;
 public class MessageBuilder {
     private static final int ACK_TIMEOUT_MS = 3_500;
     private static final int HEARTBEAT_TIMEOUT_MS = 1_500;
-    private static final int WARMUP_FRAGMENT_TIMEOUT_MS = 3_000;
 
     private BleMagicPool magicPool;
 
@@ -36,21 +35,6 @@ public class MessageBuilder {
             ACK_TIMEOUT_MS,
             -1,
             false
-        );
-    }
-
-    public OutboundMessage imageWarmupFragment(BleProtocol.ImageTileOptions tile, int sessionId, BleProtocol.ImageFragment fragment, byte[] bmp, boolean leftArm) {
-        int magic = magicPool.allocate();
-        return new OutboundMessage(
-            "warmup",
-            "warmup " + tile.name + "#" + fragment.index,
-            BleProtocol.SID_EVENHUB,
-            BleProtocol.FLAG_REQUEST,
-            magic,
-            BleProtocol.buildImageRawData(tile, sessionId, bmp.length, fragment, magic),
-            WARMUP_FRAGMENT_TIMEOUT_MS,
-            -1,
-            leftArm
         );
     }
 

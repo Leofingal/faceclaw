@@ -610,7 +610,7 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
-   * Resolve only once the recreated layout, image warmup, and retained frame
+   * Resolve only once the recreated layout and retained frame
    * are visible. CFW's deferred-dashboard READY is emitted from this barrier.
    */
   async awaitEvenHubSessionReady(timeoutMs: number): Promise<boolean> {

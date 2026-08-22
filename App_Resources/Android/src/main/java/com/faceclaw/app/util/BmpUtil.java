@@ -65,9 +65,9 @@ public class BmpUtil {
     /**
      * Wrap a packed 4bpp frame in BMP framing (BITMAPINFOHEADER + 16-entry gray
      * palette, bottom-up rows padded to a 4-byte stride). Only the full-frame
-     * image path still speaks BMP on the wire (warmup, and the fallback when
-     * mode-6 compression does not shrink the frame); everything else uses the
-     * headerless packed format directly.
+     * fallback used when mode-6 compression does not shrink the frame still
+     * speaks BMP on the wire; everything else uses the headerless packed format
+     * directly.
      */
     public static byte[] build4bppBmpFromPacked(byte[] packed, int width, int height) {
         int packedStride = (width + 1) >> 1;

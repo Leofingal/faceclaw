@@ -73,7 +73,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean ringNotificationsReady;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
-    private boolean warmedUp;
     private boolean shutdownRequested;
     // CFW firmware-debug-flags overlay (mode 7). Desired value pushed from TS; the
     // sub-op last sent this session (-1 = not yet), reset on (re)connect so the
@@ -307,7 +306,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public void setFirmwareDebugFlags(boolean enabled) {
         // Just record it; the drive loop emits the mode-7 control message when the
-        // session is warmed up and idle, and re-emits when this value changes.
+        // display path is ready and idle, and re-emits when this value changes.
         firmwareDebugFlagsEnabled = enabled;
     }
 
@@ -317,7 +316,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         int magic;
         synchronized (lock) {
-            if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated || !warmedUp) {
+            if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
                 logLine("skip G2 mic enable; EvenHub display path not ready");
                 return false;
             }
@@ -383,8 +382,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Wait until the recreated layout, warmup, and retained compositor frame
-     * have all landed. If this wake came from CFW's deferred double tap, READY
+     * Wait until the recreated layout and retained compositor frame have both
+     * landed. If this wake came from CFW's deferred double tap, READY
      * is then sent to both arms to cancel their stock-dashboard fallback.
      */
     public boolean awaitEvenHubSessionReady(int timeoutMs) {
@@ -397,7 +396,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     frameReady = !desiredFingerprint.isEmpty()
                         && desiredFingerprint.equals(displayedFingerprint);
                 }
-                if (!shutdownRequested && fixedLayoutCreated && warmedUp && frameReady) {
+                if (!shutdownRequested && fixedLayoutCreated && frameReady) {
                     if (faceclawWakePendingNonce >= 0) {
                         readyGeneration = enqueueFaceclawWakeControlLocked(
                             BleProtocol.FACECLAW_WAKE_OP_READY,
@@ -463,7 +462,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             compassEnabled = enable;
             compassControlLastSent = -1;
             clearMessagesOfKindLocked("compass-control");
-            if (running && sessionReady && !shutdownRequested && fixedLayoutCreated && warmedUp) {
+            if (running && sessionReady && !shutdownRequested && fixedLayoutCreated) {
                 enqueueCompassControlLocked(true, compassEnabled);
             } else {
                 logLine("defer compass " + (enable ? "enable" : "disable") + "; display path not ready");
@@ -742,8 +741,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
         FrameTimings.getInstance().spanEnd(frameId, "composite");
         // Pack the composited 8bpp buffer down to the headerless 4bpp frame
-        // format the wire planners consume; BMP framing is added later only on
-        // the rare paths that still need it (warmup, uncompressed fallback).
+        // format the wire planners consume; BMP framing is added later only for
+        // the uncompressed fallback.
         FrameTimings.getInstance().spanStart(frameId, "pack-4bpp");
         byte[] packed = BmpUtil.pack4bppFromGray8(composite.gray, composite.width, composite.height);
         FrameTimings.getInstance().spanEnd(frameId, "pack-4bpp");
@@ -835,7 +834,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 return true;
             }
             if (!cfwCleanupSupported || !running || !sessionReady
-                    || shutdownRequested || !fixedLayoutCreated || !warmedUp) {
+                    || shutdownRequested || !fixedLayoutCreated) {
                 logLine("skip CFW cleanup; mode 11 unavailable or image path not ready");
                 return false;
             }
@@ -986,7 +985,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             shutdownRequested = false;
             fixedLayoutCreated = false;
-            warmedUp = false;
             startupProbePending = false;
             audioCaptureActive = false;
             clearAllMessagesPreservingWakeLeaseLocked("EvenHub resume");
@@ -1021,7 +1019,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onAck = () -> {
                 lastShutdownAckMagic = message.magic;
                 fixedLayoutCreated = false;
-                warmedUp = false;
                 displayedFingerprint = "";
             };
             message.onTimeout = () -> {
@@ -1039,7 +1036,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             // this also covers a disable that was wiped by the queue flush above
             // or whose ack was lost, and the charging-mode/exit paths where the
             // Compass window never got a chance to release it.
-            if (compassMaybeOn && fixedLayoutCreated && warmedUp) {
+            if (compassMaybeOn && fixedLayoutCreated) {
                 enqueueCompassControlLocked(true, false);
             }
         }
@@ -1267,7 +1264,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                                 lastShutdownExitAtMs = SystemClock.elapsedRealtime();
                             }
                             fixedLayoutCreated = false;
-                            warmedUp = false;
                             displayedFingerprint = "";
                             clearAllMessagesLocked("firmware exit event");
                         }
@@ -1363,7 +1359,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!connected) {
                 sessionReady = false;
                 fixedLayoutCreated = false;
-                warmedUp = false;
                 startupProbePending = false;
                 chargingMode = false;
                 audioCaptureActive = false;
@@ -1398,7 +1393,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 // its page was intentionally suspended.
                 shutdownRequested = false;
                 fixedLayoutCreated = false;
-                warmedUp = false;
                 clearAllMessagesLocked("session ready");
                 displayedFingerprint = "";
                 lastAckAtMs = SystemClock.elapsedRealtime();
@@ -1692,19 +1686,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         // Prewrite outside the lock; the logical message remains pending until
                         // its final BLE frame is sent after the current protocol ACK.
                     }
-                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                        Log.i(TAG, "enqueueing warmup");
-                        enqueueWarmupLocked();
-                    }
-
-                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && (firmwareDebugFlagsEnabled ? 2 : 1) != firmwareDebugFlagsLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing firmware debug flags " + (firmwareDebugFlagsEnabled ? "show" : "hide"));
                         enqueueFirmwareDebugFlagsLocked();
                     }
 
-                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && (compassEnabled ? 1 : 0) != compassControlLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
@@ -1724,7 +1713,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // window unprotected and a heartbeat that came due there
                     // cost the frame a full ack round trip (measured 124ms on
                     // frame#232 of the 2026-08-20 02:27 capture).
-                    boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
+                    boolean imageWaiting = !shutdownRequested && fixedLayoutCreated
                             && !hasPendingOrInflightKindLocked("heartbeat")
                             && now >= imageRetryAfterMs
                             && (hasPendingImageLocked()
@@ -1737,7 +1726,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
@@ -1798,7 +1787,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean shouldBlockPrewriteForHeartbeatLocked(long now) {
-        if (shutdownRequested || !warmedUp || !fixedLayoutCreated) {
+        if (shutdownRequested || !fixedLayoutCreated) {
             return false;
         }
         return hasPendingOrInflightKindLocked("heartbeat")
@@ -1809,7 +1798,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (message == null || !message.isLeftArmMessage) {
             return false;
         }
-        if (!"image".equals(message.kind) && !"warmup".equals(message.kind)) {
+        if (!"image".equals(message.kind)) {
             return false;
         }
         return message.message.length + 2 > 232;
@@ -1817,7 +1806,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private boolean handleHeartbeat(boolean imageWaiting) {
         long now = SystemClock.elapsedRealtime();
-        boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
+        boolean heartbeatEligible = !shutdownRequested && fixedLayoutCreated;
         boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
         long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
         boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_READY_MS;
@@ -2092,8 +2081,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        // New session/container: re-assert the firmware-debug-flags overlay once it's
-        // warmed up again (the mode-7 send is gated on this having reset).
+        // New session/container: re-assert the firmware-debug-flags overlay once
+        // the layout is ready (the mode-7 send is gated on this having reset).
         firmwareDebugFlagsLastSent = -1;
         OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
         message.onAck = () -> {
@@ -2124,9 +2113,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             startupProbePending = false;
             clearMessagesOfKindLocked("create-layout");
             fixedLayoutCreated = true;
-            warmedUp = false;
             displayedFingerprint = "";
-            logLine("existing dashboard layout accepted text probe; image warmup still required");
+            logLine("existing dashboard layout accepted text probe");
         };
         message.onTimeout = () -> {
             startupProbePending = false;
@@ -2138,36 +2126,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         pendingMessages.addLast(message);
         startupProbePending = true;
         logLine("queue startup text probe");
-    }
-
-    private void enqueueWarmupLocked() {
-        BleProtocol.ImageTileOptions tile = DASHBOARD_TILE;
-        // Warm up the legacy container with a carrier-sized blank BMP. Real
-        // 640x480 frames use mode 6 and are intentionally independent of this
-        // geometry; a mismatched raw BMP would be rejected by the stock loader.
-        byte[] bmp = BmpUtil.build4bppBmpFromPacked(
-            new byte[((tile.width + 1) >> 1) * tile.height], tile.width, tile.height);
-        int sessionId = nextMapSessionId();
-        List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
-        for (BleProtocol.ImageFragment fragment : fragments) {
-            OutboundMessage message = messageBuilder.imageWarmupFragment(tile, sessionId, fragment, bmp, connectionOptions.sendImagesToLeft);
-            pendingMessages.addLast(message);
-            message.onAck = () -> {
-                // The first tile warmup primes the image path but does not reliably
-                // guarantee that the tile is now visible on-screen, so it must not
-                // update the displayed-tile cache used by image dedupe.
-                warmedUp = true;
-                // Warmup fragments are image messages on the wire, so they reset
-                // the firmware's heartbeat timer just like real image updates.
-                lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
-            };
-            message.onTimeout = () -> {
-                warmedUp = false;
-                clearMessagesOfKindLocked("warmup");
-                displayedFingerprint = "";
-            };
-        }
-        logLine("queue blank warmup");
     }
 
     /**
@@ -2519,7 +2477,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             chargingMode = true;
             clearAllMessagesLocked("glasses charging");
             fixedLayoutCreated = false;
-            warmedUp = false;
             startupProbePending = false;
             displayedFingerprint = "";
             finishDesiredFrameLocked("discarded: glasses charging");
@@ -2542,7 +2499,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * Record, into the frame that is waiting, why it did not go out on this
      * pass of the send loop. Without this the export shows a bare multi-second
      * jump between "image submitted as desired frame" and the first BLE
-     * packet, with no hint whether we were blocked on warmup, a heartbeat, the
+     * packet, with no hint whether we were blocked on a heartbeat, the
      * BLE window, or another message queued ahead. Deduped on (frame, reason),
      * so a frame stalled for seconds gets one line per state change rather
      * than one per loop pass.
@@ -2586,9 +2543,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!fixedLayoutCreated) {
             return "display layout not created yet";
         }
-        if (!warmedUp) {
-            return "waiting for the warmup frame";
-        }
         if (now < imageRetryAfterMs) {
             return "image retry backoff (" + (imageRetryAfterMs - now) + "ms left)";
         }
@@ -2624,7 +2578,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // round trip. Reported explicitly because it is otherwise invisible --
         // heartbeats belong to no frame.
         long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
-        if (warmedUp && fixedLayoutCreated && !shutdownRequested
+        if (fixedLayoutCreated && !shutdownRequested
                 && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_READY_MS) {
             return "heartbeat due (" + heartbeatElapsedMs + "ms since the last one acked)";
         }
@@ -2980,7 +2934,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeEmitEvenAppConflictLocked(reason);
             sessionReady = false;
             fixedLayoutCreated = false;
-            warmedUp = false;
             startupProbePending = false;
             shutdownRequested = false;
             chargingMode = false;
@@ -3004,7 +2957,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         sessionReady = false;
         shutdownRequested = false;
         fixedLayoutCreated = false;
-        warmedUp = false;
         chargingMode = false;
         rightConnected = false;
         leftConnected = false;
@@ -3022,7 +2974,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         audioPacketListener = null;
         compassControlLastSent = -1;
         // A dead transport orphans any glasses-side compass state; the fresh
-        // session re-asserts the desired state after warmup (lastSent = -1).
+        // session re-asserts the desired state once its layout is ready.
         compassMaybeOn = false;
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
