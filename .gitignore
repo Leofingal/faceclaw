@@ -3,6 +3,9 @@ hooks/
 node_modules/
 platforms/
 
+# Release APKs from scripts/release.sh
+dist/
+
 # Logs
 logs
 *.log
@@ -22,6 +25,7 @@ typings/
 .gradle-cursor
 App_Resources/Android/src/main/jniLibs/**/*.so
 App_Resources/Android/src/main/assets/faceclaw-voice-asr/
+old
 
 # Visual Studio Code
 .vscode/*
@@ -32,3 +36,7 @@ App_Resources/Android/src/main/assets/faceclaw-voice-asr/
 
 # pull_config.sh output: the phone's live settings, including API keys
 faceclaw_settings.xml
+
+# Developer configs
+build.sh
+build_and_run.sh

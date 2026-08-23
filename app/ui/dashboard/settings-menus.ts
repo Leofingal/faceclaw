@@ -12,6 +12,14 @@ import {
   onLocalModelStateChanged,
   startLocalModelDownload,
 } from "../../native/llama";
+import {
+  ASR_MODEL,
+  asrModelState,
+  cancelAsrModelDownload,
+  deleteAsrModel,
+  onAsrModelStateChanged,
+  startAsrModelDownload,
+} from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
@@ -87,6 +95,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        asrModelMenuItem(),
       ],
     },
     {
@@ -236,6 +245,75 @@ function localModelMenuItem(): MenuItem {
     },
     render: ({ image, x, y, width }) => {
       drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-phone model", localModelStatusText());
+    },
+  };
+}
+
+const ASR_MODEL_MB = `${Math.round(ASR_MODEL.totalBytes / 1e6)}MB`;
+
+let asrModelRenderUnsub: (() => void) | null = null;
+
+function watchAsrModelDownload(ctx: LayerContext): void {
+  asrModelRenderUnsub?.();
+  asrModelRenderUnsub = onAsrModelStateChanged((state) => {
+    ctx.actions.requestRender();
+    if (state.status !== "downloading") {
+      asrModelRenderUnsub?.();
+      asrModelRenderUnsub = null;
+    }
+  });
+}
+
+function asrModelStatusText(): string {
+  const state = asrModelState();
+  if (state.status === "ready") return "downloaded";
+  if (state.status === "downloading") {
+    const pct = state.totalBytes > 0 ? Math.floor((state.bytesDownloaded / state.totalBytes) * 100) : 0;
+    return `${pct}% of ${ASR_MODEL_MB}`;
+  }
+  return "not downloaded";
+}
+
+/** Download/cancel/delete management for the on-device transcription model. */
+function asrModelMenuItem(): MenuItem {
+  return {
+    label: "On-device voice model",
+    description:
+      `${ASR_MODEL.label} (${ASR_MODEL_MB} download). ` +
+      "Transcribes voice input on the phone itself, with no API key or cloud service. " +
+      "Required for the On-device transcription provider; the cloud providers work without it. " +
+      "An interrupted download resumes where it left off.",
+    onSelect: (ctx) => {
+      const state = asrModelState();
+      const action: MenuItem =
+        state.status === "downloading"
+          ? {
+              label: "Cancel download",
+              onSelect: (innerCtx) => {
+                cancelAsrModelDownload();
+                innerCtx.stack.pop();
+              },
+            }
+          : state.status === "ready"
+            ? {
+                label: "Delete model",
+                onSelect: (innerCtx) => {
+                  deleteAsrModel();
+                  innerCtx.stack.pop();
+                },
+              }
+            : {
+                label: `Download (${ASR_MODEL_MB})`,
+                onSelect: (innerCtx) => {
+                  startAsrModelDownload();
+                  watchAsrModelDownload(innerCtx);
+                  innerCtx.stack.pop();
+                },
+              };
+      openModalMenu(ctx, "On-device voice model", [action], 0);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-device voice model", asrModelStatusText());
     },
   };
 }

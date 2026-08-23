@@ -25,6 +25,9 @@ const MENU_LAYOUT = {
   showBorder: false,
   minHeight: 0,
   maxHeight: appViewportSize("min").height - 16,
+  // These menus are pages, not popups: "Debug tests" replaces the root menu
+  // visually instead of letting the taller root show through beneath it.
+  opaque: true,
 };
 
 /** A row that opens a nested page: the label plus a right-edge ">". */

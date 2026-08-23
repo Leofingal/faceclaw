@@ -116,7 +116,6 @@ export class AccelerometerDemoLayer implements Layer {
       image.drawText(small, 22, 82, "accelerometer at all — experimental.", 120);
     }
 
-    image.drawText(small, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

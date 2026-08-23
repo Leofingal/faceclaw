@@ -45,7 +45,6 @@ export type RawPcmListener = (pcm: Uint8Array) => void;
 
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
-  private readonly wakeWordListeners = new Set<(keyword: string) => void>();
   private readonly transcriptListeners = new Set<(event: VoiceTranscriptEvent) => void>();
   private readonly speechEndListeners = new Set<() => void>();
   private controller: any | null = null;
@@ -70,11 +69,6 @@ export class FaceclawVoiceControlBridge {
     this.statusListeners.add(listener);
     listener({ status: this.status });
     return () => this.statusListeners.delete(listener);
-  }
-
-  onWakeWord(listener: (keyword: string) => void): () => void {
-    this.wakeWordListeners.add(listener);
-    return () => this.wakeWordListeners.delete(listener);
   }
 
   onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
@@ -265,11 +259,6 @@ export class FaceclawVoiceControlBridge {
         // not surface on the glasses voice status.
         if (this.rawActive) return;
         this.setStatus(String(status));
-      },
-      onWakeWord: (keyword: string) => {
-        for (const listener of this.wakeWordListeners) {
-          listener(String(keyword));
-        }
       },
       onTranscript: (text: string, isFinal: boolean) => {
         this.emitTranscript(String(text), Boolean(isFinal));

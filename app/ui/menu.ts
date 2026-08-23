@@ -26,6 +26,12 @@ export type MenuLayout = {
   minHeight?: number;
   /** Height cap before the menu starts scrolling. Default: the full screen. */
   maxHeight?: number;
+  /**
+   * Paint as a standalone page: the layers below stay in the stack for back
+   * navigation but are not composited underneath. Default: false — the menu
+   * renders over whatever is below it (modal/window menus).
+   */
+  opaque?: boolean;
 };
 
 export type MenuItemRenderArgs = {
@@ -192,7 +198,8 @@ export class MenuLayer implements Layer {
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
     const rowHeight = listRowHeight(font);
-    const image = paintBelow();
+    const base = ctx.stack.getBaseSize();
+    const image = this.layout.opaque ? new GrayImage(base.width, base.height, 0) : paintBelow();
     const { x, y, width } = this.layout;
     const chromeTop = (this.title ? menuTitleHeight(font) : 0) + MENU_BODY_PADDING;
     const minHeight = this.layout.minHeight ?? DEFAULT_MENU_MIN_HEIGHT;
@@ -333,7 +340,7 @@ export class TextPageLayer implements Layer {
     private readonly body: string,
   ) {}
 
-  paint(ctx: LayerContext): GrayImage {
+  paint(_ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     image.drawText(font, 18, 14, this.title, 220);
