@@ -65,6 +65,11 @@ To install, run
    battery life similar to the stock Even app.
  * Connection management with auto-reconnect, and autodetection of conflict
    with the official Even Realities app
+ * Bluetooth pairing that scans for nearby glasses and identifies each pair
+   before connecting: model, frame shape, and colour decoded from the
+   advertised serial (with product photos), left and right arms matched to
+   each other by that serial, an estimated distance so the pair in your hand
+   sorts first, and the optional R1 ring
  * On-phone screen mirroring and simulated ring input
  * Dual-language NativeScript architecture with Java for the multithreaded
    Android API and bluetooth stack bits, Typescript for the bits you want to

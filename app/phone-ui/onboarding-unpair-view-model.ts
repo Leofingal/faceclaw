@@ -18,7 +18,7 @@ export class OnboardingUnpairViewModel extends Observable {
       return;
     }
     frame?.navigate({
-      moduleName: "phone-ui/config-page",
+      moduleName: "phone-ui/pairing-page",
       context: { onboarding: true },
       clearHistory: true,
     });
