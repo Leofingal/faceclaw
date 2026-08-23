@@ -21,5 +21,12 @@ export function navigatingTo(args: NavigatedData): void {
 export function navigatingFrom(args: NavigatedData): void {
   const page = args.object as Page;
   const model = page.bindingContext as PairingViewModel | undefined;
-  model?.stop();
+  // Backing out destroys the page; a forward navigation (manual entry) keeps
+  // it on the stack, so only pause the scan and keep the model's app-lifecycle
+  // hooks for the return trip.
+  if (args.isBackNavigation) {
+    model?.dispose();
+  } else {
+    model?.stop();
+  }
 }

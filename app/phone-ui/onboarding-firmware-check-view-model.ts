@@ -10,6 +10,7 @@ import {
 import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
+import { formatErrorMessage } from "../util/format-error";
 
 type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer" | "error";
 
@@ -299,7 +300,6 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }

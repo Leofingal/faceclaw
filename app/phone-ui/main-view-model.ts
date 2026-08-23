@@ -1,7 +1,8 @@
 import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
 import { dashboardController } from "../g2/dashboard-controller";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
-import { isAutoReconnectSuppressed } from "../g2/reconnect-policy";
+import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
+import { formatErrorMessage } from "../util/format-error";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
@@ -513,7 +514,10 @@ export class MainViewModel extends Observable {
   /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so
-   * drop the current link first; autoConnect picks it back up afterwards.
+   * drop the current link first. disconnect() enters the manual-disconnected
+   * state; pairing is a detour, not a Disconnect, so lift the suppression
+   * right away — nothing dials the glasses until the main page's autoConnect
+   * runs again on the way back.
    */
   async onPairGlassesTap(): Promise<void> {
     if (!this.canRun) return;
@@ -523,6 +527,7 @@ export class MainViewModel extends Observable {
       } catch {
         // proceed anyway; the pairing page reports what it hears
       }
+      resumeAutoReconnect();
     }
     Frame.topmost()?.navigate({ moduleName: "phone-ui/pairing-page", context: { onboarding: false } });
   }
@@ -632,9 +637,6 @@ export class MainViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    const sanitized = raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
-    if (sanitized.length <= 240) return sanitized;
-    return `${sanitized.slice(0, 237)}...`;
+    return formatErrorMessage(error, 240);
   }
 }

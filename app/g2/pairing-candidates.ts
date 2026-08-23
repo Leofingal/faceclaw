@@ -21,7 +21,7 @@ import {
   type ProximityEstimate,
   type ProximityZone,
 } from "./ble-proximity";
-import { classifyAdvertisement, type EvenAdvertisement, type RawAdvertisement } from "./even-advertisement";
+import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type RawAdvertisement } from "./even-advertisement";
 import { glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
 import {
   colorwayDisplayName,
@@ -29,6 +29,8 @@ import {
   evaluatePairSerials,
   GlassesHardwareIdentity,
   pairSerialWarning,
+  serialKey,
+  serialsMatch,
   type GlassesColorway,
 } from "./glasses-hardware-identity";
 
@@ -45,9 +47,14 @@ export type GlassesPairCandidate = {
   completeness: PairCompleteness;
   /** Strongest smoothed signal across the arms that have one. */
   rssi: number | null;
-  txPower: number | null;
   proximity: ProximityEstimate | null;
   lastSeenMs: number;
+  /**
+   * Set when this lone arm and a lone arm of the other side carry different
+   * serials — the mixed-pair situation the serial check exists to name.
+   * Grouping is by serial, so the mismatch can only show up across groups.
+   */
+  mismatchWarning: string | null;
 };
 
 export type RingCandidate = {
@@ -84,10 +91,24 @@ export class DiscoveryAggregator {
 
   /** Feed one raw advertisement. Returns the classified record, or null when ignored. */
   ingest(raw: RawAdvertisement): EvenAdvertisement | null {
-    const classified = classifyAdvertisement(raw);
+    let classified = classifyAdvertisement(raw);
     if (!classified) {
-      if (raw.name) this.rejectedNames.add(raw.name);
-      return null;
+      // Android sometimes splits an advertisement across reports — an ADV
+      // report without the scan response's name, or the reverse. If earlier
+      // traffic from this address already supplied the missing half, retry
+      // with it filled in rather than dropping the arm.
+      const remembered = this.byAddress.get(normalizeMacAddress(raw.address));
+      if (remembered) {
+        classified = classifyAdvertisement({
+          ...raw,
+          name: raw.name || remembered.name,
+          manufacturerData: raw.manufacturerData || remembered.manufacturerData,
+        });
+      }
+      if (!classified) {
+        if (raw.name) this.rejectedNames.add(raw.name);
+        return null;
+      }
     }
     const previous = this.byAddress.get(classified.address);
     let smoothedRssi: number | null = classified.rssi;
@@ -109,6 +130,19 @@ export class DiscoveryAggregator {
       seenAtMs: Math.max(classified.seenAtMs, previous?.seenAtMs ?? 0),
       smoothedRssi,
     };
+    if (previous && !classified.manufacturerData && previous.manufacturerData) {
+      // A record without manufacturer data (a bonded listing, or a split
+      // report) parses to "serial unknown" notes and a possibly stale cached
+      // name; those must not overwrite what a fuller advertisement already
+      // established, or the row shows a serial and claims it is unknown.
+      merged.note = previous.note;
+      merged.flag = previous.flag;
+      merged.embeddedMacMismatch = previous.embeddedMacMismatch;
+      merged.ringSerialSuffix = previous.ringSerialSuffix;
+      if (previous.name && (!classified.name || classified.source === "paired")) {
+        merged.name = previous.name;
+      }
+    }
     this.byAddress.set(merged.address, merged);
     return merged;
   }
@@ -144,7 +178,8 @@ export class DiscoveryAggregator {
     const groups = new Map<string, { left: (EvenAdvertisement & { smoothedRssi: number | null }) | null; right: (EvenAdvertisement & { smoothedRssi: number | null }) | null }>();
     for (const record of this.byAddress.values()) {
       if (record.role === "ring") continue;
-      const key = record.serial ? `serial:${record.serial}` : `arm:${record.address}`;
+      const canonical = serialKey(record.serial);
+      const key = canonical ? `serial:${canonical}` : `arm:${record.address}`;
       const group = groups.get(key) ?? { left: null, right: null };
       const slot = record.role === "left" ? "left" : "right";
       const incumbent = group[slot];
@@ -162,19 +197,30 @@ export class DiscoveryAggregator {
       const samples = [left, right].filter((arm): arm is NonNullable<typeof arm> => !!arm && arm.smoothedRssi != null);
       const strongest = samples.length ? samples.reduce((a, b) => (a.smoothedRssi! >= b.smoothedRssi! ? a : b)) : null;
       const rssi = strongest ? Math.round(strongest.smoothedRssi!) : null;
-      const txPower = strongest?.txPower ?? left?.txPower ?? right?.txPower ?? null;
       pairs.push({
-        id: serial ?? `arm:${any.address}`,
+        id: serialKey(serial) ?? `arm:${any.address}`,
         serial,
         identity: GlassesHardwareIdentity.decode(serial),
         left: left ? stripSmoothing(left) : null,
         right: right ? stripSmoothing(right) : null,
         completeness: left && right ? "complete" : left ? "left-only" : "right-only",
         rssi,
-        txPower,
-        proximity: estimateProximity(rssi, txPower, GLASSES_CALIBRATION),
+        proximity: estimateProximity(rssi, GLASSES_CALIBRATION),
         lastSeenMs: Math.max(left?.seenAtMs ?? 0, right?.seenAtMs ?? 0),
+        mismatchWarning: null,
       });
+    }
+    // Grouping on the serial means a group can never hold two different
+    // serials, so a mixed pair (left temple from A, right from B) surfaces as
+    // two lone arms, not as one mismatched row. With exactly one lone arm per
+    // side visible that IS the mixed-arms situation — name it on both rows so
+    // the wearer isn't left staring at two "waiting for the other" rows.
+    const loneLeft = pairs.filter((pair) => pair.completeness === "left-only" && pair.serial);
+    const loneRight = pairs.filter((pair) => pair.completeness === "right-only" && pair.serial);
+    if (loneLeft.length === 1 && loneRight.length === 1) {
+      const warning = pairSerialWarning(evaluatePairSerials(loneLeft[0]!.left!.serial, loneRight[0]!.right!.serial));
+      loneLeft[0]!.mismatchWarning = warning;
+      loneRight[0]!.mismatchWarning = warning;
     }
     return sortedByProximity(pairs, (pair) => pair.proximity, (pair) => pair.id);
   }
@@ -189,7 +235,7 @@ export class DiscoveryAggregator {
         id: record.address,
         advertisement: stripSmoothing(record),
         rssi,
-        proximity: estimateProximity(rssi, record.txPower, RING_CALIBRATION),
+        proximity: estimateProximity(rssi, RING_CALIBRATION),
         lastSeenMs: record.seenAtMs,
       });
     }
@@ -221,19 +267,11 @@ export function nearestCandidateId(candidates: ReadonlyArray<{ id: string; rssi:
 
 /**
  * The saved pair identity is stored as the serial, but historical values may
- * carry the `_L_1` arm suffix, so compare on the decoded serial when both
- * sides decode and fall back to a containment check when they do not.
+ * carry the `_L_1` arm suffix; `serialsMatch` compares on the decoded serial
+ * so the suffix or casing is not read as different hardware.
  */
 export function isPreviouslyPaired(name: string | null | undefined, pairedSerial: string | null | undefined): boolean {
-  if (!name || !pairedSerial) return false;
-  const saved = pairedSerial.trim();
-  if (!saved) return false;
-  const left = GlassesHardwareIdentity.decode(name);
-  const right = GlassesHardwareIdentity.decode(saved);
-  if (left && right) return left.serial === right.serial;
-  const a = name.toLowerCase();
-  const b = saved.toLowerCase();
-  return a.includes(b) || b.includes(a);
+  return serialsMatch(name, pairedSerial);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,9 +307,6 @@ export type PairingRowPresentation = {
   warning: string;
   /** Both arms present (or a ring), so tapping can save addresses. */
   canSelect: boolean;
-  leftAddress: string;
-  rightAddress: string;
-  ringAddress: string;
 };
 
 export type RowContext = {
@@ -282,6 +317,29 @@ export type RowContext = {
   /** Ring address saved before, if any. */
   pairedRingAddress?: string | null;
 };
+
+/** The presentation fields glasses and ring rows share, so badge and fallback rules cannot drift apart. */
+function presentationBase(
+  proximity: ProximityEstimate | null,
+  isNearest: boolean,
+  isPaired: boolean,
+  warnings: readonly string[],
+): Pick<PairingRowPresentation, "isNearest" | "isPreviouslyPaired" | "badge" | "proximitySummary" | "proximityGlyph" | "zone" | "warning"> {
+  return {
+    isNearest,
+    isPreviouslyPaired: isPaired,
+    badge: isPaired ? "Yours" : isNearest ? "Closest" : "",
+    proximitySummary: proximity ? proximitySummary(proximity) : "Signal unknown",
+    proximityGlyph: proximity ? zoneGlyph(proximity.zone) : "○○○○",
+    zone: proximity?.zone ?? null,
+    warning: warnings.join(" "),
+  };
+}
+
+function embeddedMacMismatchWarning(subject: string, ad: EvenAdvertisement | null): string | null {
+  if (!ad?.embeddedMacMismatch) return null;
+  return `${subject} advertised address ${ad.embeddedMac} differs from its radio address ${ad.address}.`;
+}
 
 export function glassesRow(pair: GlassesPairCandidate, context: RowContext = {}): PairingRowPresentation {
   const identity = pair.identity;
@@ -294,20 +352,17 @@ export function glassesRow(pair: GlassesPairCandidate, context: RowContext = {})
   const rightNote = pair.right?.note;
   if (leftNote) warnings.push(`Left arm: ${leftNote}.`);
   if (rightNote) warnings.push(`Right arm: ${rightNote}.`);
-  if (pair.left?.embeddedMacMismatch) {
-    warnings.push(`Left arm's advertised address ${pair.left.embeddedMac} differs from its radio address ${pair.left.address}.`);
-  }
-  if (pair.right?.embeddedMacMismatch) {
-    warnings.push(`Right arm's advertised address ${pair.right.embeddedMac} differs from its radio address ${pair.right.address}.`);
-  }
-  const verdict = evaluatePairSerials(pair.left?.serial, pair.right?.serial);
-  const mismatch = pairSerialWarning(verdict);
-  if (mismatch) warnings.push(mismatch);
+  const leftMacWarning = embeddedMacMismatchWarning("Left arm's", pair.left);
+  if (leftMacWarning) warnings.push(leftMacWarning);
+  const rightMacWarning = embeddedMacMismatchWarning("Right arm's", pair.right);
+  if (rightMacWarning) warnings.push(rightMacWarning);
+  if (pair.mismatchWarning) warnings.push(pair.mismatchWarning);
 
   let armsSummary: string;
   switch (pair.completeness) {
     case "complete":
-      armsSummary = verdict.kind === "matched" ? "Left + right arms found · serials match" : "Left + right arms found";
+      // Arms are grouped by serial, so a complete pair's serials match by construction.
+      armsSummary = "Left + right arms found · serials match";
       break;
     case "left-only":
       armsSummary = "Only the left arm has been seen — waiting for the right";
@@ -328,30 +383,20 @@ export function glassesRow(pair: GlassesPairCandidate, context: RowContext = {})
     swatchHex: identity?.colorway ? colorwaySwatchHex(identity.colorway) : null,
     imagePath,
     hasVariantImage: !!identity?.imageAssetName,
-    isNearest,
-    isPreviouslyPaired: isPreviouslyPairedRow,
-    badge: isPreviouslyPairedRow ? "Yours" : isNearest ? "Closest" : "",
-    proximitySummary: pair.proximity ? proximitySummary(pair.proximity) : "Signal unknown",
-    proximityGlyph: pair.proximity ? zoneGlyph(pair.proximity.zone) : "○○○○",
-    zone: pair.proximity?.zone ?? null,
+    ...presentationBase(pair.proximity, isNearest, isPreviouslyPairedRow, warnings),
     armsSummary,
-    warning: warnings.join(" "),
-    canSelect: pair.completeness === "complete" && verdict.kind !== "mismatched",
-    leftAddress: pair.left?.address ?? "",
-    rightAddress: pair.right?.address ?? "",
-    ringAddress: "",
+    canSelect: pair.completeness === "complete",
   };
 }
 
 export function ringRow(ring: RingCandidate, context: RowContext = {}): PairingRowPresentation {
   const ad = ring.advertisement;
-  const isPaired = !!context.pairedRingAddress && context.pairedRingAddress.toUpperCase() === ad.address;
+  const isPaired = !!context.pairedRingAddress && normalizeMacAddress(context.pairedRingAddress) === ad.address;
   const isNearest = !!context.nearestId && context.nearestId === ring.id;
   const warnings: string[] = [];
   if (ad.note) warnings.push(`${ad.note}.`);
-  if (ad.embeddedMacMismatch) {
-    warnings.push(`The ring's advertised address ${ad.embeddedMac} differs from its radio address ${ad.address}.`);
-  }
+  const macWarning = embeddedMacMismatchWarning("The ring's", ad);
+  if (macWarning) warnings.push(macWarning);
   return {
     id: ring.id,
     kind: "ring",
@@ -362,18 +407,9 @@ export function ringRow(ring: RingCandidate, context: RowContext = {}): PairingR
     swatchHex: null,
     imagePath: R1_IMAGE_PATH,
     hasVariantImage: true,
-    isNearest,
-    isPreviouslyPaired: isPaired,
-    badge: isPaired ? "Yours" : isNearest ? "Closest" : "",
-    proximitySummary: ring.proximity ? proximitySummary(ring.proximity) : "Signal unknown",
-    proximityGlyph: ring.proximity ? zoneGlyph(ring.proximity.zone) : "○○○○",
-    zone: ring.proximity?.zone ?? null,
+    ...presentationBase(ring.proximity, isNearest, isPaired, warnings),
     armsSummary: ad.bonded ? "Paired with this phone" : "Advertising",
-    warning: warnings.join(" "),
     canSelect: true,
-    leftAddress: "",
-    rightAddress: "",
-    ringAddress: ad.address,
   };
 }
 

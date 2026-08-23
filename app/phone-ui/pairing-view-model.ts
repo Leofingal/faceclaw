@@ -1,7 +1,8 @@
-import { EventData, Frame, Observable, View } from "@nativescript/core";
+import { Application, EventData, Frame, Observable, View } from "@nativescript/core";
 
 import { ensureBlePermissions } from "../g2/android-permissions";
 import { loadDeviceAddresses, loadPairedGlassesIdentity, saveDeviceAddresses, savePairedGlassesIdentity } from "../g2/device-addresses";
+import { formatErrorMessage } from "../util/format-error";
 import {
   colorwayLabel,
   DEFAULT_STALE_AFTER_MS,
@@ -71,9 +72,37 @@ export class PairingViewModel extends Observable {
     this.onboarding = options?.onboarding ?? false;
     this.previouslyPairedSerial = loadPairedGlassesIdentity()?.serial ?? null;
     this.previouslyPairedRing = loadDeviceAddresses().ring;
+    // A backgrounded phone (Home, screen lock, a call) must not keep the
+    // low-latency scan and the refresh timer burning; pick both back up when
+    // the app returns.
+    Application.on(Application.suspendEvent, this.onAppSuspend);
+    Application.on(Application.resumeEvent, this.onAppResume);
   }
 
   // --- lifecycle -------------------------------------------------------------
+
+  private resumeScanAfterSuspend = false;
+
+  private readonly onAppSuspend = (): void => {
+    if (this._scanning) {
+      this.resumeScanAfterSuspend = true;
+      this.stop();
+    }
+  };
+
+  private readonly onAppResume = (): void => {
+    if (this.resumeScanAfterSuspend) {
+      this.resumeScanAfterSuspend = false;
+      void this.start();
+    }
+  };
+
+  /** Final teardown when the page is left for good (not a detour to manual entry). */
+  dispose(): void {
+    this.stop();
+    Application.off(Application.suspendEvent, this.onAppSuspend);
+    Application.off(Application.resumeEvent, this.onAppResume);
+  }
 
   async start(): Promise<void> {
     if (this._scanning) return;
@@ -187,10 +216,6 @@ export class PairingViewModel extends Observable {
     return this._ringRows;
   }
 
-  get glassesSectionVisibility(): "visible" | "collapse" {
-    return "visible";
-  }
-
   get emptyGlassesVisibility(): "visible" | "collapse" {
     return this._glassesRows.length ? "collapse" : "visible";
   }
@@ -280,26 +305,41 @@ export class PairingViewModel extends Observable {
     const pair = this.selectedPair;
     const ring = this.selectedRing;
     if (!pair && !ring) return;
+    // refresh() drops a selection whose pair regressed below complete, but the
+    // tap can race a prune: never fall back to previously stored addresses for
+    // a missing arm — that silently welds together arms of two different pairs.
+    if (pair && (!pair.left || !pair.right)) return;
     const existing = loadDeviceAddresses();
     const addresses = {
-      right: pair?.right?.address ?? existing.right,
-      left: pair?.left?.address ?? existing.left,
+      right: pair ? pair.right!.address : existing.right,
+      left: pair ? pair.left!.address : existing.left,
       ring: ring?.advertisement.address ?? existing.ring,
     };
     saveDeviceAddresses(addresses);
-    if (pair?.left && pair.right) {
+    if (pair) {
       savePairedGlassesIdentity({
         serial: pair.serial ?? "",
-        leftName: pair.left.name,
-        rightName: pair.right.name,
-        leftAddress: pair.left.address,
-        rightAddress: pair.right.address,
+        leftName: pair.left!.name,
+        rightName: pair.right!.name,
+        leftAddress: pair.left!.address,
+        rightAddress: pair.right!.address,
         ringName: ring?.advertisement.name ?? (addresses.ring === existing.ring ? (loadPairedGlassesIdentity()?.ringName ?? "") : ""),
         ringAddress: addresses.ring,
         pairedAtMs: Date.now(),
       });
+    } else if (ring) {
+      // Replacing just the ring: keep the stored glasses identity current so
+      // the config page doesn't keep naming the old ring.
+      const identity = loadPairedGlassesIdentity();
+      if (identity) {
+        savePairedGlassesIdentity({
+          ...identity,
+          ringName: ring.advertisement.name,
+          ringAddress: ring.advertisement.address,
+        });
+      }
     }
-    this.stop();
+    this.dispose();
     if (this.onboarding) {
       setPreviewOnlyMode(false);
       // Continue the onboarding chain: unpair the official app next.
@@ -310,7 +350,7 @@ export class PairingViewModel extends Observable {
   }
 
   onSecondaryTap(): void {
-    this.stop();
+    this.dispose();
     const frame = Frame.topmost();
     if (frame?.canGoBack()) {
       frame.goBack();
@@ -348,9 +388,12 @@ export class PairingViewModel extends Observable {
     const rings = this.aggregator.rings();
 
     // Keep the selection pointing at live data (addresses can only change if a
-    // side was replaced); drop it if the pair disappeared.
+    // side was replaced); drop it if the pair disappeared — or if it degraded
+    // below complete (an arm went back in the case), so Save can never write a
+    // one-armed selection padded with stale addresses.
     if (this.selectedPair) {
-      this.selectedPair = pairs.find((pair) => pair.id === this.selectedPair!.id) ?? null;
+      const live = pairs.find((pair) => pair.id === this.selectedPair!.id) ?? null;
+      this.selectedPair = live?.completeness === "complete" ? live : null;
     }
     if (this.selectedRing) {
       this.selectedRing = rings.find((ring) => ring.id === this.selectedRing!.id) ?? null;
@@ -378,7 +421,7 @@ export class PairingViewModel extends Observable {
     if (this.scanFailure) {
       this.status = `Scan failed: ${this.scanFailure}`;
     } else if (!this._scanning) {
-      this.status = pairs.length ? "Scan paused." : "Scan paused.";
+      this.status = "Scan paused.";
     } else if (!pairs.length && !rings.length) {
       this.status = "Scanning…";
     } else {
@@ -413,8 +456,7 @@ export class PairingViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }
 

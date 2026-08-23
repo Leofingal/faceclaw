@@ -14,7 +14,7 @@
 
         <ScrollView row="2" class="m-t-12">
             <StackLayout>
-                <Label text="Glasses" class="h2 pairing-section" visibility="{{ glassesSectionVisibility }}" />
+                <Label text="Glasses" class="h2 pairing-section" />
                 <Label text="{{ emptyGlassesMessage }}" class="pairing-empty" textWrap="true" visibility="{{ emptyGlassesVisibility }}" />
                 <Repeater items="{{ glassesRows }}">
                     <Repeater.itemsLayout>

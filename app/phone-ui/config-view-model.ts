@@ -12,6 +12,7 @@ import {
 import { glassesImagePath } from "../g2/glasses-artwork";
 import { GlassesHardwareIdentity } from "../g2/glasses-hardware-identity";
 import { buildAddressSet, DeviceDiscoveryBridge } from "../native/device-discovery";
+import { formatErrorMessage } from "../util/format-error";
 
 type TextChangeArgs = { value?: string; object?: { text?: string } };
 
@@ -187,7 +188,23 @@ export class ConfigViewModel extends Observable {
   }
 
   /** The live scan page identifies pairs by serial, model, and distance; hand off to it. */
-  onScanTap(): void {
+  async onScanTap(): Promise<void> {
+    if (!this.onboarding) {
+      // A connected arm stops advertising, so drop the link before scanning.
+      // Required lazily: a module-scope import would instantiate the dashboard
+      // controller singleton during onboarding, which this page is part of.
+      // Outside onboarding the main page has already loaded it.
+      const { dashboardController } = require("../g2/dashboard-controller") as typeof import("../g2/dashboard-controller");
+      const { resumeAutoReconnect } = require("../g2/reconnect-policy") as typeof import("../g2/reconnect-policy");
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the pairing page reports what it hears
+      }
+      // disconnect() enters the manual-disconnected state; pairing is a
+      // detour, so let the main page reconnect afterwards.
+      resumeAutoReconnect();
+    }
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/pairing-page",
       context: { onboarding: this.onboarding },
@@ -273,7 +290,6 @@ export class ConfigViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }

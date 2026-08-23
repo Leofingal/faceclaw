@@ -280,16 +280,32 @@ export type GlassesPairSerialVerdict =
   | { kind: "unknown" }
   | { kind: "mismatched"; left: string; right: string };
 
+/**
+ * Canonical comparison key for a serial-ish string: the decoded serial when it
+ * decodes (so an `_L_1` arm suffix or casing difference is not read as
+ * different hardware), else the trimmed uppercase raw value. Null when empty.
+ * The single definition of serial equality — pair grouping, the pair check,
+ * and the "Yours" badge must all agree on it.
+ */
+export function serialKey(value: string | null | undefined): string | null {
+  const trimmed = nonEmpty(value);
+  if (!trimmed) return null;
+  return GlassesHardwareIdentity.decode(trimmed)?.serial ?? trimmed.toUpperCase();
+}
+
+/** True when both values carry a serial and the serials name the same hardware. */
+export function serialsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const keyA = serialKey(a);
+  const keyB = serialKey(b);
+  return !!keyA && !!keyB && keyA === keyB;
+}
+
 export function evaluatePairSerials(left: string | null | undefined, right: string | null | undefined): GlassesPairSerialVerdict {
   const l = nonEmpty(left);
   const r = nonEmpty(right);
   if (!l || !r) return { kind: "unknown" };
-  // Compare on the decoded serial when both decode, so an arm suffix or casing
-  // difference in the reported string is not read as different hardware.
-  const leftKey = GlassesHardwareIdentity.decode(l)?.serial ?? l.toUpperCase();
-  const rightKey = GlassesHardwareIdentity.decode(r)?.serial ?? r.toUpperCase();
-  if (leftKey !== rightKey) return { kind: "mismatched", left: l, right: r };
-  return { kind: "matched", serial: leftKey };
+  if (!serialsMatch(l, r)) return { kind: "mismatched", left: l, right: r };
+  return { kind: "matched", serial: serialKey(l)! };
 }
 
 /**

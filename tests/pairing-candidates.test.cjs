@@ -156,7 +156,7 @@ test("rings are grouped separately and sorted closest first", () => {
   const row = ringRow(aggregator.rings()[1]);
   assert.equal(row.modelTitle, "Even R1");
   assert.match(row.deviceName, /140137/);
-  assert.equal(row.ringAddress, "DA:7F:D2:B5:6E:E2");
+  assert.equal(aggregator.rings()[1].advertisement.address, "DA:7F:D2:B5:6E:E2");
 });
 
 test("nearest requires a clear signal lead", () => {
@@ -227,11 +227,53 @@ test("frame C resolves to the generic shot with the swatch still available", () 
 test("an incomplete pair cannot be selected and says which arm is missing", () => {
   const aggregator = new DiscoveryAggregator();
   aggregator.ingest(RIGHT);
-  const row = glassesRow(aggregator.pairs()[0]);
+  const pair = aggregator.pairs()[0];
+  const row = glassesRow(pair);
   assert.equal(row.canSelect, false);
   assert.match(row.armsSummary, /Only the right arm/);
-  assert.equal(row.rightAddress, "E0:12:14:8D:6E:3C");
-  assert.equal(row.leftAddress, "");
+  assert.equal(pair.right.address, "E0:12:14:8D:6E:3C");
+  assert.equal(pair.left, null);
+});
+
+test("a lone left and lone right with different serials warn about mixed arms", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(LEFT);
+  aggregator.ingest(OTHER_RIGHT);
+  for (const pair of aggregator.pairs()) {
+    const row = glassesRow(pair);
+    assert.match(row.warning, /arms from two different pairs/);
+    assert.match(row.warning, /S211GBBC180304/);
+    assert.match(row.warning, /S211GCBC300403/);
+    assert.equal(row.canSelect, false);
+  }
+});
+
+test("a bonded re-emit does not overwrite live scan notes or name", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(LEFT);
+  // Every pairing-page re-entry replays bonded devices: no manufacturer data,
+  // possibly stale cached name. That must not turn a fully-parsed row into
+  // "serial unknown" or swap in the stale name.
+  aggregator.ingest({ ...LEFT, name: "Even G2_32_L_0LDCAF", manufacturerData: "", rssi: null, bonded: true, source: "paired", seenAtMs: 2000 });
+  const pair = aggregator.pairs()[0];
+  assert.equal(pair.serial, "S211GBBC180304");
+  assert.equal(pair.left.name, LEFT.name);
+  assert.equal(pair.left.note, null);
+  assert.equal(glassesRow(pair).warning, "");
+});
+
+test("a split report without the name keeps the arm by merging earlier traffic", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(LEFT);
+  // Android sometimes delivers the ADV report (manufacturer data, no name)
+  // separately from the scan response carrying the name.
+  const merged = aggregator.ingest({ ...LEFT, name: "", seenAtMs: 2000 });
+  assert.ok(merged, "the nameless half must not drop the arm");
+  assert.equal(merged.role, "left");
+  const pair = aggregator.pairs()[0];
+  assert.equal(pair.completeness, "left-only");
+  assert.equal(pair.left.name, LEFT.name);
+  assert.equal(pair.left.seenAtMs, 2000);
 });
 
 test("an embedded-MAC mismatch is surfaced as a warning", () => {

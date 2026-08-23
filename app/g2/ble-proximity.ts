@@ -13,8 +13,11 @@
  *
  * `txPower` is the expected signal at one metre and `n` the path loss
  * exponent — 2.0 in free space, higher indoors where walls and bodies absorb.
- * A device that advertises its own TX power gets used as measured; everything
- * else falls back to a per-product calibration.
+ * The reference power always comes from the per-product calibration table. An
+ * advertised BLE "TX Power Level" is deliberately NOT used: that field is the
+ * radiated power at the antenna (typically 0…+4 dBm), not an iBeacon-style
+ * measured power at one metre, and reading it as the latter inflates every
+ * distance by orders of magnitude.
  *
  * ## What this is for, and what it is not
  *
@@ -32,6 +35,8 @@
  *
  * This module is pure (no NativeScript imports) so it can run under node tests.
  */
+
+import { clamp } from "../util/numeric-util";
 
 /** Expected RSSI at one metre, and the path loss exponent, per product. */
 export type ProximityCalibration = {
@@ -66,17 +71,11 @@ export const MAXIMUM_METERS = 100;
  */
 export type ProximityZone = "immediate" | "near" | "far" | "distant";
 
-const ZONE_ORDER: Record<ProximityZone, number> = { immediate: 0, near: 1, far: 2, distant: 3 };
-
 export function zoneFromMeters(meters: number): ProximityZone {
   if (meters < 0.5) return "immediate";
   if (meters < 3) return "near";
   if (meters < 10) return "far";
   return "distant";
-}
-
-export function zoneRank(zone: ProximityZone): number {
-  return ZONE_ORDER[zone];
 }
 
 export function zoneLabel(zone: ProximityZone): string {
@@ -109,7 +108,7 @@ export function zoneGlyph(zone: ProximityZone): string {
 /** A distance estimate and how much to trust it. */
 export type ProximityEstimate = {
   readonly meters: number;
-  /** 0…1. Drops with weak signal and with having to guess the TX power. */
+  /** 0…1. Drops with weak signal. */
   readonly confidence: number;
   readonly zone: ProximityZone;
 };
@@ -140,33 +139,27 @@ export function proximitySummary(estimate: ProximityEstimate): string {
  * from, so callers can say "signal unknown" rather than render a fabricated
  * distance. 127 is the Bluetooth "RSSI unavailable" sentinel.
  */
-export function estimateProximity(
-  rssi: number | null | undefined,
-  txPower: number | null | undefined,
-  calibration: ProximityCalibration,
-): ProximityEstimate | null {
+export function estimateProximity(rssi: number | null | undefined, calibration: ProximityCalibration): ProximityEstimate | null {
   if (rssi == null || !Number.isFinite(rssi) || rssi === 127) return null;
-  const hasTxPower = txPower != null && Number.isFinite(txPower);
-  const referencePower = hasTxPower ? txPower! : calibration.txPowerAtOneMeter;
-  const ratio = (referencePower - rssi) / (10 * calibration.pathLossExponent);
-  const meters = Math.min(Math.max(Math.pow(10, ratio), MINIMUM_METERS), MAXIMUM_METERS);
+  const ratio = (calibration.txPowerAtOneMeter - rssi) / (10 * calibration.pathLossExponent);
+  const meters = clamp(Math.pow(10, ratio), MINIMUM_METERS, MAXIMUM_METERS);
   return {
     meters,
-    confidence: proximityConfidence(rssi, hasTxPower),
+    confidence: proximityConfidence(rssi),
     zone: zoneFromMeters(meters),
   };
 }
 
 /**
- * Confidence falls with signal strength, because a weak sample is a noisy one,
- * and with having to assume the TX power instead of being told it.
+ * Confidence falls with signal strength, because a weak sample is a noisy one.
+ * The 0.85 ceiling reflects that the TX power is always an assumption from the
+ * calibration table, never a measurement.
  */
-export function proximityConfidence(rssi: number, hasAdvertisedTxPower: boolean): number {
-  let confidence = 1.0;
+export function proximityConfidence(rssi: number): number {
+  let confidence = 0.85;
   if (rssi < -85) confidence *= 0.4;
   else if (rssi < -75) confidence *= 0.7;
   else if (rssi < -65) confidence *= 0.85;
-  confidence *= hasAdvertisedTxPower ? 1.0 : 0.85;
   return confidence;
 }
 
