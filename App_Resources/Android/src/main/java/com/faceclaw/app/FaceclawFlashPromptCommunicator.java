@@ -50,6 +50,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
     private final Object lock = new Object();
     private final ConcurrentHashMap<String, CountDownLatch> pendingAcks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, byte[]> ackPayloads = new ConcurrentHashMap<>();
     private final CountDownLatch selectionLatch = new CountDownLatch(1);
 
     private volatile FaceclawFlashPromptListener listener;
@@ -197,38 +198,61 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     }
 
     private void bringUpArm(String address) throws InterruptedException {
-        // 1. Mandatory session prelude on sid=0x01 (app-launch).
-        if (!writeAndAwaitAck(
+        // 1. Security-auth exchange on sid=0x80: firmware 2.2.9 will not run a
+        //    session (and closes the link after ~30 s) without it, and on an
+        //    unbonded phone this is what triggers SMP pairing, so it may sit
+        //    waiting on an OS pairing prompt.
+        int authMagic = allocMagic();
+        byte[] authAck = writeAndAwaitAck(
+            address,
+            BleProtocol.SID_SECURITY_AUTH,
+            BleProtocol.FLAG_SECURITY_AUTH,
+            authMagic,
+            BleProtocol.buildAuthenticationRequest(authMagic),
+            ConnectionOptions.SECURITY_AUTH_TIMEOUT_MS);
+        if (authAck == null || !BleProtocol.isAuthenticationSuccess(authAck, authMagic)) {
+            throw new IllegalStateException(
+                "could not authenticate with the glasses (" + address
+                    + ") — if Android shows a Bluetooth pairing request, accept it and try again");
+        }
+        // 2. Mandatory session prelude on sid=0x01 (app-launch).
+        if (writeAndAwaitAck(
                 address,
                 BleProtocol.PRELUDE_ACK_SID,
                 BleProtocol.FLAG_REQUEST,
                 BleProtocol.PRELUDE_ACK_MAGIC,
                 BleProtocol.PRELUDE_F5872_PAYLOAD,
-                ConnectionOptions.PRELUDE_TIMEOUT_MS)) {
+                ConnectionOptions.PRELUDE_TIMEOUT_MS) == null) {
             throw new IllegalStateException("session prelude not acked: " + address);
         }
-        // 2. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
+        // 3. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
         int magic = allocMagic();
         byte[] page = BleProtocol.buildCreatePromptPage(
             magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
-        if (!writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS)) {
+        if (writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS) == null) {
             throw new IllegalStateException("prompt page not acked: " + address);
         }
         emitLog("prompt page shown on " + address);
     }
 
-    private boolean writeAndAwaitAck(String address, int sid, int flag, int magic, byte[] payload, int timeoutMs)
+    /** Write and wait for the matching ack; returns the ack's protobuf (may be empty), or null on timeout/write failure. */
+    private byte[] writeAndAwaitAck(String address, int sid, int flag, int magic, byte[] payload, int timeoutMs)
             throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(1);
         String key = ackKey(sid, magic);
         pendingAcks.put(key, latch);
         try {
             if (!writeFrame(address, sid, flag, payload)) {
-                return false;
+                return null;
             }
-            return latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                return null;
+            }
+            byte[] pb = ackPayloads.get(key);
+            return pb == null ? new byte[0] : pb;
         } finally {
             pendingAcks.remove(key, latch);
+            ackPayloads.remove(key);
         }
     }
 
@@ -321,8 +345,10 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             return;
         }
         if (frame.msgSeq >= 0) {
-            CountDownLatch latch = pendingAcks.get(ackKey(frame.sid, frame.msgSeq));
+            String key = ackKey(frame.sid, frame.msgSeq);
+            CountDownLatch latch = pendingAcks.get(key);
             if (latch != null) {
+                ackPayloads.put(key, frame.pb);
                 latch.countDown();
             }
         }

@@ -90,6 +90,20 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
                 return;
             }
 
+            // Firmware 2.2.9 answers no queries until the security-auth
+            // exchange completes over an encrypted link; on a phone with no
+            // existing bond this is also what triggers SMP pairing (and its
+            // OS prompt), so it must come before the prelude and query. Soft:
+            // this probe also runs against the custom firmware, whose response
+            // to the exchange is not yet hardware-verified, so an unconfirmed
+            // auth falls through to the query and only enriches its error.
+            emitState("authenticating", "");
+            boolean authenticated = authenticate(rightAddress);
+            if (cancelled) {
+                emitError("Cancelled.");
+                return;
+            }
+
             emitState("querying", "");
             // Session prelude, then a settings/device-info read (both arms'
             // versions and the CFW capability string ride back in one response).
@@ -103,7 +117,10 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
             byte[] ack = writeAndAwaitAck(rightAddress, BleProtocol.SID_UI_SETTING, BleProtocol.FLAG_REQUEST,
                 magic, BleProtocol.buildSettingsQuery(magic), QUERY_TIMEOUT_MS);
             if (ack == null) {
-                throw new IllegalStateException("no response to the device-info query");
+                throw new IllegalStateException(authenticated
+                    ? "no response to the device-info query"
+                    : "no response to the device-info query — authentication with the glasses did not complete;"
+                        + " if Android shows a Bluetooth pairing request, accept it and try again");
             }
 
             BleProtocol.FirmwareInfo info = BleProtocol.parseSettingsFirmwareInfo(ack);
@@ -121,6 +138,15 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private boolean authenticate(String address) throws InterruptedException {
+        int magic = allocMagic();
+        byte[] ack = writeAndAwaitAck(address, BleProtocol.SID_SECURITY_AUTH, BleProtocol.FLAG_SECURITY_AUTH,
+            magic, BleProtocol.buildAuthenticationRequest(magic), ConnectionOptions.SECURITY_AUTH_TIMEOUT_MS);
+        boolean success = ack != null && BleProtocol.isAuthenticationSuccess(ack, magic);
+        emitLog(success ? "security auth complete: " + address : "security auth unconfirmed: " + address);
+        return success;
     }
 
     private void connectArm(String address) {

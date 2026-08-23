@@ -163,6 +163,9 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   private reportProbeState(state: DeviceInfoState): void {
     if (state === "connecting") {
       this.status = "Connecting to your glasses...";
+    } else if (state === "authenticating") {
+      // First-time connections pair here; the OS may show a Bluetooth dialog.
+      this.status = "Authenticating with your glasses... If Android asks to pair, tap Pair.";
     } else if (state === "querying") {
       this.status = "Reading the firmware version...";
     }

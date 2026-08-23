@@ -8,7 +8,7 @@ export type DeviceInfo = {
   capabilities: string;
 };
 
-export type DeviceInfoState = "connecting" | "querying";
+export type DeviceInfoState = "connecting" | "authenticating" | "querying";
 
 /**
  * TS wrapper around the native FaceclawDeviceInfoProbe — a one-shot,

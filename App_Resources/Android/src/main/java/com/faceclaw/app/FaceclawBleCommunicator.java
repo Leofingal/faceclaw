@@ -1384,6 +1384,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!sleepDuringConnectSettling(800)) {
                 return;
             }
+            authenticateArms();
             sendPrelude();
 
             synchronized (lock) {
@@ -1557,6 +1558,55 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             Log.d(TAG, "direct ring notify subscribe skipped: " + characteristicUuid + " " + safeMessage(t));
             return false;
         }
+    }
+
+    /**
+     * Complete the sid-0x80 security-auth exchange on both freshly opened arm
+     * connections. Firmware 2.2.9 answers no queries until it completes over an
+     * encrypted link and closes unauthenticated links after ~30 s (see
+     * ../notes/ble-connections-2.2.9.md); on an unbonded phone the exchange is
+     * also what triggers SMP pairing. Deliberately soft: on timeout we log and
+     * continue rather than fail the connect — the custom firmware's response
+     * behavior is not yet hardware-verified, and on stock firmware an
+     * unanswered auth just means the prelude fails exactly as it did before.
+     * A pairing prompt accepted after our window still bonds at the OS level,
+     * so the next reconnect attempt authenticates promptly.
+     */
+    private void authenticateArms() throws InterruptedException {
+        OutboundMessage right = messageBuilder.securityAuth(false);
+        OutboundMessage left = messageBuilder.securityAuth(true);
+        long now = SystemClock.elapsedRealtime();
+        for (OutboundMessage message : new OutboundMessage[] {right, left}) {
+            message.onAck = () -> {
+            };
+            message.onTimeout = () -> {
+            };
+            message.sentAtMs = now;
+            writeMessage(message);
+        }
+        long deadline = SystemClock.elapsedRealtime() + ConnectionOptions.SECURITY_AUTH_SOFT_TIMEOUT_MS;
+        while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
+            synchronized (lock) {
+                if (!running || userDisconnectRequested || inFlightMessages.isEmpty()) {
+                    break;
+                }
+            }
+            long remaining = deadline - SystemClock.elapsedRealtime();
+            if (remaining <= 0) {
+                break;
+            }
+            interruptibleSleep.sleep(Math.min(remaining, 100));
+        }
+        synchronized (lock) {
+            if (!inFlightMessages.isEmpty()) {
+                clearInFlightMessagesLocked("security auth timeout");
+                logLine("security auth not acknowledged; continuing (2.2.9 stock requires it; older/custom firmware may not answer)");
+                return;
+            }
+        }
+        boolean rightOk = BleProtocol.isAuthenticationSuccess(right.ackPayload, right.magic);
+        boolean leftOk = BleProtocol.isAuthenticationSuccess(left.ackPayload, left.magic);
+        logLine("security auth R=" + (rightOk ? "ok" : "unconfirmed") + " L=" + (leftOk ? "ok" : "unconfirmed"));
     }
 
     private void sendPrelude() throws InterruptedException {
