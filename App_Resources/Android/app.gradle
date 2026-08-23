@@ -252,6 +252,22 @@ tasks.register("prepareFaceclawLlama") {
   }
 }
 
+// versionName tracks FACECLAW_VERSION in app/version.ts, the single source of
+// truth for the Faceclaw version. The gradle root project is platforms/android,
+// so the repo root is two levels up from rootDir.
+def faceclawVersionName = "0.0"
+def faceclawVersionFile = file("$rootDir/../../app/version.ts")
+if (faceclawVersionFile.exists()) {
+  def faceclawVersionMatch = (faceclawVersionFile.text =~ /FACECLAW_VERSION = "([^"]+)"/)
+  if (faceclawVersionMatch.find()) {
+    faceclawVersionName = faceclawVersionMatch.group(1)
+  }
+}
+def faceclawVersionCode = {
+  def parts = (faceclawVersionName.tokenize('.') + ["0", "0"]).take(3)*.toInteger()
+  return parts[0] * 10000 + parts[1] * 100 + parts[2]
+}()
+
 android {
   compileSdkVersion 35
   buildToolsVersion "35"
@@ -268,9 +284,9 @@ android {
       abiFilters "arm64-v8a"
     }
 
-    // Version Information
-    versionCode 1
-    versionName "1.0.0"
+    // Version Information (derived from app/version.ts above)
+    versionCode faceclawVersionCode
+    versionName faceclawVersionName
     
     generatedDensities = []
   }

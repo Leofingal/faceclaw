@@ -5,6 +5,7 @@
   "private": false,
   "scripts": {
     "build": "nativescript build android",
+    "release": "scripts/release.sh",
     "clean": "rm -rf platforms"
   },
   "dependencies": {
