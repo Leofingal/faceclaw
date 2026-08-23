@@ -195,7 +195,6 @@ class DashboardController {
   private offFrameMetrics: (() => void) | null = null;
   private offFirmwareInfo: (() => void) | null = null;
   private offVoiceStatus: (() => void) | null = null;
-  private offVoiceWakeWord: (() => void) | null = null;
   private offAndroidNotification: (() => void) | null = null;
   private lastInput = "waiting...";
   private lastSys = "none yet";
@@ -1011,11 +1010,6 @@ class DashboardController {
       this.offVoiceStatus = voiceControlBridge.onStatus((state) => {
         this.appendLog(state.status);
       });
-      this.offVoiceWakeWord = voiceControlBridge.onWakeWord((keyword) => {
-        void this.handleWakeWord(keyword).catch((error) => {
-          this.appendLog(`wake-word handler failed: ${this.formatError(error)}`);
-        });
-      });
 
       await mediaControllerBridge.start();
       await nightscoutBridge.start();
@@ -1082,8 +1076,6 @@ class DashboardController {
       this.offFirmwareInfo = null;
       this.offVoiceStatus?.();
       this.offVoiceStatus = null;
-      this.offVoiceWakeWord?.();
-      this.offVoiceWakeWord = null;
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
@@ -1182,8 +1174,6 @@ class DashboardController {
     this.offFirmwareInfo = null;
     this.offVoiceStatus?.();
     this.offVoiceStatus = null;
-    this.offVoiceWakeWord?.();
-    this.offVoiceWakeWord = null;
 
     const communicator = this.communicator;
     this.communicator = null;
@@ -1814,20 +1804,6 @@ class DashboardController {
       );
     }
     this.updateCompositePreview();
-  }
-
-  private async handleWakeWord(keyword: string): Promise<void> {
-    const normalized = keyword.trim();
-    if (normalized.length === 0) return;
-    this.appendLog(`wake-word detected: ${normalized}`);
-    const woke = shell.wake("sidebar");
-    if (woke) {
-      const ready = await this.ensureEvenHubSessionActive();
-      if (!ready) {
-        this.appendLog("EvenHub wake barrier timed out for phone wakeword");
-      }
-      this.requestShellRender();
-    }
   }
 
   private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
