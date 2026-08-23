@@ -5,7 +5,6 @@ import { clamp } from "../../util/numeric-util";
 import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL,
   GESTURE_SCROLL_DOWN,
   GESTURE_SCROLL_UP,
 } from "../../ui/gestures";
@@ -29,16 +28,19 @@ import {
 export const MUSIC_WINDOW_ID = "music";
 export const MUSIC_SURFACE_ID = "window:music";
 
-const ART_SIZE = 96;
-const ART_X = 22;
+const ART_SIZE = 112;
+const ART_X = 8; // left margin matches the top margin
 const ART_Y = 8;
 const META_X = ART_X + ART_SIZE + 14;
-const LIST_TOP = 120;
+const PROGRESS_TIME_Y = ART_Y + 100;
+const PROGRESS_BAR_Y = ART_Y + 116;
+const LIST_TOP = 136;
+/** Gap between the menus' last row band and the viewport bottom. */
+const LIST_BOTTOM_MARGIN = 4;
 const ACTION_X = 22;
 const ACTION_WIDTH = 154;
 const COLUMN_DIVIDER_X = 190;
 const QUEUE_X = 204;
-const FOOTER_HEIGHT = 20;
 const PLAYLIST_ACTION_INDEX = 1;
 
 type MusicAction =
@@ -83,7 +85,7 @@ class MusicAppLayer implements Layer {
       for (let index = 0; index < lines.length; index++) {
         image.drawText(font, 24, 16 + index * lineStep(font), lines[index]!, 180);
       }
-      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings`, 110);
       return image;
     }
 
@@ -92,10 +94,9 @@ class MusicAppLayer implements Layer {
       if (mediaBrowserBridge.listBrowsableApps().length) {
         image.drawText(font, 24, 22 + lineStep(font), "Click to browse a music app's library,", 150);
         image.drawText(font, 24, 22 + 2 * lineStep(font), "or start playback on the phone.", 150);
-        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse   ${GESTURE_DOUBLE_CLICK} back`, 110);
+        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse`, 110);
       } else {
         image.drawText(font, 24, 22 + lineStep(font), "Start playback in another app on the phone.", 150);
-        image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
       }
       return image;
     }
@@ -104,21 +105,36 @@ class MusicAppLayer implements Layer {
 
     const metaWidth = width - META_X - 24;
     const metaStep = lineStep(font) + 1;
-    const titleLines = wrapText(font, media.title || "Unknown title", metaWidth).slice(0, 2);
+    const metaTop = ART_Y + 2;
+    // Line budget above the progress-bar time line: the layout is five slots
+    // (title, second title line, artist, album, player app); when the font is
+    // too large for all five, the title gets one truncated line instead of
+    // wrapping to two, and the rest shift up a slot.
+    const maxLines = Math.floor((PROGRESS_TIME_Y - metaTop - 4 - font.lineHeight) / metaStep) + 1;
+    const titleSlots = maxLines >= 5 ? 2 : 1;
+    const title = media.title || "Unknown title";
+    const titleLines =
+      titleSlots === 2 ? wrapText(font, title, metaWidth).slice(0, 2) : [truncateText(font, title, metaWidth)];
     for (let index = 0; index < titleLines.length; index++) {
-      image.drawText(font, META_X, ART_Y + 2 + index * metaStep, titleLines[index]!, 230);
+      image.drawText(font, META_X, metaTop + index * metaStep, titleLines[index]!, 230);
     }
-    image.drawText(font, META_X, ART_Y + 6 + 2 * metaStep, media.artist || "Unknown artist", 180);
+    image.drawText(font, META_X, metaTop + 4 + titleSlots * metaStep, media.artist || "Unknown artist", 180);
     if (media.album) {
-      image.drawText(font, META_X, ART_Y + 6 + 3 * metaStep, truncateText(font, media.album, metaWidth), 150);
+      image.drawText(font, META_X, metaTop + 4 + (titleSlots + 1) * metaStep, truncateText(font, media.album, metaWidth), 150);
     }
-    image.drawText(font, META_X, ART_Y + 6 + 4 * metaStep, truncateText(font, media.appName || media.packageName, metaWidth), 110);
+    image.drawText(
+      font,
+      META_X,
+      metaTop + 4 + (titleSlots + 2) * metaStep,
+      truncateText(font, media.appName || media.packageName, metaWidth),
+      110,
+    );
     this.drawProgress(image, media, metaWidth);
 
     const queue = mediaControllerBridge.getQueue();
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
-    const listHeight = height - LIST_TOP - FOOTER_HEIGHT;
+    const listHeight = height - LIST_TOP - LIST_BOTTOM_MARGIN;
     const rowH = tightRowHeight(font);
     const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     if (this.selectedQueueIndex < this.queueScrollRow) {
@@ -154,7 +170,7 @@ class MusicAppLayer implements Layer {
       }
     }
 
-    image.drawLine(COLUMN_DIVIDER_X, LIST_TOP - 3, COLUMN_DIVIDER_X, height - FOOTER_HEIGHT - 3, 45);
+    image.drawLine(COLUMN_DIVIDER_X, LIST_TOP - 3, COLUMN_DIVIDER_X, height - LIST_BOTTOM_MARGIN - 3, 45);
     if (!queue.length) {
       image.drawText(font, QUEUE_X, LIST_TOP + 1, "Playlist unavailable", 90);
     } else {
@@ -189,14 +205,6 @@ class MusicAppLayer implements Layer {
       }
     }
 
-    const backTarget = this.focusColumn === "playlist" ? "actions" : "back";
-    image.drawText(
-      font,
-      20,
-      height - 16,
-      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} activate   ${GESTURE_DOUBLE_CLICK} ${backTarget}`,
-      110,
-    );
     return image;
   }
 
@@ -333,13 +341,12 @@ class MusicAppLayer implements Layer {
   private drawProgress(image: GrayImage, media: MediaControllerState, width: number): void {
     if (media.durationMs <= 0 || media.positionMs < 0) return;
     const font = getDefaultSmallFont();
-    const y = ART_Y + 84;
     const elapsed = formatMediaTime(media.positionMs);
     const duration = formatMediaTime(media.durationMs);
-    image.drawText(font, META_X, y, elapsed, 140);
-    image.drawText(font, META_X + width - font.measureText(duration), y, duration, 140);
+    image.drawText(font, META_X, PROGRESS_TIME_Y, elapsed, 140);
+    image.drawText(font, META_X + width - font.measureText(duration), PROGRESS_TIME_Y, duration, 140);
 
-    const barY = ART_Y + 100;
+    const barY = PROGRESS_BAR_Y;
     image.drawRect(META_X, barY, width, 5, 55);
     const progress = clamp(media.positionMs / media.durationMs, 0, 1);
     image.fillRect(META_X + 1, barY + 1, Math.round((width - 2) * progress), 3, 170);
@@ -360,7 +367,13 @@ class MusicAppLayer implements Layer {
     } else {
       image.drawRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, 60);
       const font = getDefaultSmallFont();
-      image.drawText(font, ART_X + 22, ART_Y + ART_SIZE / 2 - 7, "no art", 90);
+      image.drawText(
+        font,
+        ART_X + Math.round((ART_SIZE - font.measureText("no art")) / 2),
+        ART_Y + Math.round((ART_SIZE - font.lineHeight) / 2),
+        "no art",
+        90,
+      );
     }
   }
 }
