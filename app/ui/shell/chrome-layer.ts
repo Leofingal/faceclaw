@@ -13,6 +13,7 @@ import {
   minWindowTop,
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
+  sidebarWidth,
   TOP_BAR_HEIGHT,
   windowTop,
   type WindowHeightMode,
@@ -166,7 +167,11 @@ export class ShellChromeLayer implements Layer {
   paint(): GrayImage {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const state = this.getState();
-    this.drawSidebar(image, state);
+    // Full-panel mode: the strip is an overlay, present only while the user
+    // is in it (the window underneath keeps its full width the rest of the time).
+    if (sidebarWidth() > 0 || state.focus === "sidebar") {
+      this.drawSidebar(image, state);
+    }
     this.drawTopBar(image, state);
     return image;
   }
@@ -174,6 +179,30 @@ export class ShellChromeLayer implements Layer {
   handleInput(): void {
     // Shell input is handled by the shell state machine before it reaches the
     // layer stack; the chrome itself never consumes events.
+  }
+
+  /**
+   * Which window's sidebar icon is under (x, y) on screen, if any — the same
+   * slot geometry drawSidebar uses, so a touch on the phone's mirror lands on
+   * the icon the mirror showed.
+   */
+  windowIndexAt(x: number, y: number, windowCount: number): number | null {
+    if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
+    const variant = sidebarVariant(windowCount);
+    const rows = rowsPerColumn(variant);
+    const listTop = minWindowTop() + TOP_BAR_HEIGHT + LIST_MARGIN;
+    const itemStride = variant.iconSize + ICON_SPACING;
+    const lastVisible = Math.min(windowCount, this.scrollRow + rows * variant.columns);
+    for (let index = this.scrollRow; index < lastVisible; index++) {
+      const position = index - this.scrollRow;
+      const column = variant.columns - 1 - ((position / rows) | 0);
+      const slotY = listTop + (position % rows) * itemStride;
+      const left = columnLeft(variant, column);
+      if (x >= left && x < left + variant.columnWidth && y >= slotY - 2 && y < slotY + variant.iconSize + 2) {
+        return index;
+      }
+    }
+    return null;
   }
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
@@ -266,13 +295,16 @@ export class ShellChromeLayer implements Layer {
     // its height mode puts that (screen top for max height). It moves when
     // the foreground switches to a window of a different height.
     const barTop = windowTop(state.foregroundHeightMode);
-    image.fillRect(SIDEBAR_WIDTH, barTop, G2_LENS_WIDTH - SIDEBAR_WIDTH, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    image.drawLine(SIDEBAR_WIDTH, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
+    // The bar spans the app viewport; with the sidebar overlaid (full-panel
+    // mode, sidebar focused) it still starts past the strip.
+    const barLeft = sidebarWidth() > 0 || state.focus === "sidebar" ? SIDEBAR_WIDTH : 0;
+    image.fillRect(barLeft, barTop, G2_LENS_WIDTH - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
+    image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
     const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
       formatClockTime(now);
-    const clockX = SIDEBAR_WIDTH + 10;
+    const clockX = barLeft + 10;
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
 

@@ -5,6 +5,13 @@ for interfacing with Android SDK).
 
 Typescript parts are in app/. Java parts are in App_Resources/Android/src/main/java/com/faceclaw/app/.
 
+wear/ is a separate Gradle project (Kotlin + Compose for Wear OS): the watch
+remote that drives Faceclaw over the Wearable Data Layer. Its phone-side
+counterparts are FaceclawWearBridge.java, app/native/wear-bridge.ts and
+app/g2/wear-remote.ts; the message format is in wear/PROTOCOL.md. Build it
+with `cd wear && ./gradlew :app:assembleDebug` (needs JAVA_HOME and
+ANDROID_HOME); it is not part of `npm run build`.
+
 If build.sh exists, it's a machine-specific wrapper that sets some environment
 variables to point to where tools are installed, then runs `npm run build`.
 If build_and_run.sh exists, it does everything build.sh does plus

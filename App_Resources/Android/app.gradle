@@ -12,6 +12,9 @@ dependencies {
   // code" entry. Scanner UI and camera live in Play Services, so Faceclaw
   // needs no camera permission and no third-party scanner app.
   implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+  // Wearable Data Layer (MessageClient / DataClient / CapabilityClient) for
+  // the Wear OS watch remote; see FaceclawWearBridge and wear/.
+  implementation 'com.google.android.gms:play-services-wearable:19.0.0'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"

@@ -17,7 +17,14 @@ import {
 } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
 import { MediaBrowseLayer } from "./media-browse";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
+import {
+  directionalFallback,
+  isDirectionalInput,
+  Layer,
+  type DashboardInputEvent,
+  type LayerContext,
+  type PaintBelow,
+} from "../../ui/layers";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -59,6 +66,8 @@ type FocusColumn = "actions" | "playlist";
  * player's queue when it exposes one (scroll to a track, click to jump).
  */
 class MusicAppLayer implements Layer {
+  // Watch swipes skip tracks: right = next, left = previous.
+  readonly acceptsDirectional = true;
   private focusColumn: FocusColumn = "actions";
   private selectedActionIndex = 0;
   private selectedQueueIndex = 0;
@@ -215,6 +224,10 @@ class MusicAppLayer implements Layer {
       return;
     }
     const media = mediaControllerBridge.snapshot();
+    if ((!media.accessEnabled || !media.available) && isDirectionalInput(event)) {
+      // Nothing to skip between yet: the setup prompts take select / back.
+      return this.handleInput(directionalFallback(event), ctx);
+    }
     if (!media.accessEnabled) {
       if (event.type === "click") {
         mediaControllerBridge.openNotificationAccessSettings();
@@ -233,6 +246,16 @@ class MusicAppLayer implements Layer {
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
     switch (event.type) {
+      case "swipe-right":
+        if (media.canSkipNext) await mediaControllerBridge.skipNext();
+        return;
+      case "swipe-left":
+        if (media.canSkipPrevious) await mediaControllerBridge.skipPrevious();
+        return;
+      case "swipe-up":
+        return this.handleInput({ type: "scroll-up" }, ctx);
+      case "swipe-down":
+        return this.handleInput({ type: "scroll-down" }, ctx);
       case "scroll-up":
         if (this.focusColumn === "playlist") {
           this.selectedQueueIndex = Math.max(0, this.selectedQueueIndex - 1);
@@ -437,6 +460,7 @@ class VolumeModalLayer implements Layer {
 
 /** Let back leave the playlist column before the root wrapper yields to the shell. */
 class MusicRootLayer implements Layer {
+  readonly acceptsDirectional = true;
   private readonly yieldAtRoot: YieldAtRootLayer;
 
   constructor(private readonly music: MusicAppLayer) {

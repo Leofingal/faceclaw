@@ -223,6 +223,36 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
 });
 
+/**
+ * How much of the 640x480 panel the UI uses. "576x288" is the stock band
+ * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
+ * the sidebar and gives every window the full height; "640x480" is the whole
+ * panel, with the sidebar an overlay that shows only while it has focus.
+ */
+export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
+export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
+
+const DISPLAY_MODE_LABELS: Record<DisplayModeSetting, string> = {
+  "576x288": "Band · 576×288",
+  "576x480": "Tall · 576×480",
+  "640x480": "Full panel · 640×480",
+};
+
+export function displayModeLabel(value: DisplayModeSetting): string {
+  return DISPLAY_MODE_LABELS[value] ?? value;
+}
+
+export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
+  id: "display-mode",
+  label: "Display mode",
+  storageKey: "display.mode",
+  defaultValue: "576x288",
+  values: DISPLAY_MODE_VALUES,
+  formatValue: displayModeLabel,
+  description:
+    "Band: the stock 576×288 window beside the sidebar. Tall: the sidebar plus full-height windows. Full panel: the whole 640×480 display; the sidebar overlays the app only while you are in it. Open apps reopen in the new size.",
+});
+
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   id: "brightness",
   label: "Brightness",
@@ -250,6 +280,43 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description:
     "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+});
+
+// Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
+// every watch message, so a change applies immediately.
+export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
+  id: "watch-remote-enabled",
+  label: "Watch remote control",
+  storageKey: "watch.remoteEnabled",
+  defaultValue: true,
+  description:
+    "Accept input from the Faceclaw Wear OS app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
+});
+
+export const watchCanUnlockSetting = new ConfigSettingBoolean({
+  id: "watch-can-unlock",
+  label: "Watch can unlock glasses",
+  storageKey: "watch.canUnlock",
+  defaultValue: true,
+  description:
+    "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
+});
+
+export const watchWakesDisplaySetting = new ConfigSettingBoolean({
+  id: "watch-wakes-display",
+  label: "Watch input wakes display",
+  storageKey: "watch.wakesDisplay",
+  defaultValue: true,
+  description:
+    "Any gesture from the watch turns the glasses display on (the ring only wakes it with a double-tap). Off: watch input is ignored while the display is off, as ring input is.",
+});
+
+export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
+  id: "watch-mirror-assistant",
+  label: "Mirror assistant to watch",
+  storageKey: "watch.mirrorAssistant",
+  defaultValue: true,
+  description: "Stream assistant replies and on-glasses alerts to the watch so they can be read from the wrist.",
 });
 
 export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";

@@ -1,5 +1,5 @@
 import { Application, ImageSource } from "@nativescript/core";
-import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
+import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
@@ -12,6 +12,29 @@ import { openEvenAppSettings, readEvenAppNotificationState } from "../native/eve
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
+import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
+
+/** Who a synthetic (non-firmware) input stands for. */
+type SyntheticInputOrigin = "ring" | "watch";
+
+/** Gestures the phone's mirror view reports (see handleMirrorTouch). */
+export type MirrorTouchKind =
+  | "tap"
+  | "double-tap"
+  | "long-press"
+  | "swipe-up"
+  | "swipe-down"
+  | "swipe-left"
+  | "swipe-right";
+
+const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteInputKind> = {
+  "double-tap": "double-click",
+  "long-press": "long-press",
+  "swipe-up": "swipe-up",
+  "swipe-down": "swipe-down",
+  "swipe-left": "swipe-left",
+  "swipe-right": "swipe-right",
+};
 import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
@@ -33,9 +56,9 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
+import { appViewportRect, SIDEBAR_WIDTH, sidebarWidth, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, watchWakesDisplaySetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -84,13 +107,20 @@ const LOCK_SCREEN_MESSAGE = "Glasses locked; unlock the phone to unlock the glas
 // Top-bar clock refresh; the phone-side preview polls the Java composite so
 // it reflects every app (including worker apps the TS side never renders).
 const SHELL_REFRESH_INTERVAL_MS = 60_000;
+// Safety-net poll only; the preview is event-driven (every composited frame
+// schedules a refresh), so this just covers anything that slips through.
 const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const EVENHUB_SCREEN_OFF_SUSPEND_DELAY_MS = 5_000;
 const EVENHUB_WAKE_READY_TIMEOUT_MS = 4_500;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
-const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
+// Preview refresh floor. Refreshes are scheduled per composited frame with a
+// trailing update, so the mirror tracks the glasses within this bound instead
+// of the old 1s poll (which lagged up to two polls behind).
+const CONNECTED_PREVIEW_MIN_UPDATE_MS = 150;
+// The GIF recorder keeps its old cadence; per-frame captures would balloon it.
+const RECORDING_MIN_CAPTURE_MS = 1_000;
 // Below this, a disconnect is more likely a flat battery than a BLE problem.
 const LOW_BATTERY_PERCENT = 5;
 const EVEN_APP_DETECTED_MESSAGE =
@@ -138,6 +168,9 @@ function eventLabel(kind: string, eventType: number): string {
   if (kind === "even-ai") {
     return EvenAIStatusName[eventType] ?? `EVEN_AI_UNKNOWN_${eventType}`;
   }
+  if (kind === "watch-gesture") {
+    return WatchGestureTypeName[eventType] ?? `WATCH_UNKNOWN_${eventType}`;
+  }
   return eventName(eventType);
 }
 
@@ -182,6 +215,8 @@ class DashboardController {
   private glassesWorn: boolean | null = null;
   private phoneLocked = false;
   private glassesLocked = false;
+  // Wear OS watch remote; constructed last so it sees a fully wired shell.
+  private wearRemote: WearRemote | null = null;
   private lockSurfaceConfigured = false;
   private lastLockScreenEnabled = lockScreenEnabledSetting.get();
   private offState: (() => void) | null = null;
@@ -265,10 +300,14 @@ class DashboardController {
       },
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
-      onWindowsChanged: () => this.persistOpenApps(),
+      onWindowsChanged: () => {
+        this.persistOpenApps();
+        this.wearRemote?.schedulePublish();
+      },
       onScreenStateChanged: (on) => {
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
+        this.wearRemote?.schedulePublish();
       },
     });
     // Boot hooks register windows that exist from startup (the launcher,
@@ -290,6 +329,7 @@ class DashboardController {
       this.pushBrightness();
       this.syncEvenHubScreenOffSetting();
       this.applyVerticalPositionIfChanged();
+      this.applyDisplayModeIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
     });
@@ -297,6 +337,24 @@ class DashboardController {
     // connection stays up (with re-dial) so proactive tool calls work
     // outside voice turns.
     this.syncAssistantBridge();
+    // The watch drives the same synthetic-input path as the phone UI's test
+    // buttons, plus app/window/lock commands; it mirrors the state below.
+    this.wearRemote = new WearRemote({
+      apps: LAUNCHABLE_APPS,
+      injectInput: (kind) => this.injectSyntheticRingInput(kind, "watch"),
+      launchApp: (appId) => this.launchApp(appId),
+      connect: () => this.connect(),
+      disconnect: () => this.disconnect(),
+      setGlassesLocked: (locked, reason) => this.setGlassesLocked(locked, reason),
+      requestShellRender: () => this.requestShellRender(),
+      getState: () => ({
+        phase: this.phase,
+        status: this.status,
+        glassesLocked: this.glassesLocked,
+        glassesWorn: this.glassesWorn,
+      }),
+      appendLog: (line) => this.appendLog(line),
+    });
   }
 
   // Bridge settings changes re-dial the connection; unrelated setting changes
@@ -338,6 +396,48 @@ class DashboardController {
   // aligns with them); the value is tracked so unrelated setting changes
   // don't trigger a full reposition.
   private lastVerticalPosition = verticalPositionSetting.get();
+
+  private lastDisplayMode = displayModeSetting.get();
+
+  /**
+   * Display mode changed (Settings > Display, or the phone page's picker):
+   * every window's viewport size changes. In-process windows re-measure in
+   * place; worker windows get their canvas once at open, so they are closed
+   * and launched again at the new size.
+   */
+  private applyDisplayModeIfChanged(): void {
+    const mode = displayModeSetting.get();
+    if (mode === this.lastDisplayMode) return;
+    this.lastDisplayMode = mode;
+    this.appendLog(`display mode: ${mode}`);
+    const foregroundWindowId = shell.foregroundWindow()?.windowId;
+    void (async () => {
+      const relaunch: string[] = [];
+      for (const window of Array.from(shell.getWindows())) {
+        if (window.relayout) {
+          window.relayout();
+          await this.configureWindowSurface(
+            window.surfaceId,
+            window.windowId === foregroundWindowId,
+            window.heightMode,
+          );
+        } else if (window.closeable) {
+          relaunch.push(window.appId);
+          shell.closeWindow(window.windowId);
+        }
+      }
+      for (const appId of relaunch) {
+        await this.launchApp(appId);
+      }
+      if (foregroundWindowId && shell.getWindows().some((w) => w.windowId === foregroundWindowId)) {
+        shell.focusWindow(foregroundWindowId);
+      }
+      shell.foregroundWindow()?.requestRender();
+      this.requestShellRender();
+    })().catch((error) => {
+      this.appendLog(`display mode change failed: ${this.formatError(error)}`);
+    });
+  }
 
   private applyVerticalPositionIfChanged(): void {
     const position = verticalPositionSetting.get();
@@ -400,6 +500,7 @@ class DashboardController {
   private handleWearState(wearing: boolean): void {
     this.glassesWorn = wearing;
     this.appendLog(wearing ? "glasses wear state: ON_HEAD" : "glasses wear state: OFF_HEAD");
+    this.wearRemote?.schedulePublish();
     if (!wearing && this.phoneLocked && lockScreenEnabledSetting.get()) {
       this.setGlassesLocked(true, "glasses removed while phone locked");
     }
@@ -420,6 +521,7 @@ class DashboardController {
     if (locked === this.glassesLocked) return;
     this.glassesLocked = locked;
     this.appendLog(`glasses ${locked ? "locked" : "unlocked"}: ${reason}`);
+    this.wearRemote?.schedulePublish();
     void this.syncLockSurface().catch((error) => {
       this.appendLog(`lock screen update failed: ${this.formatError(error)}`);
     });
@@ -947,6 +1049,7 @@ class DashboardController {
           // Repaint the top bar (battery indicators live in the shell chrome).
           this.requestShellRender();
         }
+        this.wearRemote?.schedulePublish();
       });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
         this.refreshEvenAppStatus();
@@ -959,6 +1062,10 @@ class DashboardController {
         this.emit();
       });
       this.offFrameMetrics = communicator.onFrameMetrics(() => {
+        // Every composited frame refreshes the phone-side mirror (bounded by
+        // CONNECTED_PREVIEW_MIN_UPDATE_MS) so it tracks the glasses instead
+        // of trailing the 1s safety-net poll.
+        this.schedulePreviewUpdate();
         if (this.phase === "connected") {
           this.setStatus("Connected.");
           // A rendered frame means the session is warmed up (fixedLayoutCreated),
@@ -1255,18 +1362,92 @@ class DashboardController {
     }
   }
 
-  async injectSyntheticRingInput(
-    kind: "click" | "double-click" | "scroll-up" | "scroll-down" | "long-press" | "wakeword",
-  ): Promise<void> {
+  /**
+   * Feed a ring gesture from somewhere other than the ring (the phone UI's
+   * test buttons, the watch). "long-press" is a complete short hold;
+   * "long-press-start" / "long-press-release" let a source with a real
+   * finger-down/finger-up (the watch) hold for as long as the user does.
+   */
+  async injectSyntheticRingInput(kind: WearRemoteInputKind, origin: SyntheticInputOrigin = "ring"): Promise<void> {
+    // Watch-scheme input (the Wear app, the phone's pad/d-pad, mirror touches)
+    // wakes a dark display and then lands normally, resuming the previous
+    // focus. The ring's own scheme keeps its double-tap-only wake.
+    if (
+      origin === "watch" &&
+      !shell.isScreenOn() &&
+      !this.glassesLocked &&
+      (this.phase === "connected" || this.phase === "charging") &&
+      watchWakesDisplaySetting.get() &&
+      kind !== "double-click" &&
+      kind !== "wakeword" &&
+      kind !== "long-press-release"
+    ) {
+      shell.wake(shell.getFocus());
+      this.requestShellRender();
+      this.appendLog(`${kind} (watch scheme) woke the display`);
+    }
     if (kind === "long-press") {
       // Hardware delivers a press event and then a release when the finger
       // lifts; emulate a short hold so the escape-menu countdown never fires.
-      await this.handleInputEvent(this.buildSyntheticRingInput("long-press"));
-      await this.handleInputEvent(this.buildSyntheticRingInput("long-press-release"));
+      await this.handleInputEvent(this.buildSyntheticRingInput("long-press", origin));
+      await this.handleInputEvent(this.buildSyntheticRingInput("long-press-release", origin));
       return;
     }
-    const event = this.buildSyntheticRingInput(kind);
+    const event = this.buildSyntheticRingInput(kind === "long-press-start" ? "long-press" : kind, origin);
     await this.handleInputEvent(event);
+  }
+
+  /**
+   * A touch on the phone's mirror of the glasses display. Gestures other than
+   * a tap are the watch scheme (swipes navigate, double-tap is back, a hold
+   * is the menu). A tap lands on what the mirror shows: a sidebar icon
+   * switches to that window, a launcher cell opens, anything else selects.
+   * Coordinates are fractions of the mirror (0..1).
+   */
+  async handleMirrorTouch(kind: MirrorTouchKind, nx: number, ny: number): Promise<void> {
+    if (this.phase !== "connected" && this.phase !== "charging") return;
+    if (this.glassesLocked) {
+      // Same as the ring: only a double-tap reaches a locked display.
+      if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+      return;
+    }
+    if (!shell.isScreenOn()) {
+      shell.wake(shell.getFocus());
+      this.requestShellRender();
+    }
+    if (kind !== "tap") {
+      await this.injectSyntheticRingInput(MIRROR_TOUCH_GESTURES[kind], "watch");
+      return;
+    }
+    const x = Math.round(Math.min(1, Math.max(0, nx)) * G2_LENS_WIDTH);
+    const y = Math.round(Math.min(1, Math.max(0, ny)) * G2_LENS_HEIGHT);
+    const stripShown = sidebarWidth() > 0 || shell.getFocus() === "sidebar";
+    this.appendLog(`mirror tap at ${x},${y}`);
+    if (!shell.hasOverlay() && stripShown && x < SIDEBAR_WIDTH) {
+      const target = shell.windowAtSidebarPoint(x, y);
+      if (target) {
+        this.appendLog(`mirror tap: sidebar -> ${target.title}`);
+        shell.focusWindow(target.windowId);
+        shell.foregroundWindow()?.requestRender();
+        this.requestShellRender();
+      }
+      return;
+    }
+    const window = shell.foregroundWindow();
+    if (window && !shell.hasOverlay()) {
+      const rect = appViewportRect(window.heightMode);
+      const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+      if (shell.getFocus() !== "window") {
+        shell.focusWindow(window.windowId);
+        this.requestShellRender();
+      }
+      if (inside && window.hitTest && (await window.hitTest(x - rect.x, y - rect.y))) {
+        this.appendLog(`mirror tap: ${window.title} at ${x - rect.x},${y - rect.y}`);
+        this.requestShellRender();
+        return;
+      }
+    }
+    await this.injectSyntheticRingInput("click", "watch");
   }
 
   /** A document arrived via Android's Share intent: open it as a new window. */
@@ -1410,7 +1591,8 @@ class DashboardController {
       if (this.glassesLocked) {
         const ringDoubleTap =
           inputEvent.type === "double-click" &&
-          event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING;
+          (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
+            event.eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH);
         const suspendedDisplayWake = inputEvent.type === "display-wake";
         if (ringDoubleTap || suspendedDisplayWake) {
           if (shell.isScreenOn()) {
@@ -1463,6 +1645,9 @@ class DashboardController {
         outcome = { ...outcome, shell: true };
       }
 
+      if (event.kind === "watch-gesture") {
+        this.appendLog(`watch-gesture ${eventLabel(event.kind, event.eventType)}`);
+      }
       if (event.kind === "sys-event") {
         this.lastSys = `${sourceName(event.eventSource)}/${eventName(event.eventType)}`;
         this.appendLog(`sys-event ${this.lastSys}`);
@@ -1473,7 +1658,10 @@ class DashboardController {
         ) {
           this.appendLog("display state invalidated by firmware exit event");
         }
-        if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
+        if (
+          event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
+          event.eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH
+        ) {
           this.lastInput = eventName(event.eventType);
         }
       }
@@ -1813,7 +2001,7 @@ class DashboardController {
         `still unsent after ${FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS}ms; shell render loop released`,
       );
     }
-    this.updateCompositePreview();
+    this.schedulePreviewUpdate();
   }
 
   private async handleWakeWord(keyword: string): Promise<void> {
@@ -1878,6 +2066,10 @@ class DashboardController {
       clearInterval(this.previewTimer);
       this.previewTimer = null;
     }
+    if (this.previewTrailingTimer) {
+      clearTimeout(this.previewTrailingTimer);
+      this.previewTrailingTimer = null;
+    }
     if (this.screenTimeoutTimer) {
       clearInterval(this.screenTimeoutTimer);
       this.screenTimeoutTimer = null;
@@ -1928,6 +2120,27 @@ class DashboardController {
    * foreground, including worker apps the TS side never renders). Throttled
    * to avoid rebuilding the bitmap faster than the phone UI needs it.
    */
+  private previewTrailingTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastRecordCaptureAtMs = 0;
+
+  /**
+   * Refresh the preview now if the floor allows, otherwise once the floor
+   * expires — so the last frame of a burst always reaches the mirror instead
+   * of waiting for the safety-net poll.
+   */
+  private schedulePreviewUpdate(): void {
+    if (this.previewTrailingTimer) return;
+    const wait = this.lastConnectedPreviewUpdateAtMs + CONNECTED_PREVIEW_MIN_UPDATE_MS - Date.now();
+    if (wait <= 0) {
+      this.updateCompositePreview();
+      return;
+    }
+    this.previewTrailingTimer = setTimeout(() => {
+      this.previewTrailingTimer = null;
+      this.updateCompositePreview();
+    }, wait);
+  }
+
   private updateCompositePreview(): void {
     if (!this.communicator) return;
     // The connected foreground service intentionally keeps this controller
@@ -1947,9 +2160,8 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
-    // The recorder captures at the same cadence the phone-side preview is
-    // refreshed, so the GIF matches what the phone display showed.
-    if (this.screenRecordingActive) {
+    if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
+      this.lastRecordCaptureAtMs = now;
       this.communicator.recordScreenFrame();
     }
     const preview = this.communicator.getCompositePreview();
@@ -1973,10 +2185,37 @@ class DashboardController {
       | "scroll-down"
       | "long-press"
       | "long-press-release"
-      | "wakeword",
+      | "wakeword"
+      | "swipe-left"
+      | "swipe-right"
+      | "swipe-up"
+      | "swipe-down",
+    origin: SyntheticInputOrigin = "ring",
   ): RawInputEvent {
     const frameId = frameTimings.startFrame(`input:synthetic:${kind}`);
+    // The phone UI's test buttons stand in for the ring; the watch is its own
+    // source so the UI can give it a richer scheme (see InputSource).
+    const eventSource =
+      origin === "watch" ? EventSourceType.TOUCH_EVENT_FROM_WATCH : EventSourceType.TOUCH_EVENT_FROM_RING;
     switch (kind) {
+      case "swipe-left":
+      case "swipe-right":
+      case "swipe-up":
+      case "swipe-down":
+        // Watch-only directional input; see WatchGestureType.
+        return {
+          kind: "watch-gesture",
+          containerName: "",
+          eventType: {
+            "swipe-left": WatchGestureType.SWIPE_LEFT,
+            "swipe-right": WatchGestureType.SWIPE_RIGHT,
+            "swipe-up": WatchGestureType.SWIPE_UP,
+            "swipe-down": WatchGestureType.SWIPE_DOWN,
+          }[kind],
+          eventSource: 0,
+          systemExitReasonCode: 0,
+          frameId,
+        };
       case "wakeword":
         // Same event the glasses report for the spoken wakeword (sid 0x07).
         return {
@@ -1992,7 +2231,7 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.RING_LONG_PRESS_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2001,7 +2240,7 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2010,7 +2249,7 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.CLICK_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2019,7 +2258,7 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2028,7 +2267,7 @@ class DashboardController {
           kind: "text-click",
           containerName: "",
           eventType: OsEventTypeList.SCROLL_TOP_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2038,7 +2277,7 @@ class DashboardController {
           kind: "text-click",
           containerName: "",
           eventType: OsEventTypeList.SCROLL_BOTTOM_EVENT,
-          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          eventSource,
           systemExitReasonCode: 0,
           frameId,
         };
@@ -2050,6 +2289,7 @@ class DashboardController {
     for (const listener of this.listeners) {
       listener(snapshot);
     }
+    this.wearRemote?.schedulePublish();
   }
 }
 

@@ -5,7 +5,7 @@ import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
-import { DashboardInputEvent, Layer, LayerActions, LayerContext } from "../../ui/layers";
+import { DashboardInputEvent, isWatchInput, Layer, LayerActions, LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { iconGridMinRowHeight } from "../../ui/metrics";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
@@ -64,12 +64,19 @@ type LauncherGridEntry =
  * picks the item); a tap launches an app or opens a folder (the same grid,
  * restricted to that folder's apps). Double-click backs out one level (item →
  * row, folder → top grid), and from the top level yields to the sidebar.
+ * That is the ring's scheme; the watch (see handleWatchInput) skips row mode
+ * and moves one cell at a time in four directions.
  *
  * The folder grouping lives in the settings store (see launcher-folders.ts)
  * and is re-read every paint, so assistant folder tools take effect without
  * the layer holding any copy of the state.
  */
 class LauncherGridLayer implements Layer {
+  // Watch swipes are spatial: up/down move between rows, left/right between
+  // columns. From row mode, right goes into the row (left backs out, like
+  // double-click); from the first column, left returns to row mode, which
+  // keeps "left" pointing toward the sidebar all the way out.
+  readonly acceptsDirectional = true;
   private mode: LauncherMode = "row";
   private selectedRow = 0;
   private selectedCol = 1;
@@ -307,6 +314,10 @@ class LauncherGridLayer implements Layer {
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+    if (isWatchInput(event)) {
+      await this.handleWatchInput(event, ctx);
+      return;
+    }
     const entries = this.entries();
     const rows = this.rowCount(entries.length);
     switch (event.type) {
@@ -341,20 +352,7 @@ class LauncherGridLayer implements Layer {
             this.itemsInRow(entries.length, this.selectedRow) - 1,
           );
         } else {
-          const entry = entries[this.selectedRow * COLS + this.selectedCol];
-          if (!entry) return;
-          if (entry.kind === "folder") {
-            this.currentFolder = entry.name;
-            this.mode = "row";
-            this.selectedRow = 0;
-            this.scrollRow = 0;
-          } else {
-            // Return to the top grid before launching, so the launcher never
-            // shows (even briefly) stale folder contents when re-entered.
-            if (this.currentFolder !== null) this.exitFolder();
-            this.mode = "row";
-            await this.options.launchApp(entry.appId);
-          }
+          await this.openSelected(entries);
         }
         return;
       }
@@ -369,6 +367,108 @@ class LauncherGridLayer implements Layer {
         return;
       default:
         return;
+    }
+  }
+
+  /**
+   * The watch's scheme: there is no row mode to enter first. The selection is
+   * always one cell; up/down/left/right (and the crown) move it spatially,
+   * select opens it, back leaves the folder or the grid, and stepping left
+   * past the first column leaves for the sidebar, which is where "left" goes.
+   * Row mode is restored on the way out so a ring user finds the grid as
+   * they left it.
+   */
+  private async handleWatchInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+    const entries = this.entries();
+    const rows = this.rowCount(entries.length);
+    if (this.mode === "row") {
+      this.mode = "item";
+      this.selectedCol = clamp(this.selectedCol, 0, this.itemsInRow(entries.length, this.selectedRow) - 1);
+    }
+    const leave = () => {
+      this.mode = "row";
+      shell.yieldFocusToSidebar();
+    };
+    switch (event.type) {
+      case "swipe-up":
+      case "swipe-down":
+      case "scroll-up":
+      case "scroll-down": {
+        const delta = event.type === "swipe-down" || event.type === "scroll-down" ? 1 : -1;
+        this.selectedRow = clamp(this.selectedRow + delta, 0, rows - 1);
+        // Keep the column; a shorter last row clamps it.
+        this.selectedCol = clamp(this.selectedCol, 0, this.itemsInRow(entries.length, this.selectedRow) - 1);
+        return;
+      }
+      case "swipe-right":
+        this.selectedCol = clamp(this.selectedCol + 1, 0, this.itemsInRow(entries.length, this.selectedRow) - 1);
+        return;
+      case "swipe-left":
+        if (this.selectedCol > 0) {
+          this.selectedCol--;
+        } else if (this.currentFolder !== null) {
+          this.exitFolder();
+          this.mode = "item";
+        } else {
+          leave();
+        }
+        return;
+      case "click":
+        await this.openSelected(entries);
+        return;
+      case "double-click":
+        if (this.currentFolder !== null) {
+          this.exitFolder();
+          this.mode = "item";
+        } else {
+          leave();
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  /**
+   * A touch on the phone's mirror: the cell under it becomes the selection
+   * and opens (the same as a watch select on it). Uses the geometry paint
+   * lays the grid out with, so it lands on what the mirror showed.
+   */
+  async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    const font = getDefaultSmallFont();
+    const { width, height } = ctx.stack.getBaseSize();
+    const entries = this.entries();
+    const gridTop = this.currentFolder !== null ? GRID_TOP + font.lineHeight + 4 : GRID_TOP;
+    const gridBottom = height - 4;
+    if (y < gridTop || y >= gridBottom || x < 0 || x >= width) return false;
+    const rowH = iconGridMinRowHeight(font, ICON_SIZE, LABEL_GAP);
+    const colW = width / COLS;
+    const row = this.scrollRow + Math.floor((y - gridTop) / rowH);
+    const col = Math.floor(x / colW);
+    if (row < 0 || row >= this.rowCount(entries.length)) return false;
+    if (col < 0 || col >= this.itemsInRow(entries.length, row)) return false;
+    this.mode = "item";
+    this.selectedRow = row;
+    this.selectedCol = col;
+    await this.openSelected(entries);
+    return true;
+  }
+
+  /** Open the selected cell: enter a folder, or launch the app. */
+  private async openSelected(entries: readonly LauncherGridEntry[]): Promise<void> {
+    const entry = entries[this.selectedRow * COLS + this.selectedCol];
+    if (!entry) return;
+    if (entry.kind === "folder") {
+      this.currentFolder = entry.name;
+      this.mode = "row";
+      this.selectedRow = 0;
+      this.scrollRow = 0;
+    } else {
+      // Return to the top grid before launching, so the launcher never
+      // shows (even briefly) stale folder contents when re-entered.
+      if (this.currentFolder !== null) this.exitFolder();
+      this.mode = "row";
+      await this.options.launchApp(entry.appId);
     }
   }
 }

@@ -1,0 +1,47 @@
+<!--
+  The phone's controller for the glasses: the same scheme as the watch pad
+  (tap = select, double-tap or two fingers = back, hold = menu, swipes
+  navigate), a d-pad for the same four directions, the display-mode picker
+  and brightness beside the mirror, and a compact ring simulator for the R1's
+  own scheme. Used by main-page.xml in both orientations; binds to the page's
+  MainViewModel.
+-->
+<StackLayout xmlns="http://schemas.nativescript.org/tns.xsd" class="remote-controls">
+  <GridLayout columns="auto,*,auto" class="display-controls">
+    <Button col="0" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" />
+    <GridLayout col="1" columns="auto,*" verticalAlignment="center" class="brightness">
+      <Label col="0" text="☀" class="brightness-icon" verticalAlignment="center" />
+      <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
+    </GridLayout>
+    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
+      <Label text="Auto" verticalAlignment="center" />
+      <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
+    </StackLayout>
+  </GridLayout>
+
+  <GridLayout class="touchpad" tap="{{ onPadTap }}" doubleTap="{{ onPadDoubleTap }}" longPress="{{ onPadLongPress }}" swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
+    <Label text="{{ padFocusLine }}" class="pad-focus" horizontalAlignment="center" verticalAlignment="center" />
+    <Label text="● select   ●● back   ‒ menu" class="pad-legend" horizontalAlignment="center" verticalAlignment="bottom" />
+    <Button text="▲" tap="{{ onDpadUp }}" class="pad-dpad-button" horizontalAlignment="center" verticalAlignment="top" />
+    <Button text="▼" tap="{{ onDpadDown }}" class="pad-dpad-button pad-dpad-down" horizontalAlignment="center" verticalAlignment="bottom" />
+    <Button text="◀" tap="{{ onDpadLeft }}" class="pad-dpad-button" horizontalAlignment="left" verticalAlignment="center" />
+    <Button text="▶" tap="{{ onDpadRight }}" class="pad-dpad-button" horizontalAlignment="right" verticalAlignment="center" />
+  </GridLayout>
+
+  <GridLayout columns="*,*,*" class="action-row">
+    <Button col="0" text="Back" tap="{{ onBackTap }}" class="action-button" />
+    <Button col="1" text="Menu" tap="{{ onMenuTap }}" class="action-button" />
+    <Button col="2" text="Hey Even" tap="{{ onSyntheticMicTap }}" class="action-button" />
+  </GridLayout>
+
+  <GridLayout columns="auto,*,*,*,*,*,auto,auto" class="ring-row">
+    <Label col="0" text="Ring" class="ring-label" verticalAlignment="center" />
+    <Button col="1" text="▲" tap="{{ onSyntheticUpTap }}" class="ring-button" />
+    <Button col="2" text="▼" tap="{{ onSyntheticDownTap }}" class="ring-button" />
+    <Button col="3" text="●" tap="{{ onSyntheticRightTap }}" class="ring-button" />
+    <Button col="4" text="●●" tap="{{ onSyntheticLeftTap }}" class="ring-button" />
+    <Button col="5" text="‒" tap="{{ onSyntheticLongPressTap }}" class="ring-button" />
+    <Label col="6" text="Touch mirror" class="ring-label" verticalAlignment="center" />
+    <Switch col="7" checked="{{ mirrorTouchEnabled }}" checkedChange="{{ onMirrorTouchChange }}" />
+  </GridLayout>
+</StackLayout>

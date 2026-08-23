@@ -55,3 +55,78 @@ Button.-primary {
   border-width: 1;
   border-radius: 8;
 }
+
+/* The phone's controller for the glasses (phone-ui/remote-controls.xml). */
+.remote-controls {
+  margin: 0 8 0 8;
+}
+.display-controls {
+  margin-bottom: 6;
+}
+.mode-button {
+  font-size: 13;
+  padding: 6 10;
+  margin-right: 6;
+}
+.brightness-icon {
+  font-size: 16;
+  margin: 0 4 0 4;
+  color: #444444;
+}
+.auto-toggle Label {
+  font-size: 13;
+  margin-right: 2;
+}
+.touchpad {
+  height: 230;
+  background-color: #1f1f1f;
+  border-radius: 14;
+  border-width: 1;
+  border-color: #3a3a3a;
+  color: #f0f0f0;
+  margin-top: 2;
+}
+.pad-focus {
+  font-size: 20;
+  color: #ffffff;
+}
+.pad-dpad-button {
+  width: 46;
+  height: 46;
+  margin: 6;
+  padding: 0;
+  font-size: 16;
+  border-radius: 23;
+  background-color: #333333;
+  color: #e8e8e8;
+}
+.pad-dpad-down {
+  margin-bottom: 30;
+}
+.pad-legend {
+  font-size: 11;
+  color: #8a8a8a;
+  margin-bottom: 8;
+}
+.action-row {
+  margin-top: 6;
+}
+.action-button {
+  margin: 2;
+  font-size: 14;
+}
+.ring-row {
+  margin-top: 4;
+}
+.ring-label {
+  font-size: 12;
+  color: #666666;
+  margin: 0 6 0 4;
+}
+.ring-button {
+  width: 44;
+  height: 36;
+  margin: 1;
+  padding: 0;
+  font-size: 13;
+}

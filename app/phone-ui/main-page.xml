@@ -1,4 +1,4 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar title="Faceclaw">
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
@@ -11,7 +11,8 @@
     <GridLayout>
         <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
             <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
-                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}" />
+                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
+                    tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
             </StackLayout>
             <GridLayout
                 row="0"
@@ -36,14 +37,7 @@
                     </StackLayout>
                 </StackLayout>
                 <StackLayout row="1">
-                    <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
-                        <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
-                        <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
-                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
-                        <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
-                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
-                        <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
-                    </GridLayout>
+                    <rc:remote-controls />
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
@@ -65,13 +59,14 @@
                     <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
                 </StackLayout>
             </StackLayout>
-            <GridLayout row="1" rows="auto,auto,*" columns="*,260">
+            <GridLayout row="1" rows="auto,auto,*" columns="*,360">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
                     <Image
                         src="{{ displayPreview }}"
                         stretch="fill"
                         width="{{ landscapeDisplayPreviewWidth }}"
-                        height="{{ landscapeDisplayPreviewHeight }}" />
+                        height="{{ landscapeDisplayPreviewHeight }}"
+                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
                 </StackLayout>
                 <GridLayout
                     row="0"
@@ -84,14 +79,7 @@
                     <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
                 </GridLayout>
                 <StackLayout row="0" col="1" class="m-l-16">
-                    <GridLayout rows="auto,auto,auto" columns="*,*,*">
-                        <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
-                        <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
-                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
-                        <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
-                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
-                        <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
-                    </GridLayout>
+                    <rc:remote-controls />
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />

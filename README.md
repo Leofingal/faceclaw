@@ -65,10 +65,40 @@ To install, run
    battery life similar to the stock Even app.
  * Connection management with auto-reconnect, and autodetection of conflict
    with the official Even Realities app
- * On-phone screen mirroring and simulated ring input
+ * On-phone screen mirroring with touch control: tap what you see on the
+   mirror (sidebar icons, launcher cells), or use the phone's own touchpad,
+   d-pad and Back/Menu buttons — the same spatial scheme as the watch — plus
+   a compact ring simulator. A display-mode picker (576×288 band, 576×480
+   tall, or the full 640×480 panel with an auto-hiding sidebar) and a
+   brightness slider with an Auto toggle sit beside the mirror.
+ * A Wear OS watch app that replaces (and outdoes) the R1 ring: tap, swipe,
+   hold and crown gestures, side buttons, app launching and window switching,
+   voice or keyboard queries to the assistant with the reply on your wrist,
+   typing into apps, and glasses status/lock/display control (see "Watch
+   remote" below)
  * Dual-language NativeScript architecture with Java for the multithreaded
    Android API and bluetooth stack bits, Typescript for the bits you want to
    hack on
+
+## Watch remote (Wear OS)
+
+The `wear/` directory holds a companion app for Wear OS 3+ watches that turns
+the watch into a remote for the glasses. The whole watch face is a touchpad
+that mirrors the ring (tap, double-tap, hold, swipe, crown scrolling, side
+buttons), and beyond the ring it can launch apps, switch and close windows,
+wake/sleep/lock the display, send spoken or typed queries straight to the
+assistant (using the watch's own microphone) and show the reply on the wrist,
+and type text into apps such as the terminal. Its swipes are a spatial
+control scheme the ring never had, with no mode to enter first: the
+launcher highlights one app and moves it by rows and columns, right goes
+into things (sidebar → window, settings section → items, next track in
+Music), left backs out, tap selects, hold opens the context menu, double-tap
+or a two-finger tap is back everywhere, and two wrist twists go back; up/down
+scroll and right/left select/back everywhere else. The ring's own scheme is
+unchanged — watch input is tagged as a separate source. Faceclaw's Settings > Watch
+section has the phone-side switches. See [wear/README.md](wear/README.md) for
+building and installing it; it is a separate Gradle build, sideloaded over
+adb, and needs no Play Store. The phone side requires Google Play services.
 
 ## Connecting an external agent (OpenClaw)
 

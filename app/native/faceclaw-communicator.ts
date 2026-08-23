@@ -91,6 +91,18 @@ export type RawInputEvent =
     }
   | {
       /**
+       * Synthetic directional gesture from the Wear OS remote; `eventType` is
+       * a WatchGestureType (app/g2/events.ts). Never produced by Java.
+       */
+      kind: "watch-gesture";
+      containerName: string;
+      eventType: number;
+      eventSource: number;
+      systemExitReasonCode: number;
+      frameId: number;
+    }
+  | {
+      /**
        * Stock display-lifecycle wake observed after a ring or arm double tap
        * while Faceclaw's EvenHub page is suspended.
        */

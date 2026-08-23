@@ -1,5 +1,28 @@
-import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
-import { dashboardController } from "../g2/dashboard-controller";
+import {
+  Application,
+  Dialogs,
+  Frame,
+  ImageSource,
+  Observable,
+  Screen,
+  SwipeDirection,
+  type GestureEventData,
+  type SwipeGestureEventData,
+  type TouchGestureEventData,
+  type View,
+} from "@nativescript/core";
+import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
+import { shell } from "../ui/shell/shell";
+import {
+  brightnessSetting,
+  DISPLAY_MODE_VALUES,
+  displayModeLabel,
+  displayModeSetting,
+  onAnySettingChanged,
+  type BrightnessSetting,
+  type DisplayModeSetting,
+} from "../ui/dashboard-settings";
+import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed } from "../g2/reconnect-policy";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
@@ -55,7 +78,10 @@ export class MainViewModel extends Observable {
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
+      this.refreshPadFocusLine();
     });
+    // Brightness / display mode can change from the glasses' Settings app too.
+    onAnySettingChanged(() => this.refreshDisplayControls());
   }
 
   get status(): string {
@@ -601,6 +627,220 @@ export class MainViewModel extends Observable {
     await dashboardController.injectSyntheticRingInput("wakeword");
   }
 
+  // ---- the phone's own controller: touchpad, d-pad, mirror touch ----
+  //
+  // Everything here is the watch scheme (origin "watch"): spatial swipes,
+  // tap = select, double-tap / two fingers = back, hold = menu. The ring row
+  // above stays on the ring's own scheme.
+
+  private padPointers = 0;
+  private padTwoFingerDown = false;
+
+  /** What the next gesture lands on, as the watch pad shows it. */
+  get padFocusLine(): string {
+    if (this.phase !== "connected" && this.phase !== "charging") return "Glasses disconnected";
+    if (!shell.isScreenOn()) return "Display off";
+    const foreground = shell.getForegroundApp();
+    return foreground ? foreground.title : "Launcher";
+  }
+
+  private refreshPadFocusLine(): void {
+    this.notifyPropertyChange("padFocusLine", this.padFocusLine);
+  }
+
+  async onPadTap(): Promise<void> {
+    if (this.padTwoFingerDown) return;
+    await dashboardController.injectSyntheticRingInput("click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadDoubleTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("double-click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadLongPress(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadSwipe(args: SwipeGestureEventData): Promise<void> {
+    await dashboardController.injectSyntheticRingInput(swipeKind(args.direction), "watch");
+    this.refreshPadFocusLine();
+  }
+
+  /** Two fingers down and up without moving: back (the watch's two-finger tap). */
+  async onPadTouch(args: TouchGestureEventData): Promise<void> {
+    const count = args.getPointerCount();
+    if (args.action === "down" || args.action === "move") {
+      this.padPointers = Math.max(this.padPointers, count);
+      if (count >= 2) this.padTwoFingerDown = true;
+      return;
+    }
+    if (args.action === "up" || args.action === "cancel") {
+      const twoFinger = this.padTwoFingerDown;
+      this.padPointers = 0;
+      if (twoFinger) {
+        // Let the single-tap recognizer's delayed tap see the flag first.
+        setTimeout(() => {
+          this.padTwoFingerDown = false;
+        }, 400);
+        if (args.action === "up") {
+          await dashboardController.injectSyntheticRingInput("double-click", "watch");
+          this.refreshPadFocusLine();
+        }
+      }
+    }
+  }
+
+  async onDpadUp(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("swipe-up", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onDpadDown(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("swipe-down", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onDpadLeft(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("swipe-left", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onDpadRight(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("swipe-right", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onDpadSelect(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onBackTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("double-click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onMenuTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  // ---- touching the mirror itself ----
+
+  get mirrorTouchEnabled(): boolean {
+    return getBooleanSetting(MIRROR_TOUCH_KEY, true);
+  }
+
+  onMirrorTouchChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    const on = typeof args.value === "boolean" ? args.value : Boolean(args.object?.checked);
+    setBooleanSetting(MIRROR_TOUCH_KEY, on);
+    this.notifyPropertyChange("mirrorTouchEnabled", on);
+  }
+
+  private mirrorFraction(args: GestureEventData & { getX?: () => number; getY?: () => number }): { nx: number; ny: number } | null {
+    const view = args.object as View | undefined;
+    const size = view?.getActualSize?.();
+    if (!view || !size || !size.width || !size.height || !args.getX || !args.getY) return null;
+    // On Android the gesture's getX/getY are screen-absolute (in DIPs), not
+    // view-local; the view's own screen position makes them local.
+    const origin = view.getLocationOnScreen?.() ?? { x: 0, y: 0 };
+    const localX = args.getX() - origin.x;
+    const localY = args.getY() - origin.y;
+    return { nx: localX / size.width, ny: localY / size.height };
+  }
+
+  private async mirrorGesture(kind: MirrorTouchKind, args: GestureEventData): Promise<void> {
+    if (!this.mirrorTouchEnabled) return;
+    const at = this.mirrorFraction(args) ?? { nx: 0.5, ny: 0.5 };
+    await dashboardController.handleMirrorTouch(kind, at.nx, at.ny);
+    this.refreshPadFocusLine();
+  }
+
+  onMirrorTap(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("tap", args);
+  }
+
+  onMirrorDoubleTap(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("double-tap", args);
+  }
+
+  onMirrorLongPress(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("long-press", args);
+  }
+
+  onMirrorSwipe(args: SwipeGestureEventData): Promise<void> {
+    return this.mirrorGesture(swipeKind(args.direction), args);
+  }
+
+  // ---- display mode and brightness, beside the mirror ----
+
+  get displayModeLabel(): string {
+    return displayModeLabel(displayModeSetting.get()) + " ▾";
+  }
+
+  async onDisplayModeTap(): Promise<void> {
+    const current = displayModeSetting.get();
+    const options = DISPLAY_MODE_VALUES.map((value) => displayModeLabel(value) + (value === current ? "  ✓" : ""));
+    const picked = await Dialogs.action({ title: "Display mode", cancelButtonText: "Cancel", actions: options });
+    const index = options.indexOf(picked);
+    if (index < 0) return;
+    const value = DISPLAY_MODE_VALUES[index] as DisplayModeSetting;
+    if (value !== current) displayModeSetting.set(value);
+    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
+  }
+
+  get brightnessAuto(): boolean {
+    return brightnessSetting.get() === "auto";
+  }
+
+  get brightnessSliderEnabled(): boolean {
+    return !this.brightnessAuto;
+  }
+
+  /** The slider's position; while Auto, the last manual level (or 50). */
+  get brightnessPercent(): number {
+    const value = brightnessSetting.get();
+    if (value === "auto") return this.lastManualBrightness;
+    const numeric = parseInt(value, 10);
+    return Number.isFinite(numeric) ? numeric : 50;
+  }
+
+  private lastManualBrightness = 50;
+
+  onBrightnessChange(args: { value?: number; object?: { value?: number } }): void {
+    if (this.brightnessAuto) return;
+    const raw = typeof args.value === "number" ? args.value : Number(args.object?.value ?? NaN);
+    if (!Number.isFinite(raw)) return;
+    // The setting only has every tenth level; snap to the nearest.
+    const level = Math.min(100, Math.max(0, Math.round(raw / 10) * 10));
+    this.lastManualBrightness = level;
+    const value = String(level) as BrightnessSetting;
+    if (brightnessSetting.get() !== value) brightnessSetting.set(value);
+  }
+
+  onBrightnessAutoChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    const on = typeof args.value === "boolean" ? args.value : Boolean(args.object?.checked);
+    if (on) {
+      if (brightnessSetting.get() !== "auto") {
+        this.lastManualBrightness = this.brightnessPercent;
+        brightnessSetting.set("auto");
+      }
+    } else if (brightnessSetting.get() === "auto") {
+      brightnessSetting.set(String(this.lastManualBrightness) as BrightnessSetting);
+    }
+    this.refreshDisplayControls();
+  }
+
+  private refreshDisplayControls(): void {
+    this.notifyPropertyChange("brightnessAuto", this.brightnessAuto);
+    this.notifyPropertyChange("brightnessSliderEnabled", this.brightnessSliderEnabled);
+    this.notifyPropertyChange("brightnessPercent", this.brightnessPercent);
+    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
+  }
+
   private appendLog(line: string): void {
     const stamp = new Date().toISOString().slice(11, 19);
     this.log = this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;
@@ -619,5 +859,21 @@ export class MainViewModel extends Observable {
     const sanitized = raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
     if (sanitized.length <= 240) return sanitized;
     return `${sanitized.slice(0, 237)}...`;
+  }
+}
+
+const MIRROR_TOUCH_KEY = "phone.mirrorTouch";
+
+/** NativeScript swipe direction -> the watch-scheme directional gesture. */
+function swipeKind(direction: SwipeDirection): "swipe-up" | "swipe-down" | "swipe-left" | "swipe-right" {
+  switch (direction) {
+    case SwipeDirection.up:
+      return "swipe-up";
+    case SwipeDirection.down:
+      return "swipe-down";
+    case SwipeDirection.left:
+      return "swipe-left";
+    default:
+      return "swipe-right";
   }
 }
