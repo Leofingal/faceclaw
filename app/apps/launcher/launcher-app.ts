@@ -5,13 +5,9 @@ import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL,
-} from "../../ui/gestures";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { iconGridMinRowHeight } from "../../ui/metrics";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { createInProcessWindow } from "../../ui/shell/in-process-window";
@@ -49,17 +45,9 @@ export const LAUNCHER_WINDOW_ID = "launcher";
 export const LAUNCHER_SURFACE_ID = "window:launcher";
 
 const COLS = 5;
-// Row height is sized so 3.5 rows fit the viewport: three full rows are
-// always visible, and a fourth (half-clipped) row peeks in to signal that
-// there are more apps to scroll to.
-const VISIBLE_ROWS = 3.5;
-const FULL_ROWS = Math.floor(VISIBLE_ROWS);
 const GRID_TOP = 6;
-const FOOTER_HEIGHT = 16;
 const ICON_SIZE = 44;
 const LABEL_GAP = 2;
-/** Extra top inset for the folder-name header while inside a folder. */
-const FOLDER_HEADER_HEIGHT = 16;
 
 type LauncherMode = "row" | "item";
 
@@ -255,16 +243,22 @@ class LauncherGridLayer implements Layer {
       Math.max(0, this.itemsInRow(entries.length, this.selectedRow) - 1),
     );
 
-    const gridTop = this.currentFolder !== null ? GRID_TOP + FOLDER_HEADER_HEIGHT : GRID_TOP;
+    // The folder-name header band scales with the font.
+    const gridTop = this.currentFolder !== null ? GRID_TOP + font.lineHeight + 4 : GRID_TOP;
     if (this.currentFolder !== null) {
       image.drawText(font, 8, GRID_TOP - 2, truncateText(font, this.currentFolder, width - 16), 160);
     }
-    const gridBottom = height - FOOTER_HEIGHT;
-    const rowH = (gridBottom - gridTop) / VISIBLE_ROWS;
+    const gridBottom = height - 4;
+    // Rows are exactly as tall as their content (icon + label + breathing
+    // room), so row height tracks the font instead of stretching to fill the
+    // viewport. Leftover space below the last full row shows the top of the
+    // next row when there are more apps to scroll to.
+    const rowH = iconGridMinRowHeight(font, ICON_SIZE, LABEL_GAP);
+    const fullRows = Math.max(1, Math.floor((gridBottom - gridTop) / rowH));
     const colW = width / COLS;
 
     // Scroll to keep the selected row among the fully-visible rows.
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, FULL_ROWS, rows);
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, fullRows, rows);
 
     const rowY = (row: number) => gridTop + (row - this.scrollRow) * rowH;
 
@@ -309,13 +303,6 @@ class LauncherGridLayer implements Layer {
       }
     }
 
-    const selectedEntry = entries[this.selectedRow * COLS + this.selectedCol];
-    const pickVerb = selectedEntry?.kind === "folder" ? "open" : "launch";
-    const hint =
-      this.mode === "row"
-        ? `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick   ${GESTURE_DOUBLE_CLICK} back`
-        : `${GESTURE_SCROLL} item   ${GESTURE_CLICK} ${pickVerb}   ${GESTURE_DOUBLE_CLICK} row`;
-    image.drawText(font, 8, height - 14, hint, 110);
     return image;
   }
 

@@ -1,8 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GrayImage } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
+import { GESTURE_CLICK } from "../../ui/gestures";
 import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
 import {
   drawListScrollbar,
@@ -25,9 +25,12 @@ import {
 import { EvenHubStoreDetailLayer } from "./store-detail-layer";
 import { lineStep } from "../../ui/metrics";
 
-const HEADER_HEIGHT = 34;
-const FOOTER_HEIGHT = 22;
 const LIST_X = 18;
+
+/** Header: title line, then the status/subtitle line, then a small gap. */
+function headerHeight(font: UiFont): number {
+  return 8 + lineStep(font) + font.lineHeight + 6;
+}
 
 export type EvenHubStoreLayerOptions = {
   launchApp: (appId: string) => Promise<void> | void;
@@ -62,35 +65,30 @@ export class EvenHubStoreLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const headerH = headerHeight(font);
     image.drawText(font, LIST_X, 8, "EvenHub", 220);
 
     const subtitle = this.status || (this.total ? `${this.apps.length} of ${this.total} public apps` : "Public apps");
-    image.drawText(font, LIST_X, 22, truncateText(font, subtitle, width - LIST_X * 2), 125);
+    image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, subtitle, width - LIST_X * 2), 125);
 
     if (this.showingLogin) {
       const message = this.loading
         ? "Signing in..."
         : "Enter your Even account email and password in the phone app.";
       for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
-        image.drawText(font, LIST_X, HEADER_HEIGHT + 22 + index * 15, line, 190);
+        image.drawText(font, LIST_X, headerH + 16 + index * lineStep(font), line, 190);
       }
-      image.drawText(
-        font,
-        LIST_X,
-        height - 16,
-        truncateText(font, `${GESTURE_CLICK} edit credentials   ${GESTURE_DOUBLE_CLICK} back`, width - LIST_X * 2),
-        105,
-      );
+      image.drawText(font, LIST_X, height - font.lineHeight - 4, `${GESTURE_CLICK} edit credentials`, 105);
       return image;
     }
 
     if (this.apps.length === 0) {
       const message = this.loading ? "Loading apps..." : this.status || "No apps returned.";
-      image.drawText(font, LIST_X, HEADER_HEIGHT + 28, truncateText(font, message, width - LIST_X * 2), 190);
+      image.drawText(font, LIST_X, headerH + 22, truncateText(font, message, width - LIST_X * 2), 190);
     } else {
       this.selectedIndex = clamp(this.selectedIndex, 0, this.apps.length - 1);
       const rowH = Math.max(30, 2 * lineStep(font) + 4);
-      const visibleRows = Math.max(1, Math.floor((height - HEADER_HEIGHT - FOOTER_HEIGHT) / rowH));
+      const visibleRows = Math.max(1, Math.floor((height - headerH - 4) / rowH));
       this.scrollRow = scrollToKeepSelectionVisible(
         this.scrollRow,
         this.selectedIndex,
@@ -100,7 +98,7 @@ export class EvenHubStoreLayer implements Layer {
       const last = Math.min(this.apps.length, this.scrollRow + visibleRows);
       for (let index = this.scrollRow; index < last; index++) {
         const app = this.apps[index]!;
-        const y = HEADER_HEIGHT + (index - this.scrollRow) * rowH;
+        const y = headerH + (index - this.scrollRow) * rowH;
         const selected = index === this.selectedIndex;
         if (selected) {
           drawSelectionHighlight(image, LIST_X - 6, y, width - LIST_X * 2 + 12, rowH - 2, ctx.stack.isFocused(), 5);
@@ -110,12 +108,10 @@ export class EvenHubStoreLayer implements Layer {
         image.drawText(font, LIST_X, y + 2 + lineStep(font), truncateText(font, detail, width - LIST_X * 2), 115);
       }
       if (this.apps.length > visibleRows) {
-        drawListScrollbar(image, width - 5, HEADER_HEIGHT, visibleRows * rowH - 3, this.scrollRow, visibleRows, this.apps.length);
+        drawListScrollbar(image, width - 5, headerH, visibleRows * rowH - 3, this.scrollRow, visibleRows, this.apps.length);
       }
     }
 
-    const hint = `${GESTURE_SCROLL} select   ${GESTURE_CLICK} details   ${GESTURE_DOUBLE_CLICK} back`;
-    image.drawText(font, LIST_X, height - font.lineHeight - 4, truncateText(font, hint, width - LIST_X * 2), 105);
     return image;
   }
 

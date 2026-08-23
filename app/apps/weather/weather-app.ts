@@ -38,6 +38,15 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
     iconLetter: "W",
     icon: "cloud-sun",
     closeable: true,
+    menuItems: () => [
+      {
+        label: "Refresh",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          requestUpdate();
+        },
+      },
+    ],
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new WeatherLayer(() => weatherBridge.snapshot(), requestUpdate)),
     submitFrame: options.submitFrame,

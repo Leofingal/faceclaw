@@ -1,7 +1,6 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { TextViewerLayer } from "../files/text-viewer";
@@ -42,60 +41,71 @@ export class EvenHubStoreDetailLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const textWidth = width - X * 2;
     const step = lineStep(font);
     const actionRowH = listRowHeight(font) + 4;
-    let y = 8;
-
-    image.drawText(font, X, y, truncateText(font, this.app.name, textWidth), 235);
-    y += step + 2;
-    const creator = this.app.creatorName ? `by ${this.app.creatorName}` : this.app.packageId;
-    image.drawText(font, X, y, truncateText(font, creator, textWidth), 130);
-    y += step + 6;
-
-    const summary = this.app.tagline || this.app.description || "No description supplied.";
-    for (const line of wrapText(font, summary, textWidth).slice(0, 3)) {
-      image.drawText(font, X, y, line, 205);
-      y += step;
-    }
-    y += 4;
-
-    const metadata = [
-      `${formatCount(this.app.installCount)} installs  ·  ${formatCount(this.app.likeCount)} likes`,
-      this.app.version ? `Version ${this.app.version}${this.app.fileSize ? `  ·  ${formatBytes(this.app.fileSize)}` : ""}` : "",
-      this.app.categories.length ? `Categories: ${this.app.categories.join(", ")}` : "",
-      this.app.firstPublishedAt ? `Published: ${formatDate(this.app.firstPublishedAt)}` : "",
-    ].filter(Boolean);
-    for (const line of metadata) {
-      image.drawText(font, X, y, truncateText(font, line, textWidth), 125);
-      y += step;
-    }
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
     const actions = ["About", "What's New", this.working ? "Installing..." : installed ? "Launch" : "Install"];
-    const actionTop = height - font.lineHeight - 10 - actions.length * actionRowH;
-    if (installed && !this.status) {
-      image.drawText(font, X, y + 2, `Installed version ${installed.version}`, 155);
-    }
-    if (this.status) {
-      image.drawText(font, X, Math.min(actionTop - step, y + 2), truncateText(font, this.status, textWidth), 180);
+
+    // Detail lines as (text, shade, extra gap below); built per candidate
+    // width so the layout choice below can measure before drawing.
+    const buildLines = (textWidth: number): { text: string; value: number; gapAfter: number }[] => {
+      const lines: { text: string; value: number; gapAfter: number }[] = [];
+      lines.push({ text: truncateText(font, this.app.name, textWidth), value: 235, gapAfter: 2 });
+      const creator = this.app.creatorName ? `by ${this.app.creatorName}` : this.app.packageId;
+      lines.push({ text: truncateText(font, creator, textWidth), value: 130, gapAfter: 6 });
+      const summary = this.app.tagline || this.app.description || "No description supplied.";
+      const summaryLines = wrapText(font, summary, textWidth).slice(0, 3);
+      for (const [index, line] of summaryLines.entries()) {
+        lines.push({ text: line, value: 205, gapAfter: index === summaryLines.length - 1 ? 4 : 0 });
+      }
+      const metadata = [
+        `${formatCount(this.app.installCount)} installs  ·  ${formatCount(this.app.likeCount)} likes`,
+        this.app.version ? `Version ${this.app.version}${this.app.fileSize ? `  ·  ${formatBytes(this.app.fileSize)}` : ""}` : "",
+        this.app.categories.length ? `Categories: ${this.app.categories.join(", ")}` : "",
+        this.app.firstPublishedAt ? `Published: ${formatDate(this.app.firstPublishedAt)}` : "",
+      ].filter(Boolean);
+      for (const line of metadata) {
+        lines.push({ text: truncateText(font, line, textWidth), value: 125, gapAfter: 0 });
+      }
+      if (installed && !this.status) {
+        lines.push({ text: `Installed version ${installed.version}`, value: 155, gapAfter: 0 });
+      }
+      if (this.status) {
+        lines.push({ text: truncateText(font, this.status, textWidth), value: 180, gapAfter: 0 });
+      }
+      return lines;
+    };
+    const linesHeight = (lines: { gapAfter: number }[]): number =>
+      lines.reduce((sum, line) => sum + step + line.gapAfter, 0);
+
+    // Stacked layout (details full-width, actions at the bottom) when it
+    // fits; otherwise the actions become a narrow top-right menu and the
+    // details flow down a left column beside it.
+    const stackedActionTop = height - 6 - actions.length * actionRowH;
+    const stacked = 8 + linesHeight(buildLines(width - X * 2)) + 6 <= stackedActionTop;
+    const menuW = 150;
+    const menuX = width - menuW - 12;
+    const textWidth = stacked ? width - X * 2 : menuX - X - 14;
+
+    let y = 8;
+    for (const line of buildLines(textWidth)) {
+      image.drawText(font, X, y, line.text, line.value);
+      y += step + line.gapAfter;
     }
 
+    const actionX = stacked ? X : menuX;
+    const actionW = stacked ? textWidth : menuW;
+    const actionTop = stacked ? stackedActionTop : 8;
     for (let index = 0; index < actions.length; index++) {
       const actionY = actionTop + index * actionRowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, X - 5, actionY, textWidth + 10, actionRowH - 1, ctx.stack.isFocused(), 8);
+        drawSelectionHighlight(image, actionX - 5, actionY, actionW + 10, actionRowH - 1, ctx.stack.isFocused(), 8);
       }
-      image.drawText(font, X + 6, actionY + 5, actions[index]!, this.working && index === 2 ? 145 : selected ? 245 : 190);
+      const value = this.working && index === 2 ? 145 : selected ? 245 : 190;
+      image.drawText(font, actionX + 6, actionY + 5, truncateText(font, actions[index]!, actionW - 8), value);
     }
-    image.drawText(
-      font,
-      X,
-      height - font.lineHeight - 4,
-      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} back`,
-      105,
-    );
     return image;
   }
 

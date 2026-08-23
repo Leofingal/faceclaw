@@ -5,7 +5,6 @@ import { truncateText } from "../graphics/textwrap";
 import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { lineStep, listRowHeight } from "./metrics";
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import {
   dismissNotification,
   invokeNotificationAction,
@@ -20,6 +19,9 @@ import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelo
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
+// Title position, shared with the other list apps (terminal, calendar).
+const TITLE_X = 18;
+const TITLE_Y = 10;
 const LIST_TOP = 38;
 const CARD_X = 20;
 const ICON_SIZE = 24;
@@ -79,10 +81,8 @@ export class NotificationsListLayer implements Layer {
       buildNotificationCardLayout(font, notification, index === selectedIndex, cardTextWidth),
     );
 
-    image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notifications", 220);
-    image.drawText(font, width - 96, PAGE_Y + 9, `${selectedIndex + 1}/${notifications.length}`, 150);
-
     if (!notifications.length) {
+      image.drawText(font, TITLE_X, TITLE_Y, "Notifications", 220);
       const message = isNotificationListenerEnabled()
         ? "No current Android notifications."
         : "Grant permission on your phone to view notifications on the glasses.";
@@ -90,13 +90,19 @@ export class NotificationsListLayer implements Layer {
       for (let index = 0; index < messageLines.length; index++) {
         image.drawText(font, 24, 72 + index * lineStep(font), messageLines[index]!, 190);
       }
-      image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     const focused = ctx.stack.isFocused();
     const listBottom = height;
     const scrollY = scrollForSelected(layouts, selectedIndex, listBottom - LIST_TOP);
+    // The title scrolls away with the list. Card text is drawn as deferred
+    // glyphs (always composited above raster fills), so a fixed title would
+    // show through cards scrolled over it; moving it with the content keeps
+    // it above the first card instead.
+    if (TITLE_Y - scrollY + font.lineHeight > 0) {
+      image.drawText(font, TITLE_X, TITLE_Y - scrollY, "Notifications", 220);
+    }
     let cursorY = LIST_TOP - scrollY;
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;

@@ -738,10 +738,10 @@ export function textSettingMenuItem<TId extends string = string>(
       void ctx.actions.startTextSettingEdit(setting);
       ctx.stack.push(new EditTextSettingLayer(setting));
     },
-    render: ({ image, x, y }) => {
+    render: ({ image, x, y, width }) => {
       // displayValue honors the setting's formatValue, so secrets (API keys,
       // tokens) can mask themselves instead of rendering in the clear.
-      image.drawText(getDefaultSmallFont(), x, y + LIST_ROW_TEXT_INSET, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, truncateSetting(setting.displayValue()));
     }
   };
 }

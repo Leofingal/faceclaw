@@ -6,6 +6,9 @@ const LOGO_PATH = "images/EvenRealitiesLogo.png";
 let sourceLogo: GrayImage | null | undefined;
 const scaledLogos = new Map<number, GrayImage>();
 
+/** Fraction of the icon square left as padding on each side of the logo. */
+const LOGO_PADDING_FRACTION = 0.1;
+
 /** Render the bundled Even Realities logo at launcher/sidebar icon size. */
 export function renderEvenRealitiesLogo(size: number): GrayImage | null {
   const targetSize = Math.max(1, Math.round(size));
@@ -22,9 +25,19 @@ export function renderEvenRealitiesLogo(size: number): GrayImage | null {
   }
   if (!sourceLogo) return null;
 
-  const scaled = scaleToFit(sourceLogo, targetSize, targetSize);
-  scaledLogos.set(targetSize, scaled);
-  return scaled;
+  // The logo art fills its bitmap edge to edge, so give it a little padding
+  // within the icon square: scale to 80% and center.
+  const contentSize = Math.max(1, Math.round(targetSize * (1 - 2 * LOGO_PADDING_FRACTION)));
+  const scaled = scaleToFit(sourceLogo, contentSize, contentSize);
+  const icon = new GrayImage(targetSize, targetSize, 0);
+  icon.bitBlt(
+    scaled,
+    Math.round((targetSize - scaled.width) / 2),
+    Math.round((targetSize - scaled.height) / 2),
+    { transparentZero: true },
+  );
+  scaledLogos.set(targetSize, icon);
+  return icon;
 }
 
 function scaleToFit(source: GrayImage, maxWidth: number, maxHeight: number): GrayImage {

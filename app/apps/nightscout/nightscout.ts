@@ -1,5 +1,6 @@
 import { getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GrayImage, imageFromAsciiArt, type UiFont } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
+import { truncateText } from "../../graphics/textwrap";
 import { DashboardInputEvent, Layer, LayerContext } from "../../ui/layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import {
@@ -9,10 +10,10 @@ import {
   textSettingMenuItem,
 } from "../../ui/dashboard-settings";
 import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";
-import { MenuLayer } from "../../ui/menu";
+import { type MenuItem } from "../../ui/menu";
 import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
+import { lineStep } from "../../ui/metrics";
 
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
 const nightscoutLargeFont = getDefaultLargeFont();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -32,46 +33,41 @@ function drawDirectionIndicator(
     return;
   }
 
-  const art = directionAsciiArt(direction);
-  if (art) {
-    image.bitBlt(imageFromAsciiArt(art, shade), x, y + 1);
-    return;
-  }
-
   if (direction) {
     image.drawText(font, x, y, truncateLine(direction, 10), shade);
   }
 }
 
+/**
+ * The trend as unicode arrows (U+2191..U+2198), drawn as ordinary text so
+ * they scale with the font. A bitmap face missing a diagonal falls back to
+ * the vertical arrow; a face with no arrows at all falls back to the raw
+ * direction text in drawDirectionIndicator.
+ */
 function directionGlyphLabel(font: UiFont, direction: string): string {
+  const pick = (...candidates: string[]): string => {
+    for (const candidate of candidates) {
+      if (font.hasGlyph(candidate.codePointAt(0)!)) return candidate;
+    }
+    return "";
+  };
   switch (direction) {
     case "DoubleUp":
-      return font.hasGlyph("↑".codePointAt(0)!) ? "↑↑" : "";
+      return pick("↑").repeat(2);
     case "SingleUp":
-      return font.hasGlyph("↑".codePointAt(0)!) ? "↑" : "";
+      return pick("↑");
     case "FortyFiveUp":
-      return font.hasGlyph("↗".codePointAt(0)!) ? "↗" : "";
+      return pick("↗", "↑");
     case "Flat":
-      return font.hasGlyph("→".codePointAt(0)!) ? "→" : "";
+      return pick("→");
     case "FortyFiveDown":
-      return font.hasGlyph("↘".codePointAt(0)!) ? "↘" : "";
+      return pick("↘", "↓");
     case "SingleDown":
-      return font.hasGlyph("↓".codePointAt(0)!) ? "↓" : "";
+      return pick("↓");
     case "DoubleDown":
-      return font.hasGlyph("↓".codePointAt(0)!) ? "↓↓" : "";
+      return pick("↓").repeat(2);
     default:
       return "";
-  }
-}
-
-function directionAsciiArt(direction: string): readonly string[] | undefined {
-  switch (direction) {
-    case "FortyFiveUp":
-      return ["   ##", "  ###", " # ##", "#  ##", "   ##"];
-    case "FortyFiveDown":
-      return ["   ##", "#  ##", " # ##", "  ###", "   ##"];
-    default:
-      return undefined;
   }
 }
 
@@ -301,98 +297,102 @@ export class NightscoutLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const nightscout = nightscoutBridge.snapshot();
     const nowMs = Date.now();
-    const footerY = height - 26;
+    const step = lineStep(font);
     image.drawText(font, 22, 16, "Nightscout", 220);
 
     if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
       image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(font, 22, 62, `Set the site URL and API token in ${GESTURE_CLICK} menu > Settings.`, 140);
-      image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 22, 44 + step, "Long-press for the menu, then pick Settings to set", 140);
+      image.drawText(font, 22, 44 + 2 * step, "the site URL and API token.", 140);
       return image;
     }
 
     if (!nightscout.available || !nightscout.latest) {
       image.drawText(font, 22, 44, "No Nightscout data available.", 180);
-      image.drawText(font, 22, 58, truncateLine(nightscout.status, 60), 140);
-      image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 22, 44 + step, truncateLine(nightscout.status, 60), 140);
       return image;
     }
 
+    // Two-column header above the graph: title + current glucose on the
+    // left, the status lines bottom-aligned on the right.
+    const graphTop = 128;
     const latest = nightscout.latest;
     const glucoseText = `${latest.sgv}`;
     const glucoseX = 22;
     const glucoseWidth = nightscoutLargeFont.measureText(glucoseText);
-    image.drawText(nightscoutLargeFont, glucoseX, 28, glucoseText, 230);
+    // Glucose value vertically centered between the title and the graph.
+    const titleBottom = 16 + font.lineHeight;
+    const glucoseY = Math.round((titleBottom + graphTop - nightscoutLargeFont.lineHeight) / 2);
+    image.drawText(nightscoutLargeFont, glucoseX, glucoseY, glucoseText, 230);
     if (isNightscoutPointStale(latest, nowMs)) {
-      drawNightscoutValueStrikeThrough(image, glucoseX, 40, glucoseWidth);
+      drawNightscoutValueStrikeThrough(image, glucoseX, glucoseY + (nightscoutLargeFont.lineHeight >> 1), glucoseWidth);
     }
-    image.drawText(font, glucoseX + glucoseWidth + 8, 36, nightscout.units, 140);
-    const trendText = `Delta ${formatDelta(nightscout.delta)}  Trend `;
-    image.drawText(font, 22, 62, trendText, 180);
-    drawDirectionIndicator(image, font, 22 + font.measureText(trendText), 62, nightscout.direction, 180);
-    image.drawText(
-      font,
-      22,
-      78,
-      `IOB ${nightscout.iob === null ? "--" : nightscout.iob.toFixed(2)}  COB ${nightscout.cob === null ? "--" : formatWholeNumber(nightscout.cob)}  Updated ${formatTimestamp(latest.timestampMs)}`,
-      160,
-    );
-    image.drawText(
-      font,
-      22,
-      94,
-      `CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}  Loop ${nightscout.openapsStatusShort}`,
-      160,
-    );
-    image.drawText(font, 22, 110, `Pump ${truncateLine(nightscout.pumpStatus || "--", 56)}`, 150);
-    const graphHeight = Math.max(40, height - 128 - 48);
-    drawNightscoutGraph(image, { x: 22, y: 128, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
-    image.drawText(font, 22, height - 42, "2-hour glucose history with basal / carbs / boluses", 130);
-    image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, glucoseX + glucoseWidth + 8, glucoseY + nightscoutLargeFont.lineHeight - font.lineHeight, nightscout.units, 140);
+
+    const statusX = 170;
+    const statusWidth = width - 22 - statusX;
+    const statusLines: { text: string; shade: number; direction?: string }[] = [
+      { text: `Delta ${formatDelta(nightscout.delta)}  Trend `, shade: 180, direction: nightscout.direction },
+      {
+        text: `IOB ${nightscout.iob === null ? "--" : nightscout.iob.toFixed(2)}  COB ${nightscout.cob === null ? "--" : formatWholeNumber(nightscout.cob)}  Updated ${formatTimestamp(latest.timestampMs)}`,
+        shade: 160,
+      },
+      {
+        text: `CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}  Loop ${nightscout.openapsStatusShort}`,
+        shade: 160,
+      },
+      { text: `Pump ${nightscout.pumpStatus || "--"}`, shade: 150 },
+    ];
+    let statusY = graphTop - 8 - statusLines.length * step;
+    for (const line of statusLines) {
+      if (line.direction !== undefined) {
+        image.drawText(font, statusX, statusY, line.text, line.shade);
+        drawDirectionIndicator(image, font, statusX + font.measureText(line.text), statusY, line.direction, line.shade);
+      } else {
+        image.drawText(font, statusX, statusY, truncateText(font, line.text, statusWidth), line.shade);
+      }
+      statusY += step;
+    }
+
+    const captionY = height - font.lineHeight - 6;
+    const graphHeight = Math.max(40, captionY - 6 - graphTop);
+    drawNightscoutGraph(image, { x: 22, y: graphTop, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
+    image.drawText(font, 22, captionY, "2-hour glucose history with basal / carbs / boluses", 130);
     return image;
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
-    switch (event.type) {
-      case "click":
-        ctx.stack.push(createNightscoutMenu());
-        return;
-      case "double-click":
-        ctx.stack.pop();
-        return;
-      default:
-        return;
+    // The menu lives on the window's long-press menu (see nightscoutMenuItems);
+    // double-click at the app root is handled by the yield wrapper.
+    if (event.type === "double-click") {
+      ctx.stack.pop();
     }
   }
 }
 
-/** The app menu (opened with a click); MenuLayer self-closes on double-click. */
-function createNightscoutMenu(): MenuLayer {
-  return new MenuLayer(
-    "Nightscout",
-    [
-      {
-        label: "Refresh",
-        onSelect: async (ctx) => {
-          ctx.stack.pop();
-          await nightscoutBridge.refreshNow();
-        },
+/** App-specific entries for the window's long-press menu. */
+export function nightscoutMenuItems(): MenuItem[] {
+  return [
+    {
+      label: "Refresh",
+      onSelect: async (ctx) => {
+        ctx.stack.pop();
+        await nightscoutBridge.refreshNow();
       },
-      {
-        label: "Settings",
-        onSelect: (ctx) => {
-          // Pop the menu first so closing the settings modal lands back on
-          // the glucose view, not this menu.
-          ctx.stack.pop();
-          openSettingsSubMenu(ctx, "Nightscout settings", [
-            textSettingMenuItem(nightscoutSiteUrlSetting),
-            textSettingMenuItem(nightscoutApiTokenSetting),
-          ]);
-        },
+    },
+    {
+      label: "Settings",
+      onSelect: (ctx) => {
+        // Pop the menu first so closing the settings modal lands back on
+        // the glucose view, not this menu.
+        ctx.stack.pop();
+        openSettingsSubMenu(ctx, "Nightscout settings", [
+          textSettingMenuItem(nightscoutSiteUrlSetting),
+          textSettingMenuItem(nightscoutApiTokenSetting),
+        ]);
       },
-    ],
-    { x: 8, y: 8, width: 200, minHeight: 0 },
-  );
+    },
+  ];
 }
 
 function isNightscoutPointStale(point: NightscoutState["latest"], nowMs: number): boolean {

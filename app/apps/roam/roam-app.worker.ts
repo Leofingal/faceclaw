@@ -17,13 +17,7 @@ import type { MenuItem } from "../../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_LONG_PRESS,
-  GESTURE_SCROLL,
-  gestureHints,
-} from "../../ui/gestures";
+import { GESTURE_CLICK } from "../../ui/gestures";
 import { DocumentView } from "../../ui/document/document-view";
 import { docNodePageLink, type DocNode } from "../../ui/document/document-model";
 import {
@@ -51,8 +45,8 @@ import {
 declare const global: any;
 declare const com: any;
 
-const HEADER_HEIGHT = 26;
-const FOOTER_HEIGHT = 18;
+const HEADER_HEIGHT = 30;
+const BOTTOM_MARGIN = 6;
 const DOC_MARGIN = 6;
 /** Reload the shown page when it is foregrounded and older than this. */
 const STALE_AFTER_MS = 60_000;
@@ -159,7 +153,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         menu: null,
         view: new DocumentView(
           message.viewport.width - DOC_MARGIN * 2,
-          message.viewport.height - HEADER_HEIGHT - FOOTER_HEIGHT,
+          message.viewport.height - HEADER_HEIGHT - BOTTOM_MARGIN,
         ),
         lastSubmittedFingerprint: "",
       };
@@ -549,20 +543,6 @@ function paintContent(win: RoamWindow): GrayImage {
   } else {
     win.view.paint(image, DOC_MARGIN, HEADER_HEIGHT, win.focused);
   }
-
-  const footer = gestureHints([
-    [GESTURE_SCROLL, "move"],
-    [GESTURE_CLICK, "toggle/open"],
-    [GESTURE_DOUBLE_CLICK, backStack.length > 0 ? "back" : "leave"],
-    [GESTURE_LONG_PRESS, "menu"],
-  ]);
-  image.drawText(
-    smallFont,
-    Math.max(DOC_MARGIN, Math.round((win.viewportWidth - smallFont.measureText(footer)) / 2)),
-    win.viewportHeight - FOOTER_HEIGHT + 3,
-    footer,
-    110,
-  );
   return image;
 }
 

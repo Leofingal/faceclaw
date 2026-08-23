@@ -35,6 +35,7 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
+import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
 import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
@@ -1408,21 +1409,23 @@ function paintHub(window: HubWindow): GrayImage {
   const font = chromeFont();
   const step = lineStep(font);
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  image.drawText(font, 18, 10, window.mode === "connections" ? "Terminal - Connections" : "Terminal", 220);
-  const statusY = 16 + step;
-  image.drawText(font, 24, statusY, hubStatusLine(window), 170);
+  // Title and status share the top line.
+  const title = window.mode === "connections" ? "Terminal - Connections" : "Terminal";
+  image.drawText(font, 18, 10, title, 220);
+  const statusX = 18 + font.measureText(title) + 16;
+  image.drawText(font, statusX, 10, truncateText(font, hubStatusLine(window), Math.max(0, window.viewportWidth - statusX - 12)), 170);
 
-  let listTop = statusY + step + 8;
+  let listTop = 16 + step;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(font, 24, statusY + step + 2, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(font, 24, statusY + 2 * step + 2, "https://github.com/jimrandomh/g2mirror", 190);
-    listTop += 2 * step;
+    image.drawText(font, 24, listTop, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, 24, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
+    listTop += 2 * step + 6;
   }
 
   const items = hubItems(window);
   clampHubSelection(window, items);
   const hubRowH = listRowHeight(chromeFont());
-  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / hubRowH) | 0);
+  const visibleRowCount = Math.max(1, ((window.viewportHeight - 6 - listTop) / hubRowH) | 0);
   window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
   const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
   for (let index = window.scrollRow; index < lastVisibleRow; index++) {
@@ -1452,7 +1455,6 @@ function paintHub(window: HubWindow): GrayImage {
     );
   }
 
-  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `${GESTURE_DOUBLE_CLICK} back`, 110);
   return image;
 }
 
@@ -1526,7 +1528,6 @@ function paintView(window: ViewWindow): GrayImage {
   if (!window.receivedData) {
     const font = chromeFont();
     image.drawText(font, 24, 110, window.status, 170);
-    image.drawText(font, 24, 116 + lineStep(font), `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

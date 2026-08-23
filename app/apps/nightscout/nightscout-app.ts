@@ -1,7 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
-import { NightscoutLayer } from "./nightscout";
+import { NightscoutLayer, nightscoutMenuItems } from "./nightscout";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -34,6 +34,7 @@ export function createNightscoutAppWindow(options: InProcessAppOptions): InProce
     iconLetter: "Ns",
     icon: "nightscout",
     closeable: true,
+    menuItems: nightscoutMenuItems,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new NightscoutLayer()),
     submitFrame: options.submitFrame,
