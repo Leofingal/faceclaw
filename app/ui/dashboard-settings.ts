@@ -324,7 +324,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
   "voice-input": "Voice Input",
-  off: "Off",
+  off: "Ignore",
   "turn-screen-on": "Turn Screen On",
 };
 

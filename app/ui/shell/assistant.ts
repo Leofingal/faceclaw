@@ -129,7 +129,7 @@ export class AssistantLayer implements Layer {
         image.drawText(font, left + 4, rowY + 2, rows[i]!, selected ? 255 : 200);
       }
     } else {
-      image.drawText(font, left, top + DIALOG_H - 14, `${GESTURE_DOUBLE_CLICK} cancel`, 110);
+      image.drawText(font, left, top + DIALOG_H - 14, `${GESTURE_DOUBLE_CLICK} cancel`, 110 - font.lineHeight);
     }
     return image;
   }

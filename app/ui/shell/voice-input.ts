@@ -268,7 +268,7 @@ export class VoiceInputLayer implements Layer {
         image.drawText(font, left + 4, rowY + 2, row.label, row.dim ? 90 : selected ? 255 : 200);
       }
     } else {
-      image.drawText(font, left, top + DIALOG_H - 14, this.hintText(), 110);
+      image.drawText(font, left, top + DIALOG_H - 14, this.hintText(), 110-font.lineHeight);
     }
     return image;
   }

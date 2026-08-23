@@ -16,7 +16,7 @@ import {
 
 const HEADER_HEIGHT = 30;
 const LIST_X = 20;
-const FOOTER_HEIGHT = 22;
+const FOOTER_HEIGHT = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,7 +58,6 @@ export class BuzzerDemoLayer implements Layer {
       image.drawText(font, LIST_X + 110, y + 1, effect.desc, selected ? 180 : 120);
     }
 
-    image.drawText(font, 20, height - 16, `${GESTURE_SCROLL} select   ${GESTURE_CLICK} play   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

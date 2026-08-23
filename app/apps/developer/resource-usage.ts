@@ -78,7 +78,7 @@ export class ResourceUsageLayer implements Layer {
     image.drawText(
       font,
       width - 16 - font.measureText(`CPU ${formatPercent(latest.cpuPercent)}  threads ${latest.threads}`),
-      37,
+      47 - font.lineHeight,
       `CPU ${formatPercent(latest.cpuPercent)}  threads ${latest.threads}`,
       155,
     );
@@ -105,7 +105,7 @@ export class ResourceUsageLayer implements Layer {
     ]);
 
     image.drawText(font, 16, height - 16, `-60s`, 80);
-    const nowLabel = `now   ${GESTURE_DOUBLE_CLICK} back`;
+    const nowLabel = `now`;
     image.drawText(font, width - 16 - font.measureText(nowLabel), height - 16, nowLabel, 110);
     return image;
   }

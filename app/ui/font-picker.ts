@@ -142,7 +142,6 @@ export class FontPickerLayer implements Layer {
     const info = `Line height: ${preview.lineHeight}px`;
     image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
 
-    image.drawText(font, rowX - 4, height - font.lineHeight - 8, `scroll select  click change  ${GESTURE_DOUBLE_CLICK} cancel`, 90);
     return image;
   }
 
@@ -215,7 +214,7 @@ export class FontPickerLayer implements Layer {
       this.draft.kind === "bitmap"
         ? Math.max(0, this.options.bitmapFaces.findIndex((b) => b.face === (this.draft as { face: BitmapFace }).face))
         : this.options.bitmapFaces.length + this.families.indexOf(this.draft.family);
-    openModalMenu(ctx, "Font", items, Math.max(0, currentIndex));
+    openModalMenu(ctx, "Font Face", items, Math.max(0, currentIndex));
   }
 
   /** Switch families, carrying the weight (nearest available) and size over. */
