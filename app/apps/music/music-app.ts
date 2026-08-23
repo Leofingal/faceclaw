@@ -354,7 +354,10 @@ class MusicAppLayer implements Layer {
 
   private drawArt(image: GrayImage, media: MediaControllerState): void {
     const key = `${media.packageName}|${media.title}|${media.album}`;
-    if (key !== this.artKey) {
+    // Retry while null: players (e.g. Spotify) often publish metadata before
+    // the art bitmap is downloaded, then re-emit the same strings with the
+    // bitmap attached. The no-art fetch path is a cheap near-no-op.
+    if (key !== this.artKey || this.art === null) {
       this.artKey = key;
       this.art = mediaControllerBridge.getAlbumArt(ART_SIZE);
     }
