@@ -29,6 +29,12 @@ Button.-primary {
   font-size: 18;
 }
 
+/* Body/explanatory text in the onboarding flow; the theme default is too
+ * small to comfortably read paragraphs of legalese, especially on tablets. */
+.body-text {
+  font-size: 18;
+}
+
 /*
  * Stands in for the lens preview when showing it would be misleading (silent
  * mode, or a disconnect explained by a flat battery). Sized by the view model

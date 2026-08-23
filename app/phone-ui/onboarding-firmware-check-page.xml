@@ -4,7 +4,7 @@
             <StackLayout>
                 <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
                 <ActivityIndicator busy="{{ busy }}" visibility="{{ busyVisibility }}" class="m-t-16" />
-                <Label text="{{ status }}" class="m-t-16 text-center" textWrap="true" />
+                <Label text="{{ status }}" class="body-text m-t-16 text-center" textWrap="true" />
             </StackLayout>
         </ScrollView>
 
