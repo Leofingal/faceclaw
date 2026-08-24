@@ -513,12 +513,16 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     public void onNotification(String address, String characteristicUuid, byte[] data) {
         if (BleProtocol.NOTIFY_CHAR_UUID.equalsIgnoreCase(characteristicUuid)) {
             // Control channel: only the security-auth response is awaited here.
-            BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
-            if (frame.ok && frame.sid == BleProtocol.SID_SECURITY_AUTH) {
-                synchronized (lock) {
-                    if (authLatch != null && frame.msgSeq == pendingAuthMagic) {
-                        authAckPb = frame.pb;
-                        authLatch.countDown();
+            // A value can carry several envelope frames back to back (e.g. the
+            // response packed with one of the lens's own sid-0x80 notifies).
+            for (byte[] buf : BleProtocol.splitFrames(data)) {
+                BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(buf);
+                if (frame.ok && frame.sid == BleProtocol.SID_SECURITY_AUTH) {
+                    synchronized (lock) {
+                        if (authLatch != null && frame.msgSeq == pendingAuthMagic) {
+                            authAckPb = frame.pb;
+                            authLatch.countDown();
+                        }
                     }
                 }
             }

@@ -251,18 +251,32 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equalsIgnoreCase(characteristicUuid)) {
             return;
         }
-        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        // One notification value can carry several envelope frames back to
+        // back; reading only the first would silently drop the rest.
+        List<byte[]> frames = BleProtocol.splitFrames(data);
+        if (frames.size() > 1) {
+            emitLog("rx " + address + " value carries " + frames.size() + " frames (raw " + data.length + " bytes)");
+        }
+        for (byte[] buf : frames) {
+            handleFrame(address, buf, data.length);
+        }
+    }
+
+    private void handleFrame(String address, byte[] buf, int rawValueLength) {
+        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(buf);
         if (!frame.ok) {
-            emitLog("rx " + address + " unparseable frame len=" + data.length
-                + " head=" + FaceclawFirmwareUtil.bytesToHex(java.util.Arrays.copyOf(data, Math.min(16, data.length))));
+            emitLog("rx " + address + " unparseable frame len=" + buf.length + " (raw value " + rawValueLength + ")"
+                + " head=" + FaceclawFirmwareUtil.bytesToHex(java.util.Arrays.copyOf(buf, Math.min(16, buf.length))));
             return;
         }
         // Log every control frame while diagnosing 2.2.9: sid/flag/type/magic
         // plus a payload prefix is enough to reconstruct what the lens said.
-        emitLog(String.format("rx %s sid=0x%02x flag=0x%02x type=%d magic=%d frag=%d/%d len=%d pb=%s",
+        int declared = buf.length > 3 ? buf[3] & 0xff : 0;
+        String truncated = buf.length < 8 + declared ? " TRUNCATED(declared=" + declared + ")" : "";
+        emitLog(String.format("rx %s sid=0x%02x flag=0x%02x type=%d magic=%d frag=%d/%d len=%d%s pb=%s",
             address, frame.sid, frame.flag, frame.msgType, frame.msgSeq,
-            data.length > 5 ? data[5] & 0xff : 0, data.length > 4 ? data[4] & 0xff : 0, frame.pb.length,
-            FaceclawFirmwareUtil.bytesToHex(java.util.Arrays.copyOf(frame.pb, Math.min(40, frame.pb.length)))));
+            buf.length > 5 ? buf[5] & 0xff : 0, buf.length > 4 ? buf[4] & 0xff : 0, frame.pb.length, truncated,
+            FaceclawFirmwareUtil.bytesToHex(java.util.Arrays.copyOf(frame.pb, Math.min(48, frame.pb.length)))));
         if (frame.sid == BleProtocol.SID_UI_SETTING
                 && BleProtocol.parseSettingsFirmwareInfo(frame.pb) != null) {
             // Any settings frame carrying firmware versions answers the probe's

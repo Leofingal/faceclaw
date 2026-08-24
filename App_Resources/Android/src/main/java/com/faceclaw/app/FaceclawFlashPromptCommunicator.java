@@ -343,7 +343,14 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equalsIgnoreCase(characteristicUuid)) {
             return;
         }
-        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        // A value can carry several envelope frames back to back.
+        for (byte[] buf : BleProtocol.splitFrames(data)) {
+            handleFrame(address, buf);
+        }
+    }
+
+    private void handleFrame(String address, byte[] buf) {
+        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(buf);
         if (!frame.ok) {
             return;
         }

@@ -604,6 +604,35 @@ public class BleProtocol {
     }
 
 
+    /**
+     * Split one notification value into individual `aa21`/`aa12` envelope
+     * frames. A value normally holds exactly one frame, but the firmware can
+     * pack several (each self-describing via the length byte at offset 3), and
+     * a frame that only reads the first would silently drop the rest. A value
+     * that does not start with an envelope, or a trailing partial frame
+     * (truncated by the stack — observed on a Samsung tablet for values over
+     * 64 bytes), is returned as-is so the caller can log it.
+     */
+    public static List<byte[]> splitFrames(byte[] value) {
+        List<byte[]> out = new ArrayList<>();
+        if (value == null || value.length == 0) {
+            return out;
+        }
+        int offset = 0;
+        while (offset + 8 <= value.length
+                && value[offset] == (byte) 0xaa
+                && (value[offset + 1] == 0x21 || value[offset + 1] == 0x12)) {
+            int len = value[offset + 3] & 0xff;
+            int end = Math.min(value.length, offset + 8 + len);
+            out.add(Arrays.copyOfRange(value, offset, end));
+            offset = end;
+        }
+        if (offset < value.length) {
+            out.add(Arrays.copyOfRange(value, offset, value.length));
+        }
+        return out;
+    }
+
     public static ParsedFrame parseFrame(byte[] buf) {
         if (buf == null || buf.length < 10 || buf[0] != (byte) 0xaa || (buf[1] != 0x21 && buf[1] != 0x12)) {
             return new ParsedFrame(false, 0, 0, new byte[0], -1, -1);
