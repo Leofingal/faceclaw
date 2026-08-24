@@ -1,6 +1,7 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar title="Faceclaw">
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />

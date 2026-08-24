@@ -19,10 +19,8 @@ dependencies {
 
 def faceclawSherpaOnnxVersion = "1.13.0"
 def faceclawLibLc3Version = "1.1.3"
-def faceclawAsrModelName = "sherpa-onnx-moonshine-base-en-quantized-2026-02-27"
 def faceclawAbi = "arm64-v8a"
 def faceclawJniLibsDir = file("$projectDir/src/main/jniLibs/$faceclawAbi")
-def faceclawAssetsDir = file("$projectDir/src/main/assets/faceclaw-voice-asr")
 def faceclawNativeBuildDir = file("$buildDir/faceclaw-native")
 
 def faceclawDownload = { String url, File destination ->
@@ -70,15 +68,11 @@ tasks.register("prepareFaceclawNativeLibs") {
   outputs.files(
     file("$faceclawJniLibsDir/libonnxruntime.so"),
     file("$faceclawJniLibsDir/libsherpa-onnx-jni.so"),
-    file("$faceclawJniLibsDir/libfaceclaw_lc3.so"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/encoder_model.ort"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/decoder_model_merged.ort"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/tokens.txt")
+    file("$faceclawJniLibsDir/libfaceclaw_lc3.so")
   )
 
   doLast {
     faceclawJniLibsDir.mkdirs()
-    faceclawAssetsDir.mkdirs()
 
     def downloadsDir = file("$faceclawNativeBuildDir/downloads")
     def sherpaArchive = file("$downloadsDir/sherpa-onnx-v${faceclawSherpaOnnxVersion}-android.tar.bz2")
@@ -93,20 +87,6 @@ tasks.register("prepareFaceclawNativeLibs") {
       eachFile { details -> details.path = details.name }
       includeEmptyDirs = false
       into faceclawJniLibsDir
-    }
-
-    def asrArchive = file("$downloadsDir/${faceclawAsrModelName}.tar.bz2")
-    faceclawDownload(
-      "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${faceclawAsrModelName}.tar.bz2",
-      asrArchive
-    )
-    copy {
-      from tarTree(resources.bzip2(asrArchive))
-      include "$faceclawAsrModelName/encoder_model.ort"
-      include "$faceclawAsrModelName/decoder_model_merged.ort"
-      include "$faceclawAsrModelName/tokens.txt"
-      includeEmptyDirs = false
-      into faceclawAssetsDir
     }
 
     def lc3Archive = file("$downloadsDir/liblc3-v${faceclawLibLc3Version}.tar.gz")
@@ -255,6 +235,22 @@ tasks.register("prepareFaceclawLlama") {
   }
 }
 
+// versionName tracks FACECLAW_VERSION in app/version.ts, the single source of
+// truth for the Faceclaw version. The gradle root project is platforms/android,
+// so the repo root is two levels up from rootDir.
+def faceclawVersionName = "0.0"
+def faceclawVersionFile = file("$rootDir/../../app/version.ts")
+if (faceclawVersionFile.exists()) {
+  def faceclawVersionMatch = (faceclawVersionFile.text =~ /FACECLAW_VERSION = "([^"]+)"/)
+  if (faceclawVersionMatch.find()) {
+    faceclawVersionName = faceclawVersionMatch.group(1)
+  }
+}
+def faceclawVersionCode = {
+  def parts = (faceclawVersionName.tokenize('.') + ["0", "0"]).take(3)*.toInteger()
+  return parts[0] * 10000 + parts[1] * 100 + parts[2]
+}()
+
 android {
   compileSdkVersion 35
   buildToolsVersion "35"
@@ -268,12 +264,17 @@ android {
     minSdkVersion 24
     targetSdkVersion 35
     ndk {
+      // The NativeScript platform build.gradle has already added all four
+      // ABIs by the time app.gradle is applied, and abiFilters is additive,
+      // so the set must be cleared for this filter to take effect. Only
+      // arm64 devices are supported (all our own JNI libs are arm64-only).
+      abiFilters.clear()
       abiFilters "arm64-v8a"
     }
 
-    // Version Information
-    versionCode 1
-    versionName "1.0.0"
+    // Version Information (derived from app/version.ts above)
+    versionCode faceclawVersionCode
+    versionName faceclawVersionName
     
     generatedDensities = []
   }

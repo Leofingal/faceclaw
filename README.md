@@ -65,17 +65,22 @@ To install, run
    battery life similar to the stock Even app.
  * Connection management with auto-reconnect, and autodetection of conflict
    with the official Even Realities app
+ * A Wear OS watch app that replaces (and outdoes) the R1 ring: tap, swipe,
+   hold and crown gestures, side buttons, app launching and window switching,
+   voice or keyboard queries to the assistant with the reply on your wrist,
+   typing into apps, and glasses status/lock/display control (see "Watch
+   remote" below)
  * On-phone screen mirroring with touch control: tap what you see on the
    mirror (sidebar icons, launcher cells), or use the phone's own touchpad,
    d-pad and Back/Menu buttons — the same spatial scheme as the watch — plus
    a compact ring simulator. A display-mode picker (576×288 band, 576×480
    tall, or the full 640×480 panel with an auto-hiding sidebar) and a
    brightness slider with an Auto toggle sit beside the mirror.
- * A Wear OS watch app that replaces (and outdoes) the R1 ring: tap, swipe,
-   hold and crown gestures, side buttons, app launching and window switching,
-   voice or keyboard queries to the assistant with the reply on your wrist,
-   typing into apps, and glasses status/lock/display control (see "Watch
-   remote" below)
+ * Bluetooth pairing that scans for nearby glasses and identifies each pair
+   before connecting: model, frame shape, and colour decoded from the
+   advertised serial (with product photos), left and right arms matched to
+   each other by that serial, an estimated distance so the pair in your hand
+   sorts first, and the optional R1 ring
  * Dual-language NativeScript architecture with Java for the multithreaded
    Android API and bluetooth stack bits, Typescript for the bits you want to
    hack on

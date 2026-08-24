@@ -5,7 +5,9 @@
   "private": false,
   "scripts": {
     "build": "nativescript build android",
-    "clean": "rm -rf platforms"
+    "release": "scripts/release.sh",
+    "clean": "rm -rf platforms",
+    "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",

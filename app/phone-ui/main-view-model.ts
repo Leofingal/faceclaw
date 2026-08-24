@@ -536,6 +536,23 @@ export class MainViewModel extends Observable {
     Frame.topmost()?.navigate("phone-ui/config-page");
   }
 
+  /**
+   * Live scan that names each nearby pair by model, colour, and serial and
+   * checks both arms belong together. A connected arm stops advertising, so
+   * drop the current link first; autoConnect picks it back up afterwards.
+   */
+  async onPairGlassesTap(): Promise<void> {
+    if (!this.canRun) return;
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the pairing page reports what it hears
+      }
+    }
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/pairing-page", context: { onboarding: false } });
+  }
+
   async onInstallFirmwareTap(): Promise<void> {
     await this.openFlashPage("install");
   }

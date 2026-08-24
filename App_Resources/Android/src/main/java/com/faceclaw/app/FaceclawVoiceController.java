@@ -1,30 +1,20 @@
 package com.faceclaw.app;
 
 import android.content.Context;
-import android.content.res.AssetManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
 import com.k2fsa.sherpa.onnx.FeatureConfig;
-import com.k2fsa.sherpa.onnx.KeywordSpotter;
-import com.k2fsa.sherpa.onnx.KeywordSpotterConfig;
-import com.k2fsa.sherpa.onnx.KeywordSpotterResult;
 import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OfflineStream;
-import com.k2fsa.sherpa.onnx.OnlineModelConfig;
-import com.k2fsa.sherpa.onnx.OnlineStream;
-import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -57,17 +47,15 @@ public class FaceclawVoiceController {
     private static final float TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f;
     private static final float TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f;
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
-    private static final String ASSET_ROOT = "faceclaw-voice";
-    private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
-    private static final String ASR_ASSET_ROOT = "faceclaw-voice-asr";
+    // Model directory shared with the TS-side download flow (asr-model.ts),
+    // which fetches the Moonshine files here on demand; they are no longer
+    // bundled in the APK.
+    private static final String ASR_ROOT = "faceclaw-voice-asr";
     private static final String ASR_MODEL_DIR = "sherpa-onnx-moonshine-base-en-quantized-2026-02-27";
-    private static final String[] MODEL_FILES = {
-            "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "tokens.txt",
-            "screen-on-keywords.txt"
-    };
+    // Model files for the retired on-phone wake-word spotter, copied to
+    // filesDir by earlier releases; deleted on sight to reclaim the space.
+    // (The wakeword is now detected by the glasses firmware itself.)
+    private static final String LEGACY_KWS_ROOT = "faceclaw-voice";
     private static final String[] ASR_MODEL_FILES = {
             "encoder_model.ort",
             "decoder_model_merged.ort",
@@ -75,7 +63,6 @@ public class FaceclawVoiceController {
     };
 
     private enum VoiceInputMode {
-        WAKEWORD, // on-phone keyword spotting (kept for later; not currently wired)
         ONBOARD,  // on-phone Moonshine transcription
         CLOUD     // decode locally, emit PCM for a cloud recognizer on the TS side
     }
@@ -89,10 +76,8 @@ public class FaceclawVoiceController {
     private volatile FaceclawBleCommunicator communicator;
     private Thread workerThread;
     private volatile boolean started;
-    private VoiceInputMode mode = VoiceInputMode.WAKEWORD;
-    private KeywordSpotter keywordSpotter;
+    private VoiceInputMode mode = VoiceInputMode.CLOUD;
     private OfflineRecognizer recognizer;
-    private OnlineStream stream;
     private FaceclawLc3Decoder lc3Decoder;
     private final float[] transcriptSamples = new float[TRANSCRIPT_SEGMENT_MAX_SAMPLES];
     private int transcriptSampleCount;
@@ -138,10 +123,6 @@ public class FaceclawVoiceController {
      */
     public void setEndpointing(boolean endpointing) {
         this.endpointing = endpointing;
-    }
-
-    public void start() {
-        start("wakeword");
     }
 
     public void start(String requestedMode) {
@@ -194,26 +175,23 @@ public class FaceclawVoiceController {
         if ("cloud".equals(requestedMode)) {
             return VoiceInputMode.CLOUD;
         }
-        if ("onboard".equals(requestedMode) || "full".equals(requestedMode)) {
-            return VoiceInputMode.ONBOARD;
-        }
-        return VoiceInputMode.WAKEWORD;
+        return VoiceInputMode.ONBOARD;
     }
 
     private void runLoop() {
         try {
+            deleteLegacyKwsFiles();
             VoiceInputMode currentMode = mode;
             if (currentMode == VoiceInputMode.ONBOARD) {
+                File modelDir = findAsrModelDir();
+                if (modelDir == null) {
+                    emitStatus("Voice model not downloaded (see Settings > Voice).");
+                    return;
+                }
                 emitStatus("Loading transcription model...");
-                File modelDir = installAsrModelFiles();
                 recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir));
                 resetTranscriptState();
                 lastTranscript = "";
-            } else if (currentMode == VoiceInputMode.WAKEWORD) {
-                emitStatus("Loading wake-word model...");
-                File modelDir = installModelFiles();
-                keywordSpotter = new KeywordSpotter(buildConfig(modelDir));
-                stream = keywordSpotter.createStream();
             }
             lc3Decoder = new FaceclawLc3Decoder();
             endpointDetector.reset();
@@ -225,9 +203,7 @@ public class FaceclawVoiceController {
 
             emitStatus(currentMode == VoiceInputMode.CLOUD
                     ? "Listening (cloud)..."
-                    : currentMode == VoiceInputMode.ONBOARD
-                        ? "Listening..."
-                        : "Listening for \"screen on\"...");
+                    : "Listening...");
             processG2Audio();
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
@@ -312,29 +288,6 @@ public class FaceclawVoiceController {
         return b.array();
     }
 
-    private KeywordSpotterConfig buildConfig(File modelDir) {
-        return KeywordSpotterConfig.builder()
-                .setFeatureConfig(FeatureConfig.builder()
-                        .setSampleRate(SAMPLE_RATE)
-                        .setFeatureDim(FEATURE_DIM)
-                        .build())
-                .setOnlineModelConfig(OnlineModelConfig.builder()
-                        .setTransducer(OnlineTransducerModelConfig.builder()
-                                .setEncoder(new File(modelDir, "encoder-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .setDecoder(new File(modelDir, "decoder-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .setJoiner(new File(modelDir, "joiner-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .build())
-                        .setTokens(new File(modelDir, "tokens.txt").getAbsolutePath())
-                        .setModelType("zipformer2")
-                        .setModelingUnit("")
-                        .setNumThreads(1)
-                        .build())
-                .setKeywordsFile(new File(modelDir, "screen-on-keywords.txt").getAbsolutePath())
-                .setKeywordsScore(1.5f)
-                .setKeywordsThreshold(0.35f)
-                .build();
-    }
-
     private OfflineRecognizerConfig buildRecognizerConfig(File modelDir) {
         return OfflineRecognizerConfig.builder()
                 .setFeatureConfig(FeatureConfig.builder()
@@ -352,50 +305,42 @@ public class FaceclawVoiceController {
                 .build();
     }
 
-    private File installModelFiles() throws IOException {
-        File modelDir = new File(appContext.getFilesDir(), ASSET_ROOT + File.separator + MODEL_DIR);
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            throw new IOException("Could not create " + modelDir.getAbsolutePath());
-        }
-        AssetManager assets = appContext.getAssets();
-        for (String fileName : MODEL_FILES) {
-            copyAssetIfNeeded(
-                    assets,
-                    ASSET_ROOT + "/" + MODEL_DIR + "/" + fileName,
-                    new File(modelDir, fileName)
-            );
-        }
-        return modelDir;
-    }
-
-    private File installAsrModelFiles() throws IOException {
-        File modelDir = new File(appContext.getFilesDir(), ASR_ASSET_ROOT + File.separator + ASR_MODEL_DIR);
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            throw new IOException("Could not create " + modelDir.getAbsolutePath());
-        }
-        AssetManager assets = appContext.getAssets();
+    /**
+     * The Moonshine model directory, populated by the download flow in
+     * asr-model.ts (releases before 0.5.0 copied the same files out of the
+     * APK, so upgraded installs are already complete). Null when any file is
+     * missing, i.e. the model still needs to be downloaded.
+     */
+    private File findAsrModelDir() {
+        File modelDir = new File(appContext.getFilesDir(), ASR_ROOT + File.separator + ASR_MODEL_DIR);
         for (String fileName : ASR_MODEL_FILES) {
-            copyAssetIfNeeded(
-                    assets,
-                    ASR_ASSET_ROOT + "/" + ASR_MODEL_DIR + "/" + fileName,
-                    new File(modelDir, fileName)
-            );
-        }
-        return modelDir;
-    }
-
-    private void copyAssetIfNeeded(AssetManager assets, String assetPath, File destination) throws IOException {
-        if (destination.exists() && destination.length() > 0) {
-            return;
-        }
-        try (InputStream input = assets.open(assetPath);
-             FileOutputStream output = new FileOutputStream(destination)) {
-            byte[] buffer = new byte[64 * 1024];
-            int read;
-            while ((read = input.read(buffer)) >= 0) {
-                output.write(buffer, 0, read);
+            File file = new File(modelDir, fileName);
+            if (!file.exists() || file.length() == 0) {
+                return null;
             }
         }
+        return modelDir;
+    }
+
+    private void deleteLegacyKwsFiles() {
+        try {
+            deleteRecursively(new File(appContext.getFilesDir(), LEGACY_KWS_ROOT));
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to delete legacy wake-word files", t);
+        }
+    }
+
+    private static void deleteRecursively(File file) {
+        if (!file.exists()) {
+            return;
+        }
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
     }
 
     private boolean startG2Audio() {
@@ -413,9 +358,8 @@ public class FaceclawVoiceController {
     private void processG2Audio() {
         short[] pcm = new short[FaceclawLc3Decoder.SAMPLES_PER_PACKET];
         while (started && !Thread.currentThread().isInterrupted()) {
-            OnlineStream currentStream = stream;
             FaceclawLc3Decoder currentDecoder = lc3Decoder;
-            if (currentDecoder == null || (mode == VoiceInputMode.WAKEWORD && currentStream == null)) {
+            if (currentDecoder == null) {
                 return;
             }
 
@@ -438,37 +382,14 @@ public class FaceclawVoiceController {
             }
             if (mode == VoiceInputMode.CLOUD) {
                 emitPcm(pcm, count);
-            } else if (mode == VoiceInputMode.ONBOARD) {
-                float[] samples = new float[count];
-                for (int i = 0; i < count; i++) {
-                    samples[i] = pcm[i] / 32768.0f;
-                }
-                processRecognizer(samples);
             } else {
                 float[] samples = new float[count];
                 for (int i = 0; i < count; i++) {
                     samples[i] = pcm[i] / 32768.0f;
                 }
-                currentStream.acceptWaveform(samples, SAMPLE_RATE);
-                processKeywordSpotter(currentStream);
+                processRecognizer(samples);
             }
             maybeEmitAudioStats(false);
-        }
-    }
-
-    private void processKeywordSpotter(OnlineStream currentStream) {
-        KeywordSpotter currentSpotter = keywordSpotter;
-        if (currentSpotter == null) {
-            return;
-        }
-        while (currentSpotter.isReady(currentStream)) {
-            currentSpotter.decode(currentStream);
-            KeywordSpotterResult result = currentSpotter.getResult(currentStream);
-            String keyword = result == null ? "" : result.getKeyword();
-            if (keyword != null && keyword.trim().length() > 0) {
-                currentSpotter.reset(currentStream);
-                emitWakeWord(keyword);
-            }
         }
     }
 
@@ -783,14 +704,6 @@ public class FaceclawVoiceController {
     }
 
     private void releaseSherpa() {
-        if (stream != null) {
-            stream.release();
-            stream = null;
-        }
-        if (keywordSpotter != null) {
-            keywordSpotter.release();
-            keywordSpotter = null;
-        }
         if (recognizer != null) {
             recognizer.release();
             recognizer = null;
@@ -891,14 +804,6 @@ public class FaceclawVoiceController {
             return;
         }
         mainHandler.post(() -> currentListener.onStatus(status));
-    }
-
-    private void emitWakeWord(String keyword) {
-        FaceclawVoiceControllerListener currentListener = listener;
-        if (currentListener == null) {
-            return;
-        }
-        mainHandler.post(() -> currentListener.onWakeWord(keyword));
     }
 
     private void emitTranscript(String text, boolean isFinal) {
