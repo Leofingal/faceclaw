@@ -145,7 +145,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       }
 
       this.disposeProbe();
-      const probe = new DeviceInfoProbe(stored.right);
+      const probe = new DeviceInfoProbe(stored.right, stored.left);
       this.probeInstance = probe;
       probe.onStateChange((state) => this.reportProbeState(state));
 
