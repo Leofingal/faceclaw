@@ -95,6 +95,10 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     return this._phase === "custom" || this._phase === "fonts" ? "collapse" : "visible";
   }
 
+  get errorActionsVisibility(): "visible" | "collapse" {
+    return this._phase === "error" ? "visible" : "collapse";
+  }
+
   // --- button handlers -------------------------------------------------------
 
   onPrimaryTap(): void {
@@ -122,6 +126,20 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       return;
     }
     frame?.navigate({ moduleName: "phone-ui/onboarding-unpair-page", clearHistory: true });
+  }
+
+  /** Escape hatch when the check itself fails: flash as if stock firmware had been detected. */
+  onInstallTap(): void {
+    if (this._phase !== "error") return;
+    this.goToFlashing();
+  }
+
+  /** Escape hatch when the check itself fails: continue as if compatible custom firmware had been detected. */
+  onSkipTap(): void {
+    if (this._phase !== "error") return;
+    // Same path as a real "custom" classification, so the phone-side G2 fonts
+    // still get extracted when they're missing.
+    this.applyClassification("custom", "", "");
   }
 
   // --- probe flow ------------------------------------------------------------
@@ -289,6 +307,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.notifyPropertyChange("secondaryLabel", this.secondaryLabel);
     this.notifyPropertyChange("primaryVisibility", this.primaryVisibility);
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
+    this.notifyPropertyChange("errorActionsVisibility", this.errorActionsVisibility);
   }
 
   private disposeProbe(): void {
