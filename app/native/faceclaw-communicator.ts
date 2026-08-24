@@ -11,6 +11,7 @@ export type CommunicatorPhase =
   | "connected"
   | "charging"
   | "retrying"
+  | "unpaired"
   | "disconnecting";
 
 export type CommunicatorState = {

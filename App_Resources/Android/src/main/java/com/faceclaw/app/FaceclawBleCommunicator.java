@@ -63,6 +63,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
+    // Set when a connect attempt failed while an arm's Android bond is gone:
+    // retrying is pointless until the user re-pairs, so the worker loop parks
+    // instead of redialing. Cleared by start() (a fresh explicit connect).
+    private volatile boolean reconnectHalted;
 
     private String phase = "disconnected";
     private String status = "Disconnected.";
@@ -239,6 +243,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             running = true;
             userDisconnectRequested = false;
+            reconnectHalted = false;
             shutdownRequested = false;
             activeInstance = this;
             workerThread = new Thread(this, "FaceclawBleCommunicator");
@@ -1118,6 +1123,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 emitPhoneLockStateIfChanged(false);
                 if (!sessionReady) {
+                    if (reconnectHalted) {
+                        interruptibleSleep.sleep(ConnectionOptions.IDLE_SLEEP_MS);
+                        continue;
+                    }
                     long now = SystemClock.elapsedRealtime();
                     if (now < reconnectAfterMs) {
                         interruptibleSleep.sleep(Math.min(ConnectionOptions.IDLE_SLEEP_MS, reconnectAfterMs - now));
@@ -1365,13 +1374,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
-                reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
+                if (!reconnectHalted) {
+                    reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
+                }
             }
         }
         interruptibleSleep.interrupt();
         if (connected) {
             setStateDisplay("connected", "Connected.");
-        } else {
+        } else if (!reconnectHalted) {
+            // While parked on a missing bond, keep the "unpaired" display: this
+            // callback is just the teardown of the arm that did connect.
             setStateDisplay("connecting", "Connecting to the glasses...");
         }
     }
@@ -1440,7 +1453,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             tryConnectRing("initial");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
-            handleTransportFailure("connect failed");
+            String unpairedArm = firstUnpairedArm();
+            if (unpairedArm != null) {
+                handleUnpairedFailure(unpairedArm);
+            } else {
+                handleTransportFailure("connect failed");
+            }
         }
     }
 
@@ -2928,6 +2946,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " release=" + previous.reason);
     }
 
+    /** The address of a configured arm Android no longer holds a bond for, or null. */
+    private String firstUnpairedArm() {
+        if (!bleManager.isBonded(rightAddress)) return rightAddress;
+        if (!bleManager.isBonded(leftAddress)) return leftAddress;
+        return null;
+    }
+
+    /**
+     * A connect failure while an arm's bond is missing (the pairing was
+     * forgotten in Android settings, or the address was typed in by hand and
+     * never paired) will repeat forever, so instead of scheduling a retry,
+     * park the worker loop and tell the user to re-pair. Only an explicit
+     * connect (which builds a fresh communicator) starts a new attempt.
+     */
+    private void handleUnpairedFailure(String address) {
+        Log.e(TAG, "Connect failed and " + address + " is not paired; suspending reconnect");
+        synchronized (lock) {
+            reconnectHalted = true;
+            sessionReady = false;
+            fixedLayoutCreated = false;
+            startupProbePending = false;
+            shutdownRequested = false;
+            chargingMode = false;
+            imageRetryAfterMs = 0;
+            displayedFingerprint = "";
+            faceclawWakePendingNonce = -1;
+            lastFaceclawWakeLeaseQueuedAtMs = 0;
+            faceclawWakeControlSentCount = 0;
+            clearAllMessagesLocked("arm not paired: " + address);
+            reconnectAfterMs = Long.MAX_VALUE;
+            bleManager.disconnect(rightAddress);
+            bleManager.disconnect(leftAddress);
+        }
+        if (!userDisconnectRequested) {
+            setStateDisplay(
+                "unpaired",
+                "The glasses (" + address + ") are not paired with this phone."
+                    + " Use \"Pair glasses\" to pair them again, then connect."
+            );
+        }
+        interruptibleSleep.interrupt();
+    }
+
     private void handleTransportFailure(String reason) {
         Log.e(TAG, "Transport failure: "+reason);
         synchronized (lock) {
@@ -2963,6 +3024,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         ringConnected = false;
         ringNotificationsReady = false;
         reconnectAfterMs = 0;
+        reconnectHalted = false;
         ringReconnectAfterMs = 0;
         lastAckAtMs = 0;
         lastIncomingAtMs = 0;
