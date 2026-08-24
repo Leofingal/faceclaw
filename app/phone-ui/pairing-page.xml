@@ -37,7 +37,7 @@
                                 <Label text="{{ variantSummary }}" class="pairing-variant" visibility="{{ variantVisibility }}" />
                                 <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
                                 <Label text="{{ deviceName }}" class="pairing-serial" />
-                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" />
+                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
                                 <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
                             </StackLayout>
                             <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
@@ -61,7 +61,7 @@
                                 </GridLayout>
                                 <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
                                 <Label text="{{ deviceName }}" class="pairing-serial" />
-                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" />
+                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
                                 <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
                             </StackLayout>
                             <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
@@ -73,8 +73,6 @@
                     <Label text="Selected" class="h2 pairing-section" />
                     <Label text="{{ selectionSummary }}" textWrap="true" />
                 </StackLayout>
-
-                <Label text="{{ diagnostics }}" class="pairing-diagnostics m-t-16" textWrap="true" visibility="{{ diagnosticsVisibility }}" />
             </StackLayout>
         </ScrollView>
 

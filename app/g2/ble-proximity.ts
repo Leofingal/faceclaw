@@ -28,10 +28,9 @@
  * absolute numbers metres out.
  *
  * It is **not** a measurement. A hand over the temple, a pocket, or a body
- * between phone and glasses moves the estimate by metres. Every user-facing
- * number is therefore rounded hard, prefixed with "~" when confidence is low,
- * and paired with a coarse zone rather than being presented as a distance the
- * wearer could act on precisely.
+ * between phone and glasses moves the estimate by metres. The wearer therefore
+ * only ever sees a coarse zone (glyph + label), never a number in metres they
+ * might over-trust; the metres value exists purely to rank and bucket.
  *
  * This module is pure (no NativeScript imports) so it can run under node tests.
  */
@@ -112,27 +111,6 @@ export type ProximityEstimate = {
   readonly confidence: number;
   readonly zone: ProximityZone;
 };
-
-/** "0.4 m", "~3 m". The tilde marks an estimate the reader should not lean on. */
-export function formatDistance(estimate: ProximityEstimate): string {
-  const prefix = estimate.confidence < 0.6 ? "~" : "";
-  const meters = estimate.meters;
-  if (meters < 1) {
-    return `${prefix}${Math.round(meters * 100)} cm`;
-  }
-  if (meters < 10) {
-    return `${prefix}${meters.toFixed(1)} m`;
-  }
-  if (meters < MAXIMUM_METERS) {
-    return `${prefix}${Math.round(meters)} m`;
-  }
-  return `${prefix}>${MAXIMUM_METERS} m`;
-}
-
-/** "In your hand · 0.3 m" — zone first, because the zone is the trustworthy half. */
-export function proximitySummary(estimate: ProximityEstimate): string {
-  return `${zoneLabel(estimate.zone)} · ${formatDistance(estimate)}`;
-}
 
 /**
  * Estimate distance from a signal sample. Null when there is no RSSI to work

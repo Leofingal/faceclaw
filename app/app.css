@@ -20,6 +20,15 @@ TextField {
   color: #222222;
 }
 
+/* Without this, the theme's .ns-dark rules recolour the text white while the
+ * white background above sticks, rendering white-on-white fields.
+ * Order matters: .system-name-modal TextField must stay after this rule so the
+ * deliberately light modal wins the equal-specificity tie in dark mode. */
+.ns-dark TextField {
+  background-color: #2e2e2e;
+  color: #f0f0f0;
+}
+
 .system-name-modal TextField {
   background-color: #ffffff;
   color: #222222;
@@ -33,6 +42,12 @@ Button.-primary {
  * small to comfortably read paragraphs of legalese, especially on tablets. */
 .body-text {
   font-size: 18;
+}
+
+/* The logo art is black-on-transparent; tint it light in dark mode so it
+ * doesn't vanish into the dark page background. */
+.ns-dark .onboarding-logo {
+  tint-color: #e6e6e6;
 }
 
 /*
@@ -175,12 +190,6 @@ Button.-primary {
   background-color: #eef4ff;
   border-radius: 10;
   padding: 10;
-}
-
-.pairing-diagnostics {
-  font-size: 11;
-  color: #888888;
-  font-family: monospace;
 }
 
 Button.pairing-link {

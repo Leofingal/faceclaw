@@ -15,8 +15,6 @@ const {
   MAXIMUM_METERS,
   zoneFromMeters,
   zoneLabel,
-  formatDistance,
-  proximitySummary,
   sortedByProximity,
 } = require("../.test-build/app/g2/ble-proximity.js");
 
@@ -66,20 +64,10 @@ test("zones and their boundaries", () => {
   assert.equal(zoneLabel("immediate"), "In your hand");
 });
 
-test("weak signals are marked as approximate", () => {
+test("weak signals carry lower confidence", () => {
   const strong = estimateProximity(-45, GLASSES_CALIBRATION);
   const weak = estimateProximity(-95, GLASSES_CALIBRATION);
-  assert.ok(!formatDistance(strong).startsWith("~"));
-  assert.ok(formatDistance(weak).startsWith("~"));
   assert.ok(weak.confidence < strong.confidence);
-});
-
-test("distance formatting is rounded hard", () => {
-  const centimetres = estimateProximity(-30, GLASSES_CALIBRATION);
-  assert.ok(formatDistance(centimetres).includes("cm"), formatDistance(centimetres));
-  assert.equal(formatDistance({ meters: 2.34, confidence: 1, zone: "near" }), "2.3 m");
-  assert.equal(formatDistance({ meters: 42.6, confidence: 1, zone: "distant" }), "43 m");
-  assert.equal(proximitySummary({ meters: 0.3, confidence: 1, zone: "immediate" }), "In your hand · 30 cm");
 });
 
 const device = (id, rssi) => ({ id, rssi });

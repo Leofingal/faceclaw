@@ -422,11 +422,9 @@ export class OnboardingFlashViewModel extends Observable {
 
   private handleFlashProgress(progress: FlashProgress): void {
     const lensIndex = progress.lens === "right" ? 1 : 0;
-    const withinLens =
-      progress.componentCount > 0
-        ? (progress.componentIndex - 1 + (progress.blockCount > 0 ? progress.blockIndex / progress.blockCount : 0)) /
-          progress.componentCount
-        : 0;
+    // Weight by bytes, not by component index: the image is one large segment
+    // plus several small ones, so per-component steps move wildly unevenly.
+    const withinLens = progress.bytesTotal > 0 ? Math.min(1, progress.bytesSent / progress.bytesTotal) : 0;
     this.progress = ((lensIndex + withinLens) / 2) * 100;
     this.status =
       `Flashing ${progress.lens} lens — part ${progress.componentIndex}/${progress.componentCount}, ` +

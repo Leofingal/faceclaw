@@ -163,8 +163,8 @@ test("nearest requires a clear signal lead", () => {
   const d = (id, rssi) => ({ id, rssi });
   assert.equal(nearestCandidateId([d("1", -40), d("2", -70)]), "1");
   assert.equal(nearestCandidateId([d("1", -60), d("2", -57)]), null);
-  // A lone advertiser is trivially the nearest.
-  assert.equal(nearestCandidateId([d("1", -80)]), "1");
+  // A lone advertiser has nothing to be closer than, so no Closest badge.
+  assert.equal(nearestCandidateId([d("1", -80)]), null);
   // Nothing to rank without RSSI.
   assert.equal(nearestCandidateId([d("1", null)]), null);
   assert.equal(nearestCandidateId([]), null);

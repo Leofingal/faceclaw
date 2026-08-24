@@ -26,6 +26,7 @@ export type PairingRowItem = PairingRowPresentation & {
   variantVisibility: "visible" | "collapse";
   proximityLine: string;
   proximityClass: string;
+  armsVisibility: "visible" | "collapse";
   warningVisibility: "visible" | "collapse";
   chevron: string;
   /**
@@ -56,7 +57,6 @@ export class PairingViewModel extends Observable {
   private startedAtMs = 0;
   private advertisementCount = 0;
   private scanFailure = "";
-  private readonly logLines: string[] = [];
 
   private _scanning = false;
   private _status = "";
@@ -137,7 +137,6 @@ export class PairingViewModel extends Observable {
         this.scanning = false;
         this.refresh();
       },
-      onLog: (line) => this.appendLog(line),
     });
     if (!started) {
       this.status = "Could not start the Bluetooth scan. Check that Bluetooth is on.";
@@ -269,14 +268,6 @@ export class PairingViewModel extends Observable {
 
   get secondaryLabel(): string {
     return this.onboarding ? "Back" : "Cancel";
-  }
-
-  get diagnostics(): string {
-    return this.logLines.slice(-12).join("\n");
-  }
-
-  get diagnosticsVisibility(): "visible" | "collapse" {
-    return this.logLines.length ? "visible" : "collapse";
   }
 
   // --- actions ---------------------------------------------------------------
@@ -443,16 +434,9 @@ export class PairingViewModel extends Observable {
       "selectionVisibility",
       "selectionSummary",
       "primaryEnabled",
-      "diagnostics",
-      "diagnosticsVisibility",
     ] as const) {
       this.notifyPropertyChange(property, this[property]);
     }
-  }
-
-  private appendLog(line: string): void {
-    this.logLines.push(line);
-    if (this.logLines.length > 50) this.logLines.splice(0, this.logLines.length - 50);
   }
 
   private formatError(error: unknown): string {
@@ -474,6 +458,7 @@ function toRowItem(row: PairingRowPresentation, selected: boolean, onRowTap: (ar
     variantVisibility: row.variantSummary ? "visible" : "collapse",
     proximityLine: `${row.proximityGlyph}  ${row.proximitySummary}`,
     proximityClass: row.zone === "immediate" ? "pairing-proximity pairing-proximity-immediate" : "pairing-proximity",
+    armsVisibility: row.armsSummary ? "visible" : "collapse",
     warningVisibility: row.warning ? "visible" : "collapse",
     chevron: selected ? "✓" : row.canSelect ? "›" : "…",
     onRowTap,

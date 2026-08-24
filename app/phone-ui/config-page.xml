@@ -37,8 +37,8 @@
         <Label row="6" text="{{ status }}" class="body-text m-t-16" textWrap="true" />
 
         <GridLayout row="7" columns="*,*" class="m-t-16">
-            <Button col="0" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
-            <Button col="1" text="Back" tap="{{ onBackTap }}" />
+            <Button col="0" text="Back" tap="{{ onBackTap }}" />
+            <Button col="1" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
         </GridLayout>
 
         <ScrollView row="8" class="m-t-16">

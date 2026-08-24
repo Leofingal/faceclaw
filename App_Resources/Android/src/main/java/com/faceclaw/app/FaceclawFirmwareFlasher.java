@@ -188,11 +188,21 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         if (!isEndOk(beginStatus)) {
             emitLog("warning: unexpected begin status " + beginStatus + "; continuing");
         }
+        // Progress is reported in bytes across the whole image: the segments
+        // are one large firmware blob plus several small ones, so a bar
+        // stepped per segment would sit still through the big one and then
+        // sprint through the rest.
+        long totalBytes = 0;
+        for (Segment seg : segs) {
+            totalBytes += seg.ps;
+        }
+        long bytesBefore = 0;
         for (int i = 0; i < segs.size(); i++) {
             if (cancelled) {
                 throw new IllegalStateException("Cancelled.");
             }
-            flashComponentWithRetry(lens, address, i, segs.size(), segs.get(i), img);
+            flashComponentWithRetry(lens, address, i, segs.size(), segs.get(i), img, bytesBefore, totalBytes);
+            bytesBefore += segs.get(i).ps;
         }
         emitLog(lens + " lens: all components verified");
         try {
@@ -201,14 +211,15 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         }
     }
 
-    private void flashComponentWithRetry(String lens, String address, int index, int count, Segment seg, byte[] img) {
+    private void flashComponentWithRetry(String lens, String address, int index, int count, Segment seg, byte[] img,
+            long bytesBefore, long totalBytes) {
         for (int attempt = 0; attempt < COMPONENT_RETRIES; attempt++) {
             if (attempt > 0) {
                 emitLog(seg.name + ": re-flash attempt " + (attempt + 1) + "/" + COMPONENT_RETRIES);
             }
             int endStatus;
             try {
-                endStatus = flashComponent(lens, address, index, count, seg, img);
+                endStatus = flashComponent(lens, address, index, count, seg, img, bytesBefore, totalBytes);
             } catch (TimeoutException | RuntimeException e) {
                 emitLog(seg.name + ": block phase failed: " + e.getMessage());
                 endStatus = -1;
@@ -226,8 +237,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         throw new IllegalStateException("component " + seg.name + " failed after " + COMPONENT_RETRIES + " attempts");
     }
 
-    private int flashComponent(String lens, String address, int index, int count, Segment seg, byte[] img)
-            throws TimeoutException {
+    private int flashComponent(String lens, String address, int index, int count, Segment seg, byte[] img,
+            long bytesBefore, long totalBytes) throws TimeoutException {
         byte[] sub = Arrays.copyOfRange(img, seg.off, seg.off + 128);
         int ps = seg.ps;
         int payloadStart = seg.off + 128;
@@ -260,7 +271,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
                 throw new IllegalStateException("block " + b + " NAK'd " + BLOCK_NAK_RETRIES + " times");
             }
             if (b % 20 == 0 || b == blockCount - 1) {
-                emitProgress(lens, index + 1, count, b + 1, blockCount);
+                long bytesSent = bytesBefore + Math.min((long) (b + 1) * BLOCK_SIZE, (long) ps);
+                emitProgress(lens, index + 1, count, b + 1, blockCount, bytesSent, totalBytes);
             }
         }
         emitLog(seg.name + ": data phase done; sending END");
@@ -651,11 +663,12 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         });
     }
 
-    private void emitProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount) {
+    private void emitProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount,
+            long bytesSent, long bytesTotal) {
         mainHandler.post(() -> {
             FaceclawFirmwareFlasherListener current = listener;
             if (current != null) {
-                current.onProgress(lens, componentIndex, componentCount, blockIndex, blockCount);
+                current.onProgress(lens, componentIndex, componentCount, blockIndex, blockCount, bytesSent, bytesTotal);
             }
         });
     }

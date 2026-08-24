@@ -10,6 +10,9 @@ export type FlashProgress = {
   componentCount: number;
   blockIndex: number;
   blockCount: number;
+  /** Bytes flashed so far across the whole lens image — the size-weighted progress signal. */
+  bytesSent: number;
+  bytesTotal: number;
 };
 
 /**
@@ -42,6 +45,8 @@ export class FirmwareFlasher {
         componentCount: number,
         blockIndex: number,
         blockCount: number,
+        bytesSent: number,
+        bytesTotal: number,
       ) =>
         this.emit(this.progressListeners, {
           lens: String(lens),
@@ -49,6 +54,8 @@ export class FirmwareFlasher {
           componentCount: Number(componentCount),
           blockIndex: Number(blockIndex),
           blockCount: Number(blockCount),
+          bytesSent: Number(bytesSent),
+          bytesTotal: Number(bytesTotal),
         }),
       onState: (state: string, detail: string) =>
         this.emit(this.stateListeners, String(state) as FlashState, String(detail ?? "")),
