@@ -1,0 +1,203 @@
+/**
+ * How far away an advertising device probably is, from its signal strength.
+ *
+ * Ported from SybilSight's `BLEProximity.swift` (itself from ProLink's
+ * `PeripheralInfo.basicEstimatedDistance`), with the calibration table
+ * narrowed to the two products this app pairs.
+ *
+ * ## The model
+ *
+ * The log-distance path loss model:
+ *
+ *     RSSI = txPower - 10 · n · log₁₀(d)   ⇒   d = 10 ^ ((txPower - RSSI) / (10 · n))
+ *
+ * `txPower` is the expected signal at one metre and `n` the path loss
+ * exponent — 2.0 in free space, higher indoors where walls and bodies absorb.
+ * A device that advertises its own TX power gets used as measured; everything
+ * else falls back to a per-product calibration.
+ *
+ * ## What this is for, and what it is not
+ *
+ * It exists so a pairing list can be ordered by "which of these is in my
+ * hand", and so a row can say roughly how far away its device is. That is a
+ * ranking problem, and RSSI ordering is far more trustworthy than RSSI
+ * magnitude — the ordering survives calibration error that would put the
+ * absolute numbers metres out.
+ *
+ * It is **not** a measurement. A hand over the temple, a pocket, or a body
+ * between phone and glasses moves the estimate by metres. Every user-facing
+ * number is therefore rounded hard, prefixed with "~" when confidence is low,
+ * and paired with a coarse zone rather than being presented as a distance the
+ * wearer could act on precisely.
+ *
+ * This module is pure (no NativeScript imports) so it can run under node tests.
+ */
+
+/** Expected RSSI at one metre, and the path loss exponent, per product. */
+export type ProximityCalibration = {
+  readonly txPowerAtOneMeter: number;
+  readonly pathLossExponent: number;
+};
+
+/**
+ * Even Realities G2. Two temple radios on a head, usually held or worn
+ * indoors, so the exponent sits above free space. Verified only as a ranking
+ * input — see the module note.
+ */
+export const GLASSES_CALIBRATION: ProximityCalibration = { txPowerAtOneMeter: -62, pathLossExponent: 2.2 };
+
+/**
+ * Even Realities R1. A ring antenna is smaller and more easily shadowed by a
+ * hand, so it reads weaker at the same distance than the glasses do.
+ */
+export const RING_CALIBRATION: ProximityCalibration = { txPowerAtOneMeter: -68, pathLossExponent: 2.3 };
+
+/**
+ * Estimates below this are indistinguishable from "touching the phone", and
+ * above it from "somewhere else entirely". Clamping keeps a noisy sample from
+ * rendering as 0.001 m.
+ */
+export const MINIMUM_METERS = 0.1;
+export const MAXIMUM_METERS = 100;
+
+/**
+ * Coarse buckets. The wearer is being asked "is this the pair in your hand?",
+ * and a bucket answers that better than a number they might over-trust.
+ */
+export type ProximityZone = "immediate" | "near" | "far" | "distant";
+
+const ZONE_ORDER: Record<ProximityZone, number> = { immediate: 0, near: 1, far: 2, distant: 3 };
+
+export function zoneFromMeters(meters: number): ProximityZone {
+  if (meters < 0.5) return "immediate";
+  if (meters < 3) return "near";
+  if (meters < 10) return "far";
+  return "distant";
+}
+
+export function zoneRank(zone: ProximityZone): number {
+  return ZONE_ORDER[zone];
+}
+
+export function zoneLabel(zone: ProximityZone): string {
+  switch (zone) {
+    case "immediate":
+      return "In your hand";
+    case "near":
+      return "Nearby";
+    case "far":
+      return "Across the room";
+    case "distant":
+      return "Far away";
+  }
+}
+
+/** A glyph for the zone; SF Symbols have no Android equivalent, so plain text. */
+export function zoneGlyph(zone: ProximityZone): string {
+  switch (zone) {
+    case "immediate":
+      return "●●●●";
+    case "near":
+      return "●●●○";
+    case "far":
+      return "●●○○";
+    case "distant":
+      return "●○○○";
+  }
+}
+
+/** A distance estimate and how much to trust it. */
+export type ProximityEstimate = {
+  readonly meters: number;
+  /** 0…1. Drops with weak signal and with having to guess the TX power. */
+  readonly confidence: number;
+  readonly zone: ProximityZone;
+};
+
+/** "0.4 m", "~3 m". The tilde marks an estimate the reader should not lean on. */
+export function formatDistance(estimate: ProximityEstimate): string {
+  const prefix = estimate.confidence < 0.6 ? "~" : "";
+  const meters = estimate.meters;
+  if (meters < 1) {
+    return `${prefix}${Math.round(meters * 100)} cm`;
+  }
+  if (meters < 10) {
+    return `${prefix}${meters.toFixed(1)} m`;
+  }
+  if (meters < MAXIMUM_METERS) {
+    return `${prefix}${Math.round(meters)} m`;
+  }
+  return `${prefix}>${MAXIMUM_METERS} m`;
+}
+
+/** "In your hand · 0.3 m" — zone first, because the zone is the trustworthy half. */
+export function proximitySummary(estimate: ProximityEstimate): string {
+  return `${zoneLabel(estimate.zone)} · ${formatDistance(estimate)}`;
+}
+
+/**
+ * Estimate distance from a signal sample. Null when there is no RSSI to work
+ * from, so callers can say "signal unknown" rather than render a fabricated
+ * distance. 127 is the Bluetooth "RSSI unavailable" sentinel.
+ */
+export function estimateProximity(
+  rssi: number | null | undefined,
+  txPower: number | null | undefined,
+  calibration: ProximityCalibration,
+): ProximityEstimate | null {
+  if (rssi == null || !Number.isFinite(rssi) || rssi === 127) return null;
+  const hasTxPower = txPower != null && Number.isFinite(txPower);
+  const referencePower = hasTxPower ? txPower! : calibration.txPowerAtOneMeter;
+  const ratio = (referencePower - rssi) / (10 * calibration.pathLossExponent);
+  const meters = Math.min(Math.max(Math.pow(10, ratio), MINIMUM_METERS), MAXIMUM_METERS);
+  return {
+    meters,
+    confidence: proximityConfidence(rssi, hasTxPower),
+    zone: zoneFromMeters(meters),
+  };
+}
+
+/**
+ * Confidence falls with signal strength, because a weak sample is a noisy one,
+ * and with having to assume the TX power instead of being told it.
+ */
+export function proximityConfidence(rssi: number, hasAdvertisedTxPower: boolean): number {
+  let confidence = 1.0;
+  if (rssi < -85) confidence *= 0.4;
+  else if (rssi < -75) confidence *= 0.7;
+  else if (rssi < -65) confidence *= 0.85;
+  confidence *= hasAdvertisedTxPower ? 1.0 : 0.85;
+  return confidence;
+}
+
+/**
+ * Order a list closest-first.
+ *
+ * Items whose signal never arrived sort last rather than being dropped: a pair
+ * that cannot be ranked is still a pair the wearer may need to choose, and
+ * hiding it would be worse than showing it at the bottom. Ties break on the
+ * stable id so the list does not reshuffle between scan passes — a list that
+ * reorders under the finger is how the wrong device gets tapped, which is the
+ * whole failure this ordering exists to prevent.
+ */
+export function sortedByProximity<T>(
+  items: readonly T[],
+  estimate: (item: T) => ProximityEstimate | null,
+  id: (item: T) => string,
+): T[] {
+  return items.slice().sort((lhs, rhs) => {
+    const left = estimate(lhs);
+    const right = estimate(rhs);
+    if (left && right) {
+      if (left.meters !== right.meters) return left.meters < right.meters ? -1 : 1;
+      return compareIds(id(lhs), id(rhs));
+    }
+    if (left && !right) return -1;
+    if (!left && right) return 1;
+    return compareIds(id(lhs), id(rhs));
+  });
+}
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}

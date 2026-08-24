@@ -6,7 +6,8 @@
   "scripts": {
     "build": "nativescript build android",
     "release": "scripts/release.sh",
-    "clean": "rm -rf platforms"
+    "clean": "rm -rf platforms",
+    "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
