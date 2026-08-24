@@ -226,10 +226,20 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             throw new IllegalStateException("session prelude not acked: " + address);
         }
         // 3. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
-        int magic = allocMagic();
-        byte[] page = BleProtocol.buildCreatePromptPage(
-            magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
-        if (writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS) == null) {
+        //    Two attempts: on 2.2.9 the first request sent right after the
+        //    prelude can be dropped while the lens emits its own sid-0x80
+        //    notifications (observed with the device-info settings read).
+        byte[] pageAck = null;
+        for (int attempt = 0; attempt < 2 && pageAck == null && !cancelled; attempt++) {
+            int magic = allocMagic();
+            byte[] page = BleProtocol.buildCreatePromptPage(
+                magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
+            pageAck = writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS);
+            if (pageAck == null) {
+                emitLog("prompt page attempt " + (attempt + 1) + " unacked: " + address);
+            }
+        }
+        if (pageAck == null) {
             throw new IllegalStateException("prompt page not acked: " + address);
         }
         emitLog("prompt page shown on " + address);
