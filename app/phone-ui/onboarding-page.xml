@@ -1,11 +1,15 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
     <GridLayout rows="*,auto" class="p-20">
-        <ScrollView row="0">
+        <StackLayout row="0" verticalAlignment="middle" visibility="{{ splashVisibility }}">
+            <Label text="{{ headline }}" class="h1 text-center" textWrap="true" />
+            <Label text="{{ tagline }}" class="body-text text-center m-t-8" textWrap="true" />
+            <Image src="~/images/faceclaw-logo.png" stretch="aspectFit" height="{{ logoHeight }}" horizontalAlignment="center" class="onboarding-logo m-t-24" />
+        </StackLayout>
+
+        <ScrollView row="0" visibility="{{ contentVisibility }}">
             <StackLayout>
-                <Image src="res://logo" stretch="aspectFit" height="140" horizontalAlignment="center" visibility="{{ logoVisibility }}" class="m-t-24" />
                 <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
-                <Label text="{{ tagline }}" class="text-center m-t-8" textWrap="true" visibility="{{ taglineVisibility }}" />
-                <Label text="{{ body }}" class="m-t-24" textWrap="true" />
+                <Label text="{{ body }}" class="body-text m-t-24" textWrap="true" />
             </StackLayout>
         </ScrollView>
 

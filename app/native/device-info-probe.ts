@@ -8,7 +8,7 @@ export type DeviceInfo = {
   capabilities: string;
 };
 
-export type DeviceInfoState = "connecting" | "querying";
+export type DeviceInfoState = "connecting" | "authenticating" | "querying";
 
 /**
  * TS wrapper around the native FaceclawDeviceInfoProbe — a one-shot,
@@ -25,11 +25,11 @@ export class DeviceInfoProbe {
   private resolveFn: ((info: DeviceInfo) => void) | null = null;
   private rejectFn: ((error: Error) => void) | null = null;
 
-  constructor(rightAddress: string) {
+  constructor(rightAddress: string, leftAddress = "") {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
 
-    this.probe = new com.faceclaw.app.FaceclawDeviceInfoProbe(context, rightAddress);
+    this.probe = new com.faceclaw.app.FaceclawDeviceInfoProbe(context, rightAddress, leftAddress);
     this.listenerProxy = new com.faceclaw.app.FaceclawDeviceInfoProbeListener({
       onLog: (line: string) => this.emit(this.logListeners, String(line)),
       onState: (state: string, detail: string) =>

@@ -10,6 +10,7 @@ import {
 import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
+import { formatErrorMessage } from "../util/format-error";
 
 type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer" | "error";
 
@@ -94,6 +95,10 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     return this._phase === "custom" || this._phase === "fonts" ? "collapse" : "visible";
   }
 
+  get errorActionsVisibility(): "visible" | "collapse" {
+    return this._phase === "error" ? "visible" : "collapse";
+  }
+
   // --- button handlers -------------------------------------------------------
 
   onPrimaryTap(): void {
@@ -123,6 +128,20 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     frame?.navigate({ moduleName: "phone-ui/onboarding-unpair-page", clearHistory: true });
   }
 
+  /** Escape hatch when the check itself fails: flash as if stock firmware had been detected. */
+  onInstallTap(): void {
+    if (this._phase !== "error") return;
+    this.goToFlashing();
+  }
+
+  /** Escape hatch when the check itself fails: continue as if compatible custom firmware had been detected. */
+  onSkipTap(): void {
+    if (this._phase !== "error") return;
+    // Same path as a real "custom" classification, so the phone-side G2 fonts
+    // still get extracted when they're missing.
+    this.applyClassification("custom", "", "");
+  }
+
   // --- probe flow ------------------------------------------------------------
 
   private async check(): Promise<void> {
@@ -144,7 +163,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       }
 
       this.disposeProbe();
-      const probe = new DeviceInfoProbe(stored.right);
+      const probe = new DeviceInfoProbe(stored.right, stored.left);
       this.probeInstance = probe;
       probe.onStateChange((state) => this.reportProbeState(state));
 
@@ -162,6 +181,9 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   private reportProbeState(state: DeviceInfoState): void {
     if (state === "connecting") {
       this.status = "Connecting to your glasses...";
+    } else if (state === "authenticating") {
+      // First-time connections pair here; the OS may show a Bluetooth dialog.
+      this.status = "Authenticating with your glasses... If Android asks to pair, tap Pair.";
     } else if (state === "querying") {
       this.status = "Reading the firmware version...";
     }
@@ -285,6 +307,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.notifyPropertyChange("secondaryLabel", this.secondaryLabel);
     this.notifyPropertyChange("primaryVisibility", this.primaryVisibility);
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
+    this.notifyPropertyChange("errorActionsVisibility", this.errorActionsVisibility);
   }
 
   private disposeProbe(): void {
@@ -299,7 +322,6 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }

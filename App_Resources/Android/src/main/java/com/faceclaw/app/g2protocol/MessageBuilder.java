@@ -23,6 +23,22 @@ public class MessageBuilder {
         );
     }
 
+    /** The per-connection sid-0x80 security-auth request (one per arm). */
+    public OutboundMessage securityAuth(boolean leftArm) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "security-auth",
+            "security auth " + (leftArm ? "L" : "R"),
+            BleProtocol.SID_SECURITY_AUTH,
+            BleProtocol.FLAG_SECURITY_AUTH,
+            magic,
+            BleProtocol.buildAuthenticationRequest(magic),
+            ConnectionOptions.SECURITY_AUTH_SOFT_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
     public OutboundMessage shutdown(int exitMode) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
