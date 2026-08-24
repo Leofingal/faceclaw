@@ -10,7 +10,6 @@ type LayoutOrientation = "portrait" | "landscape";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
-  private _log = "";
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
@@ -29,14 +28,12 @@ export class MainViewModel extends Observable {
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
-  private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   constructor() {
     super();
     dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
-      this.log = snapshot.log;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
@@ -66,17 +63,6 @@ export class MainViewModel extends Observable {
     if (this._status !== value) {
       this._status = value;
       this.notifyPropertyChange("status", value);
-    }
-  }
-
-  get log(): string {
-    return this._log;
-  }
-
-  set log(value: string) {
-    if (this._log !== value) {
-      this._log = value;
-      this.notifyPropertyChange("log", value);
     }
   }
 
@@ -158,27 +144,6 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
-  }
-
-  get showLog(): boolean {
-    return this._showLog;
-  }
-
-  set showLog(value: boolean) {
-    if (this._showLog !== value) {
-      this._showLog = value;
-      this.notifyPropertyChange("showLog", value);
-      this.notifyPropertyChange("showLogVisibility", this.showLogVisibility);
-      this.notifyPropertyChange("showLogMenuLabel", this.showLogMenuLabel);
-    }
-  }
-
-  get showLogVisibility(): "visible" | "collapse" {
-    return this._showLog ? "visible" : "collapse";
-  }
-
-  get showLogMenuLabel(): string {
-    return this._showLog ? "Hide Log" : "Show Log";
   }
 
   get activeTextSettingId(): string | null {
@@ -447,13 +412,13 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("phase", value);
       this.notifyPropertyChange("buttonLabel", this.buttonLabel);
       this.notifyPropertyChange("canRun", this.canRun);
+      this.notifyPropertyChange("connectItemEnabled", this.connectItemEnabled);
     }
   }
 
   get buttonLabel(): string {
     switch (this.phase) {
       case "connecting":
-        return "Connecting...";
       case "connected":
       case "charging":
         return "Disconnect";
@@ -468,20 +433,28 @@ export class MainViewModel extends Observable {
     return this.phase !== "connecting" && this.phase !== "disconnecting";
   }
 
+  /**
+   * Unlike the other canRun-gated menu items, Connect/Disconnect stays live
+   * while connecting: Disconnect is the only way out of a reconnection-attempt
+   * loop short of force-stopping the app.
+   */
+  get connectItemEnabled(): boolean {
+    return this.phase !== "disconnecting";
+  }
+
   async onTap(): Promise<void> {
-    if (!this.canRun) return;
+    if (!this.connectItemEnabled) return;
 
     try {
-      if (this.phase === "connected" || this.phase === "charging") {
-        await dashboardController.disconnect();
-      } else {
+      if (this.phase === "disconnected") {
         await dashboardController.connect();
+      } else {
+        await dashboardController.disconnect();
       }
     } catch (error) {
       const message = this.formatError(error);
       if (!this.status.startsWith("Failed:")) {
         this.status = `Failed: ${message}`;
-        this.appendLog(`error: ${message}`);
       }
     }
   }
@@ -550,10 +523,6 @@ export class MainViewModel extends Observable {
     });
   }
 
-  onToggleLogTap(): void {
-    this.showLog = !this.showLog;
-  }
-
   onTextSettingTextChange(args: { value?: string; object?: { text?: string } }): void {
     dashboardController.setActiveTextSettingValue(
       args.object?.text ?? args.value ?? "",
@@ -616,11 +585,6 @@ export class MainViewModel extends Observable {
 
   async onSyntheticMicTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("wakeword");
-  }
-
-  private appendLog(line: string): void {
-    const stamp = new Date().toISOString().slice(11, 19);
-    this.log = this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;
   }
 
   private readLayoutOrientation(): LayoutOrientation {

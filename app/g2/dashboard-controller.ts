@@ -49,7 +49,6 @@ type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
   status: string;
-  log: string;
   displayPreview: ImageSource | null;
   /**
    * When non-empty, the phone UI shows this instead of the display preview:
@@ -148,7 +147,6 @@ function sourceName(eventSource: number): string {
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
-  private log = "";
   private activeTextSettings: ConfigSettingString[] = [];
   private activeTextEditorTitle = "";
   private activeTextEditorOnFinish: (() => void) | null = null;
@@ -720,7 +718,6 @@ class DashboardController {
     return {
       phase: this.phase,
       status: this.status,
-      log: this.log,
       displayPreview: this.displayPreview,
       displayPreviewMessage: this.displayPreviewMessage(),
       activeTextSettingId: primaryTextSetting?.id ?? null,
@@ -839,7 +836,6 @@ class DashboardController {
       this.appendLog(`error: ${message}`);
       throw new Error(message);
     }
-    this.log = "";
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
     this.welcomeSoundArmed = isWelcomeSoundPending();
@@ -1147,6 +1143,14 @@ class DashboardController {
    */
   async disconnect(options?: { skipFirmwareCleanup?: boolean }): Promise<void> {
     suppressAutoReconnect();
+    // The phone menu offers Disconnect during the connecting phase (it is the
+    // only way out of a reconnection-attempt loop), so a call can land while
+    // connect() is still mid-flight; let it finish so the teardown doesn't
+    // race its surface setup. connect() returns once the Java worker thread
+    // owns the retry loop, so this wait is short.
+    while (this.connectRunning) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     if (this.phase === "disconnected" || this.phase === "disconnecting") return;
 
     this.setPhase("disconnecting");
@@ -1886,10 +1890,7 @@ class DashboardController {
   }
 
   private appendLog(line: string): void {
-    const stamped = `[${formatTimestamp(new Date())}] ${line}`;
-    //this.log = this.log ? `${this.log}\n${stamped}` : stamped;
-    console.log(stamped);
-    //this.emit();
+    console.log(`[${formatTimestamp(new Date())}] ${line}`);
   }
 
   private setDisplayPreview(preview: ImageSource | null): void {
