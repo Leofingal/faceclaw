@@ -297,6 +297,18 @@ let controlsInitialized = false;
 // created, so they get "now".
 const sessionRecency = new Map<string, number>();
 
+// When each session's app last produced output, as LOCAL receive time of the
+// server's `activity` push (phone clock — the wire timestamp is host-clock
+// and can't be compared against Date.now() across machines). Keys are
+// recencyKey(connectionId, socket). A session is "active" (hub rows show an
+// animated indicator) while an activity push arrived within the last
+// ACTIVITY_ACTIVE_MS; the wrapper reports at most one per 2s while output
+// continues, so 5s of slack keeps the indicator lit through the gaps.
+const sessionActivity = new Map<string, number>();
+const ACTIVITY_ACTIVE_MS = 5_000;
+// Alternation period of the hub's activity indicator.
+const HUB_ANIMATION_STEP_MS = 800;
+
 function recencyKey(connectionId: string, socket: string): string {
   return `${connectionId}\n${socket}`;
 }
@@ -360,6 +372,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       }
       if (window.foreground && window.kind === "hub") window.sessionOrder = [];
       if (window.foreground) renderAndSubmit(window, 0);
+      updateHubAnimation();
       break;
     }
     case "screen":
@@ -373,6 +386,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
           renderAndSubmit(window, 0);
         }
       }
+      updateHubAnimation();
       break;
     case "tool-call": {
       const callId = message.callId;
@@ -585,6 +599,9 @@ function startControl(control: ControlConnection): void {
     client.onTitle((socket) => {
       noteSessionUpdated(connectionId, socket);
     }),
+    client.onActivity((socket) => {
+      noteSessionActivity(connectionId, socket);
+    }),
   );
   client.start();
 }
@@ -691,6 +708,63 @@ function renderHubWindows(): void {
   for (const window of windows.values()) {
     if (window.kind === "hub") scheduleRender(window);
   }
+}
+
+// Hub activity animation: while a foregrounded hub lists at least one active
+// session, a timer re-renders it so the per-row indicator alternates. The
+// timer stops itself once every session's activity ages out (its final tick
+// renders the rows indicator-free) or the hub leaves the foreground.
+let hubAnimationPhase = 0;
+let hubAnimationTimer: ReturnType<typeof setInterval> | null = null;
+
+function isSessionActive(connectionId: string, socket: string): boolean {
+  const at = sessionActivity.get(recencyKey(connectionId, socket));
+  return at !== undefined && Date.now() - at < ACTIVITY_ACTIVE_MS;
+}
+
+function hubAnimationShouldRun(): boolean {
+  if (!screenOn) return false;
+  let hubVisible = false;
+  for (const window of windows.values()) {
+    if (window.kind === "hub" && window.foreground) hubVisible = true;
+  }
+  if (!hubVisible) return false;
+  const now = Date.now();
+  for (const at of sessionActivity.values()) {
+    if (now - at < ACTIVITY_ACTIVE_MS) return true;
+  }
+  return false;
+}
+
+/** Start or stop the animation timer to match the current state. */
+function updateHubAnimation(): void {
+  if (hubAnimationShouldRun()) {
+    if (hubAnimationTimer) return;
+    hubAnimationTimer = setInterval(() => {
+      hubAnimationPhase = (hubAnimationPhase + 1) % 2;
+      if (!hubAnimationShouldRun() && hubAnimationTimer) {
+        clearInterval(hubAnimationTimer);
+        hubAnimationTimer = null;
+      }
+      // Render even on the stopping tick, to clear expired indicators.
+      renderHubWindows();
+    }, HUB_ANIMATION_STEP_MS);
+  } else if (hubAnimationTimer) {
+    clearInterval(hubAnimationTimer);
+    hubAnimationTimer = null;
+  }
+}
+
+/** An activity push arrived for a session: mark it and (re)start the animation. */
+function noteSessionActivity(connectionId: string, socket: string): void {
+  const key = recencyKey(connectionId, socket);
+  const wasActive = isSessionActive(connectionId, socket);
+  sessionActivity.set(key, Date.now());
+  sessionRecency.set(key, Date.now());
+  updateHubAnimation();
+  // A session just turned active: show its indicator now rather than up to
+  // one animation step later.
+  if (!wasActive) renderHubWindows();
 }
 
 function createViewWindow(
@@ -1017,6 +1091,8 @@ type HubItem = {
   label: string;
   /** Group heading (host name): drawn differently and skipped by selection. */
   heading?: boolean;
+  /** Session with recent output: an animated indicator marks the row. */
+  active?: boolean;
   onSelect?: () => void;
 };
 
@@ -1085,6 +1161,7 @@ function hubSessionItems(window: HubWindow): HubItem[] {
       const openWindowId = viewWindowIdForSocket(control.config.id, session.socket);
       items.push({
         label: openWindowId ? `${sessionLabel(session)}  [open]` : sessionLabel(session),
+        active: isSessionActive(control.config.id, session.socket),
         onSelect: () => {
           const windowId = viewWindowIdForSocket(control.config.id, session.socket);
           if (windowId) {
@@ -1442,6 +1519,19 @@ function paintHub(window: HubWindow): GrayImage {
       drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, hubRowH - 1, window.focused, 8);
     }
     image.drawText(chromeFont(), 32, y + 2, item.label, selected ? 255 : 200);
+    if (item.active) {
+      // Activity indicator in the gutter left of the label, alternating
+      // filled/outline each animation step (drawn shapes, not a font glyph,
+      // so the two states render distinctly in every UI font).
+      const size = 6;
+      const iy = y + 2 + Math.max(0, ((font.lineHeight - size) / 2) | 0);
+      const value = selected ? 255 : 200;
+      if (hubAnimationPhase === 0) {
+        image.fillRect(22, iy, size, size, value);
+      } else {
+        image.drawRect(22, iy, size, size, value);
+      }
+    }
   }
   if (items.length > visibleRowCount) {
     drawListScrollbar(
