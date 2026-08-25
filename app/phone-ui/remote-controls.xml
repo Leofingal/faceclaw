@@ -7,13 +7,14 @@
   MainViewModel.
 -->
 <StackLayout xmlns="http://schemas.nativescript.org/tns.xsd" class="remote-controls">
-  <GridLayout columns="auto,*,auto" class="display-controls">
-    <Button col="0" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" />
-    <GridLayout col="1" columns="auto,*" verticalAlignment="center" class="brightness">
+  <!-- Hidden by default; enabled in Settings > Phone display. -->
+  <GridLayout columns="auto,*,auto" class="display-controls" visibility="{{ displayControlsVisibility }}">
+    <Button col="0" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" visibility="{{ screenSizeControlVisibility }}" />
+    <GridLayout col="1" columns="auto,*" verticalAlignment="center" class="brightness" visibility="{{ brightnessControlVisibility }}">
       <Label col="0" text="☀" class="brightness-icon" verticalAlignment="center" />
       <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
     </GridLayout>
-    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
+    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle" visibility="{{ brightnessControlVisibility }}">
       <Label text="Auto" verticalAlignment="center" />
       <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
     </StackLayout>
@@ -34,14 +35,13 @@
     <Button col="2" text="Hey Even" tap="{{ onSyntheticMicTap }}" class="action-button" />
   </GridLayout>
 
-  <GridLayout columns="auto,*,*,*,*,*,auto,auto" class="ring-row">
+  <!-- The "Touch mirror" toggle lives in Settings > Phone display. -->
+  <GridLayout columns="auto,*,*,*,*,*" class="ring-row">
     <Label col="0" text="Ring" class="ring-label" verticalAlignment="center" />
     <Button col="1" text="▲" tap="{{ onSyntheticUpTap }}" class="ring-button" />
     <Button col="2" text="▼" tap="{{ onSyntheticDownTap }}" class="ring-button" />
     <Button col="3" text="●" tap="{{ onSyntheticRightTap }}" class="ring-button" />
     <Button col="4" text="●●" tap="{{ onSyntheticLeftTap }}" class="ring-button" />
     <Button col="5" text="‒" tap="{{ onSyntheticLongPressTap }}" class="ring-button" />
-    <Label col="6" text="Touch mirror" class="ring-label" verticalAlignment="center" />
-    <Switch col="7" checked="{{ mirrorTouchEnabled }}" checkedChange="{{ onMirrorTouchChange }}" />
   </GridLayout>
 </StackLayout>

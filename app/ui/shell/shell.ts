@@ -8,7 +8,6 @@ import {
   directionalFallback,
   type InputSource,
   isDirectionalInput,
-  isWatchInput,
   Layer,
   LayerActions,
   LayerContext,
@@ -686,11 +685,9 @@ class Shell {
   private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":
-        // The ring's double-tap at the root turns the display off. For the
-        // watch, "back" at the root is simply the end of the road: it wakes
-        // the display on any gesture, so sleeping here would be a trap; the
-        // watch's Status screen turns the display off on purpose.
-        if (isWatchInput(event)) return { shell: false, window: false };
+        // A double-tap at the root (the app switcher selected) turns the
+        // display off — from the ring and the watch scheme alike; watch-scheme
+        // gestures wake it again (or a ring double-tap does).
         this.sleep();
         return { shell: true, window: false };
       case "scroll-up":

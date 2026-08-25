@@ -38,7 +38,9 @@ import {
   displayModeSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
+  mirrorTouchSetting,
   openAiApiKeySetting,
+  previewColorSetting,
   roamApiTokenSetting,
   roamGraphNameSetting,
   sonioxApiKeySetting,
@@ -46,6 +48,8 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  showBrightnessControlSetting,
+  showScreenSizeSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
@@ -148,6 +152,17 @@ function settingsSections(): SettingsSection[] {
       items: [
         textSettingMenuItem(roamGraphNameSetting),
         textSettingMenuItem(roamApiTokenSetting),
+      ],
+    },
+    {
+      label: "Phone display",
+      // The phone app's mirror of the glasses screen and its controls
+      // (app/phone-ui/): all read live by the main page.
+      items: [
+        enumSettingMenuItem(previewColorSetting),
+        toggleSettingMenuItem(mirrorTouchSetting),
+        toggleSettingMenuItem(showBrightnessControlSetting),
+        toggleSettingMenuItem(showScreenSizeSetting),
       ],
     },
     {

@@ -282,6 +282,48 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
     "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
 });
 
+// Phone display: the phone app's mirror of the glasses screen and the
+// controls around it on the main page.
+export type PreviewColor = "white" | "green";
+
+export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
+  id: "preview-color",
+  label: "Preview color",
+  storageKey: "phone.previewColor",
+  defaultValue: "white",
+  values: ["white", "green"],
+  formatValue: (value) => (value === "green" ? "Green" : "White"),
+  description:
+    "How the phone's mirror of the glasses display renders: white/grayscale (clearest), or green to match the physical glasses.",
+});
+
+export const mirrorTouchSetting = new ConfigSettingBoolean({
+  id: "mirror-touch",
+  label: "Touch mirror",
+  // Key predates this setting object (the toggle used to live on the phone's
+  // main screen); keeping it preserves the user's choice.
+  storageKey: "phone.mirrorTouch",
+  defaultValue: true,
+  description:
+    "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
+});
+
+export const showBrightnessControlSetting = new ConfigSettingBoolean({
+  id: "show-brightness-control",
+  label: "Show brightness control",
+  storageKey: "phone.showBrightnessControl",
+  defaultValue: false,
+  description: "Show the brightness slider above the mirror on the phone's main screen.",
+});
+
+export const showScreenSizeSetting = new ConfigSettingBoolean({
+  id: "show-screen-size",
+  label: "Show screen size",
+  storageKey: "phone.showScreenSize",
+  defaultValue: false,
+  description: "Show the screen-size (display mode) picker above the mirror on the phone's main screen.",
+});
+
 // Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
 // every watch message, so a change applies immediately.
 export const watchRemoteEnabledSetting = new ConfigSettingBoolean({

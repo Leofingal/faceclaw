@@ -18,11 +18,13 @@ import {
   DISPLAY_MODE_VALUES,
   displayModeLabel,
   displayModeSetting,
+  mirrorTouchSetting,
   onAnySettingChanged,
+  showBrightnessControlSetting,
+  showScreenSizeSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
-import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -742,14 +744,10 @@ export class MainViewModel extends Observable {
 
   // ---- touching the mirror itself ----
 
+  // Toggled from Settings > Phone display > Touch mirror; read per gesture,
+  // so no change notification is needed.
   get mirrorTouchEnabled(): boolean {
-    return getBooleanSetting(MIRROR_TOUCH_KEY, true);
-  }
-
-  onMirrorTouchChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
-    const on = typeof args.value === "boolean" ? args.value : Boolean(args.object?.checked);
-    setBooleanSetting(MIRROR_TOUCH_KEY, on);
-    this.notifyPropertyChange("mirrorTouchEnabled", on);
+    return mirrorTouchSetting.get();
   }
 
   private mirrorFraction(args: GestureEventData & { getX?: () => number; getY?: () => number }): { nx: number; ny: number } | null {
@@ -785,6 +783,21 @@ export class MainViewModel extends Observable {
   }
 
   // ---- display mode and brightness, beside the mirror ----
+  //
+  // Both controls are hidden unless enabled in Settings > Phone display
+  // (the settings themselves stay reachable through the Settings app).
+
+  get screenSizeControlVisibility(): "visible" | "collapse" {
+    return showScreenSizeSetting.get() ? "visible" : "collapse";
+  }
+
+  get brightnessControlVisibility(): "visible" | "collapse" {
+    return showBrightnessControlSetting.get() ? "visible" : "collapse";
+  }
+
+  get displayControlsVisibility(): "visible" | "collapse" {
+    return showScreenSizeSetting.get() || showBrightnessControlSetting.get() ? "visible" : "collapse";
+  }
 
   get displayModeLabel(): string {
     return displayModeLabel(displayModeSetting.get()) + " ▾";
@@ -848,6 +861,9 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("brightnessSliderEnabled", this.brightnessSliderEnabled);
     this.notifyPropertyChange("brightnessPercent", this.brightnessPercent);
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
+    this.notifyPropertyChange("screenSizeControlVisibility", this.screenSizeControlVisibility);
+    this.notifyPropertyChange("brightnessControlVisibility", this.brightnessControlVisibility);
+    this.notifyPropertyChange("displayControlsVisibility", this.displayControlsVisibility);
   }
 
   private readLayoutOrientation(): LayoutOrientation {
@@ -862,8 +878,6 @@ export class MainViewModel extends Observable {
     return formatErrorMessage(error, 240);
   }
 }
-
-const MIRROR_TOUCH_KEY = "phone.mirrorTouch";
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */
 function swipeKind(direction: SwipeDirection): "swipe-up" | "swipe-down" | "swipe-left" | "swipe-right" {

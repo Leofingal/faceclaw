@@ -569,12 +569,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * foreground), including worker-app frames the TS side never sees.
      */
     public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma) {
+        return getCompositePreviewBitmap(brightenGamma, false);
+    }
+
+    /** As above; `green` renders the preview green-on-black (Settings > Phone display > Preview color). */
+    public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma, boolean green) {
         SurfaceCompositor.Composite composite = compositor.previewComposite();
         if (composite == null) {
             return null;
         }
         return PreviewBitmapUtil.fromGray(
-                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma);
+                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma, green);
     }
 
     /** Save the current composite as a 4-bit grayscale PNG; returns the path or "". */

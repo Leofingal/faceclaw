@@ -456,10 +456,14 @@ export class FaceclawCommunicatorBridge {
     });
   }
 
-  /** Phone-UI preview of the current composited screen, or null if none yet. */
-  getCompositePreview(): ImageSource | null {
+  /**
+   * Phone-UI preview of the current composited screen, or null if none yet.
+   * `green` tints it green-on-black (the Preview color setting) instead of
+   * grayscale.
+   */
+  getCompositePreview(green = false): ImageSource | null {
     if (!global.isAndroid) return null;
-    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA);
+    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
     return bitmap ? new ImageSource(bitmap) : null;
   }
 
