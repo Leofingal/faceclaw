@@ -23,7 +23,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -41,6 +40,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.wear.compose.foundation.ExperimentalWearFoundationApi
+import androidx.wear.compose.foundation.rememberActiveFocusRequester
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Icon
@@ -82,6 +83,8 @@ enum class Arrow { UP, DOWN, LEFT, RIGHT }
  * select / go back, and two quick wrist twists go back. The small buttons at
  * the bottom reach the rest.
  */
+// rememberActiveFocusRequester (rotary focus) is still experimental in Wear Compose 1.4.
+@OptIn(ExperimentalWearFoundationApi::class)
 @Composable
 fun RemoteScreen(
     link: PhoneLink,
@@ -103,7 +106,19 @@ fun RemoteScreen(
     // Which d-pad arrow lights up for the swipe just sent.
     var litArrow by remember { mutableStateOf<Arrow?>(null) }
     var litTick by remember { mutableStateOf(0L) }
-    val focusRequester = remember { FocusRequester() }
+    // Rotary (crown) events are only delivered to a focused node.
+    // rememberActiveFocusRequester requests focus through the hierarchical
+    // focus machinery; the resume observer below takes it back after every
+    // excursion that steals it (the keyboard activity, ambient, screen off).
+    val focusRequester = rememberActiveFocusRequester()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, focusRequester) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) focusRequester.requestFocus()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     var crownAccumulator by remember { mutableStateOf(0f) }
     // Pad height in px, for the tap zones; written by onSizeChanged, read by
     // the gesture callbacks (plain holder: the callbacks are remembered once).
@@ -249,8 +264,6 @@ fun RemoteScreen(
         flashing = false
     }
 
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
     // A refused or unanswered gesture gets a distinct buzz, so the wrist knows
     // without looking (the notice pill says why).
     LaunchedEffect(notice?.id) {
@@ -295,24 +308,25 @@ fun RemoteScreen(
             }
 
             TimeText()
-            StatusRow(
-                statusLine(state, linkStatus),
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 36.dp, end = 36.dp),
-            )
 
             ArrowGlyph("▲", litArrow == Arrow.UP, Modifier.align(Alignment.TopCenter).padding(top = ringCenterY - ringRadius + ARROW_INSET))
             ArrowGlyph("▼", litArrow == Arrow.DOWN, Modifier.align(Alignment.TopCenter).padding(top = ringCenterY + ringRadius - ARROW_INSET - ARROW_SIZE))
             ArrowGlyph("◀", litArrow == Arrow.LEFT, Modifier.align(Alignment.TopStart).padding(start = maxWidth / 2 - ringRadius + ARROW_INSET, top = ringCenterY - ARROW_SIZE / 2))
             ArrowGlyph("▶", litArrow == Arrow.RIGHT, Modifier.align(Alignment.TopEnd).padding(end = maxWidth / 2 - ringRadius + ARROW_INSET, top = ringCenterY - ARROW_SIZE / 2))
 
-            // What the next gesture lands on (the app on the glasses, or the
-            // state in the way of it) above the centre line; the tap legend
-            // below it, clear of the side arrows.
-            val focus = if (holding) "holding" else focusLine(state).ifEmpty { "—" }
+            // The single status indicator: what the next gesture lands on (the
+            // app on the glasses, or the screen/lock state in the way of it),
+            // or the connection problem to fix first. Above the centre line;
+            // the tap legend below it, clear of the side arrows.
+            val pad = padLine(state, linkStatus)
             Text(
-                text = focus,
+                text = if (holding) "holding" else pad.text,
                 style = MaterialTheme.typography.title3,
-                color = if (holding) MaterialTheme.colors.primary else MaterialTheme.colors.onSurface,
+                color = when {
+                    holding -> MaterialTheme.colors.primary
+                    pad.tone == StatusTone.GOOD -> MaterialTheme.colors.onSurface
+                    else -> pad.tone.color()
+                },
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

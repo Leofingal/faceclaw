@@ -4,15 +4,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -52,33 +46,31 @@ fun NoticeOverlay(notice: Notice?) {
     }
 }
 
-/** The pad's top line: how the glasses and phone are doing, in a few words. */
+/** The pad's single indicator line, with a tone that picks its colour. */
 data class StatusLine(val text: String, val tone: StatusTone)
 
 enum class StatusTone { GOOD, BUSY, OFF, PROBLEM }
 
-fun statusLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
+/**
+ * The pad's centre indicator: what the next gesture lands on when everything
+ * is connected (the foreground app, or the screen/lock state in the way of
+ * it), otherwise the connection problem to fix first.
+ */
+fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     !link.phoneReachable -> StatusLine("No phone", StatusTone.PROBLEM)
     !link.phoneAppInstalled -> StatusLine("Install Faceclaw on phone", StatusTone.PROBLEM)
     link.appRunning == false -> StatusLine("Open Faceclaw on phone", StatusTone.PROBLEM)
     state == null -> StatusLine("Waiting for phone", StatusTone.BUSY)
     state.remoteEnabled == false -> StatusLine("Watch control off", StatusTone.PROBLEM)
-    state.connected -> {
-        val battery = state.battery?.let { " · $it%" + if (state.charging) "⚡" else "" } ?: ""
-        StatusLine("Connected$battery", StatusTone.GOOD)
+    state.connected -> when {
+        state.locked -> StatusLine("Locked", StatusTone.OFF)
+        !state.screenOn -> StatusLine("Screen off", StatusTone.OFF)
+        state.listening -> StatusLine("Listening…", StatusTone.BUSY)
+        else -> StatusLine(state.foreground?.title ?: "Launcher", StatusTone.GOOD)
     }
     state.phase == "connecting" -> StatusLine("Connecting…", StatusTone.BUSY)
     state.phase == "disconnecting" -> StatusLine("Disconnecting…", StatusTone.BUSY)
     else -> StatusLine("Glasses disconnected", StatusTone.OFF)
-}
-
-/** The pad's centre line: what the input will land on. */
-fun focusLine(state: PhoneState?): String = when {
-    state == null || !state.connected -> ""
-    state.locked -> "Locked"
-    !state.screenOn -> "Display off"
-    state.listening -> "Listening…"
-    else -> state.foreground?.title ?: "Launcher"
 }
 
 fun StatusTone.color(): Color = when (this) {
@@ -86,24 +78,4 @@ fun StatusTone.color(): Color = when (this) {
     StatusTone.BUSY -> Color(0xFFF2C14E)
     StatusTone.OFF -> Color(0xFF8A8A8A)
     StatusTone.PROBLEM -> Color(0xFFFF8A80)
-}
-
-/** Status dot + text, e.g. "● Connected · 100%". */
-@Composable
-fun StatusRow(line: StatusLine, modifier: Modifier = Modifier) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        Box(
-            modifier = Modifier
-                .size(7.dp)
-                .background(line.tone.color(), CircleShape),
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = line.text,
-            style = MaterialTheme.typography.caption2,
-            color = MaterialTheme.colors.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
 }

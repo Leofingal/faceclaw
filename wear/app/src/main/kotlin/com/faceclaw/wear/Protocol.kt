@@ -100,7 +100,8 @@ data class PhoneState(
     val listening: Boolean,
     /** Display mode wire value ("576x288" | "576x480" | "640x480"). */
     val displayMode: String,
-    val battery: Int?,
+    // The state item also carries "battery"; the watch doesn't show it (the
+    // glasses' own top bar does), so it is left unparsed.
     val charging: Boolean,
     val foreground: AppEntry?,
     val windows: List<WindowEntry>,
@@ -126,7 +127,6 @@ data class PhoneState(
                     worn = if (o.isNull("worn")) null else o.optBoolean("worn"),
                     listening = o.optBoolean("listening", false),
                     displayMode = o.optString("displayMode", "576x288"),
-                    battery = if (o.isNull("battery")) null else o.optInt("battery").takeIf { it >= 0 },
                     charging = o.optBoolean("charging", false),
                     foreground = foreground?.let {
                         AppEntry(it.optString("appId", ""), it.optString("title", ""))
