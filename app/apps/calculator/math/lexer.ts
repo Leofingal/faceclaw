@@ -2,6 +2,7 @@
 
 import { type MathNumber, fromDecimal, integer, real } from "./math-number";
 import { type MathRelation } from "./expression";
+import { isLetter } from "../../../util/unicode-class";
 
 export type MathToken =
   | { type: "number"; value: MathNumber }
@@ -69,10 +70,6 @@ export function describeParseError(kind: MathParseErrorKind, context: string): s
 
 function isDigit(character: string): boolean {
   return character >= "0" && character <= "9";
-}
-
-function isLetter(character: string): boolean {
-  return /\p{L}/u.test(character);
 }
 
 export function tokenize(input: string): MathToken[] {

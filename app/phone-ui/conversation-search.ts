@@ -1,4 +1,5 @@
 import { inferredEmotionFilter, type EmotionLabel } from "../apps/microphones/sentiment";
+import { NON_WORD_RUN } from "../util/unicode-class";
 
 /**
  * Natural-language search parsing for the conversations list. The grammar is
@@ -90,7 +91,7 @@ function startOfDay(nowMs: number): number {
 }
 
 function tokenize(text: string): string[] {
-  return text.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+  return text.split(NON_WORD_RUN).filter((token) => token.length > 0);
 }
 
 export function parseConversationQuery(raw: string, nowMs: number = Date.now()): ParsedConversationQuery {

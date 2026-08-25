@@ -3,6 +3,8 @@
 // scoring. No platform NLP dependency — the deterministic tiers carry the
 // whole signal.
 
+import { NON_WORD_RUN } from "../../util/unicode-class";
+
 export type EmotionLabel =
   | "happy"
   | "sad"
@@ -143,7 +145,7 @@ function emotionTokens(text: string): string[] {
     .replace(/can't/g, "cannot")
     .replace(/i'm/g, "i am")
     .replace(/n't/g, " not");
-  return normalized.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+  return normalized.split(NON_WORD_RUN).filter((token) => token.length > 0);
 }
 
 function emotionCueIsNegated(start: number, tokens: string[]): boolean {
