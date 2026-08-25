@@ -50,8 +50,9 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
 export class OnboardingViewModel extends Observable {
   private _step: OnboardingStep = 1;
 
-  constructor() {
+  constructor(initialStep?: number) {
     super();
+    if (initialStep === 2 || initialStep === 3) this._step = initialStep;
     this.publish();
   }
 
@@ -61,7 +62,12 @@ export class OnboardingViewModel extends Observable {
       return;
     }
     if (this._step === 2) {
-      this.setStep(3);
+      // The Permissions screen sits between the disclaimer and the firmware
+      // step; it navigates forward to a fresh onboarding page at step 3.
+      Frame.topmost()?.navigate({
+        moduleName: "phone-ui/permissions-page",
+        context: { onboarding: true },
+      });
       return;
     }
     // Step 3 primary: begin the flashing setup — scan for and pick the glasses

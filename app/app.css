@@ -200,6 +200,29 @@ Button.pairing-link {
 }
 
 /*
+ * Permissions screen (phone-ui/permissions-page). Cards reuse the pairing-row
+ * / pairing-title / pairing-badge look above; these add the explanation body
+ * and the already-granted checkmark.
+ */
+.permissions-description {
+  font-size: 13;
+  color: #555555;
+  margin-top: 2;
+}
+
+.permissions-check {
+  font-size: 24;
+  color: #2e7d32;
+  margin-left: 10;
+}
+
+/* Continue with required permissions still missing: looks disabled but stays
+ * tappable (the tap raises an are-you-sure prompt instead of being ignored). */
+Button.permissions-primary-dimmed {
+  opacity: 0.45;
+}
+
+/*
  * Dark-mode pairing page. The cards keep their light-mode look above; here
  * they go dark-gray, and every text colour set above gets a light counterpart
  * so nothing renders dark-on-dark (the instructions) or dark-on-a-dark-card.
@@ -276,4 +299,12 @@ Button.pairing-link {
 
 .ns-dark Button.pairing-link {
   color: #7da7f5;
+}
+
+.ns-dark .permissions-description {
+  color: #b0b0b0;
+}
+
+.ns-dark .permissions-check {
+  color: #7bc47f;
 }

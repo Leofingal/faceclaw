@@ -484,6 +484,13 @@ export class MainViewModel extends Observable {
     Frame.topmost()?.navigate("phone-ui/config-page");
   }
 
+  onPermissionsTap(): void {
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/permissions-page",
+      context: { onboarding: false },
+    });
+  }
+
   /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so
