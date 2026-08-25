@@ -277,3 +277,166 @@ Button.pairing-link {
 .ns-dark Button.pairing-link {
   color: #7da7f5;
 }
+
+/*
+ * Conversation review (phone-ui/conversations-page, conversation-page,
+ * speakers-page). Cards follow the pairing-row look; speaker/emotion chips
+ * get their background colour inline (per-speaker / per-emotion), so the
+ * classes only carry shape and dark text that reads on the pastel palette.
+ */
+.conversation-row {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 10;
+  margin-bottom: 8;
+}
+
+.conversation-title {
+  font-size: 16;
+  font-weight: bold;
+  color: #222222;
+}
+
+.conversation-meta {
+  font-size: 12;
+  color: #666666;
+}
+
+.conversation-empty {
+  color: #777777;
+  font-size: 14;
+  padding: 8 0;
+}
+
+.ask-answer {
+  font-size: 15;
+  color: #222222;
+  padding: 4 0;
+}
+
+.ns-dark .ask-answer {
+  color: #e6e6e6;
+}
+
+.conversation-status {
+  font-size: 13;
+  color: #2a5bc4;
+}
+
+.speaker-chip {
+  font-size: 12;
+  color: #222222;
+  border-radius: 10;
+  padding: 2 8;
+  margin: 0 6 4 0;
+}
+
+.speaker-chip-selected {
+  border-width: 2;
+  border-color: #222222;
+  font-weight: bold;
+}
+
+.speaker-tag {
+  font-size: 11;
+  color: #555555;
+  background-color: #e6e6e6;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.speaker-wearer-badge {
+  font-size: 11;
+  font-weight: bold;
+  color: #2a5bc4;
+  background-color: #dbe6fb;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.transcript-row {
+  border-radius: 8;
+  padding: 8;
+  margin-bottom: 4;
+}
+
+.transcript-row-playing {
+  background-color: #e6f0ff;
+}
+
+.transcript-translation {
+  font-size: 13;
+  font-style: italic;
+  color: #777777;
+}
+
+.transcript-time {
+  font-size: 11;
+  color: #888888;
+}
+
+.transcript-emotion {
+  font-size: 11;
+  color: #222222;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.transcript-play {
+  font-size: 16;
+  color: #2a5bc4;
+  margin-left: 6;
+}
+
+.ns-dark .conversation-row {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .conversation-title {
+  color: #f0f0f0;
+}
+
+.ns-dark .conversation-meta {
+  color: #a0a0a0;
+}
+
+.ns-dark .conversation-empty {
+  color: #999999;
+}
+
+.ns-dark .conversation-status {
+  color: #7da7f5;
+}
+
+.ns-dark .speaker-chip-selected {
+  border-color: #f0f0f0;
+}
+
+.ns-dark .speaker-tag {
+  color: #cccccc;
+  background-color: #3c3c3c;
+}
+
+.ns-dark .speaker-wearer-badge {
+  color: #a8c4f5;
+  background-color: #2a3b5e;
+}
+
+.ns-dark .transcript-row-playing {
+  background-color: #333c4c;
+}
+
+.ns-dark .transcript-translation {
+  color: #999999;
+}
+
+.ns-dark .transcript-time {
+  color: #909090;
+}
+
+.ns-dark .transcript-play {
+  color: #7da7f5;
+}

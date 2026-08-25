@@ -3,6 +3,7 @@
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />

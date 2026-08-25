@@ -484,6 +484,11 @@ export class MainViewModel extends Observable {
     Frame.topmost()?.navigate("phone-ui/config-page");
   }
 
+  /** Review saved caption sessions; works without a glasses connection. */
+  onConversationsTap(): void {
+    Frame.topmost()?.navigate("phone-ui/conversations-page");
+  }
+
   /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so

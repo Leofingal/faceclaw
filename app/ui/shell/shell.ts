@@ -26,6 +26,7 @@ import {
   timeFormatSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
+import { onAmbientCardsChanged } from "./ambient-cards";
 import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
@@ -232,6 +233,21 @@ class Shell {
     this.config = config;
     this.stack.setActions(config.actions);
     this.subscribeToTopBarSettings();
+    this.subscribeToAmbientCards();
+  }
+
+  // Ambient (encounter) cards live in the chrome paint; a posted or expired
+  // card repaints the shell surface so it appears and disappears on time.
+  private ambientCardsSubscribed = false;
+
+  private subscribeToAmbientCards(): void {
+    if (this.ambientCardsSubscribed) return;
+    this.ambientCardsSubscribed = true;
+    onAmbientCardsChanged(() => {
+      if (this.screenOn) {
+        this.config.requestShellRender();
+      }
+    });
   }
 
   private subscribeToTopBarSettings(): void {
