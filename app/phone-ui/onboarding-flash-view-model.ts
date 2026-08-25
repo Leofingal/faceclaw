@@ -17,6 +17,7 @@ import { FirmwareFlasher, FlashProgress, FlashState } from "../native/firmware-f
 import { FlashPromptCommunicator, FlashPromptState } from "../native/flash-prompt-communicator";
 import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-policy";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
+import { formatErrorMessage } from "../util/format-error";
 
 type FlashPhase = "intro" | "prompt" | "building" | "ready" | "flashing" | "flashed" | "error";
 
@@ -421,11 +422,9 @@ export class OnboardingFlashViewModel extends Observable {
 
   private handleFlashProgress(progress: FlashProgress): void {
     const lensIndex = progress.lens === "right" ? 1 : 0;
-    const withinLens =
-      progress.componentCount > 0
-        ? (progress.componentIndex - 1 + (progress.blockCount > 0 ? progress.blockIndex / progress.blockCount : 0)) /
-          progress.componentCount
-        : 0;
+    // Weight by bytes, not by component index: the image is one large segment
+    // plus several small ones, so per-component steps move wildly unevenly.
+    const withinLens = progress.bytesTotal > 0 ? Math.min(1, progress.bytesSent / progress.bytesTotal) : 0;
     this.progress = ((lensIndex + withinLens) / 2) * 100;
     this.status =
       `Flashing ${progress.lens} lens — part ${progress.componentIndex}/${progress.componentCount}, ` +
@@ -566,7 +565,6 @@ export class OnboardingFlashViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }

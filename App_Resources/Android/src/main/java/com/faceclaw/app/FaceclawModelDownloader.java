@@ -144,7 +144,7 @@ public class FaceclawModelDownloader {
                     + expectedTotalBytes + " bytes); try again to resume");
                 return;
             }
-            String actualSha = toHex(digest.digest());
+            String actualSha = FaceclawFirmwareUtil.bytesToHex(digest.digest());
             if (!expectedSha256.isEmpty() && !actualSha.equals(expectedSha256)) {
                 partFile.delete();
                 postError("Model download was corrupted (checksum mismatch); download it again");
@@ -175,12 +175,6 @@ public class FaceclawModelDownloader {
             }
         }
         return hashed;
-    }
-
-    private static String toHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
     }
 
     private void post(Runnable runnable) {

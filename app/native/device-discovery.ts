@@ -1,6 +1,7 @@
 import { Utils } from "@nativescript/core";
 
-import { classifyAdvertisement, type RawAdvertisement } from "../g2/even-advertisement";
+import { type RawAdvertisement } from "../g2/even-advertisement";
+import { DiscoveryAggregator } from "../g2/pairing-candidates";
 
 declare const com: any;
 
@@ -80,13 +81,16 @@ export class DeviceDiscoveryBridge {
   /**
    * Collect advertisements for `timeoutMs` without blocking the UI thread
    * (scan callbacks are delivered on the main looper, so a blocking sleep
-   * there would starve them). Latest sample per address wins.
+   * there would starve them). Every sample is kept: Android can split one
+   * advertisement across reports (name in one, manufacturer data in another),
+   * so "latest per address" would drop the informative half — the aggregator
+   * in `buildAddressSet` merges them instead.
    */
   scanCandidates(timeoutMs = 6000): Promise<RawAdvertisement[]> {
     return new Promise((resolve, reject) => {
-      const latest = new Map<string, RawAdvertisement>();
+      const samples: RawAdvertisement[] = [];
       const started = this.startScan({
-        onAdvertisement: (raw) => latest.set(raw.address, raw),
+        onAdvertisement: (raw) => samples.push(raw),
         onScanFailed: (code, message) => {
           this.stopScan();
           reject(new Error(`Bluetooth scan failed: ${message} (${code})`));
@@ -98,7 +102,7 @@ export class DeviceDiscoveryBridge {
       }
       setTimeout(() => {
         this.stopScan();
-        resolve(Array.from(latest.values()));
+        resolve(samples);
       }, Math.max(500, timeoutMs));
     });
   }
@@ -106,24 +110,48 @@ export class DeviceDiscoveryBridge {
 
 /**
  * Pick one address per role from a batch of raw advertisements — the manual
- * address page's "load" helper. The latest-seen device of each role wins;
- * the summary names the serial where one was advertised.
+ * address page's "load" helper and the flash flow's address resolution.
+ *
+ * Runs the batch through the same `DiscoveryAggregator` the pairing page
+ * uses, so left/right come from ONE serial-joined pair (the closest complete
+ * one) rather than from whichever arm of whatever pair advertised last —
+ * "latest per role" silently welded together arms of two different pairs.
+ * When no arm carries a serial at all (a bonded-device listing has no
+ * manufacturer data), there is nothing to join on and the latest arm per side
+ * is used as before.
  */
 export function buildAddressSet(candidates: RawAdvertisement[]): DiscoveredAddressSet {
-  const classified = candidates.map(classifyAdvertisement).filter((item): item is NonNullable<typeof item> => !!item);
-  const latestForRole = new Map<"left" | "right" | "ring", (typeof classified)[number]>();
-  for (const candidate of classified) {
-    const incumbent = latestForRole.get(candidate.role);
-    if (!incumbent || incumbent.seenAtMs <= candidate.seenAtMs) latestForRole.set(candidate.role, candidate);
+  const aggregator = new DiscoveryAggregator();
+  for (const raw of candidates) aggregator.ingest(raw);
+  const classified = aggregator.advertisements();
+  const pairs = aggregator.pairs();
+
+  let left = "";
+  let right = "";
+  const completePair = pairs.find((pair) => pair.completeness === "complete");
+  if (completePair) {
+    left = completePair.left!.address;
+    right = completePair.right!.address;
+  } else if (classified.every((candidate) => !candidate.serial)) {
+    for (const role of ["left", "right"] as const) {
+      const latest = classified
+        .filter((candidate) => candidate.role === role)
+        .sort((a, b) => b.seenAtMs - a.seenAtMs)[0];
+      if (role === "left") left = latest?.address ?? "";
+      else right = latest?.address ?? "";
+    }
   }
+  // Arms with serials but no complete pair: leave the addresses empty. The
+  // summary below names what was heard; guessing would defeat the serial join.
+
   const lines = classified.map((candidate) => {
     const extras = [candidate.serial ? `serial ${candidate.serial}` : null, candidate.rssi != null ? `${candidate.rssi} dBm` : null].filter(Boolean);
     return `${candidate.role}: ${candidate.name} ${candidate.address}${extras.length ? ` (${extras.join(", ")})` : ""}`;
   });
   return {
-    left: latestForRole.get("left")?.address ?? "",
-    right: latestForRole.get("right")?.address ?? "",
-    ring: latestForRole.get("ring")?.address ?? "",
+    left,
+    right,
+    ring: aggregator.rings()[0]?.advertisement.address ?? "",
     summary: lines.length ? lines.join("\n") : "No matching devices found.",
   };
 }

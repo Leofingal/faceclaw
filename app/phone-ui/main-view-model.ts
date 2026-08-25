@@ -24,7 +24,8 @@ import {
 } from "../ui/dashboard-settings";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
-import { isAutoReconnectSuppressed } from "../g2/reconnect-policy";
+import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
+import { formatErrorMessage } from "../util/format-error";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
@@ -33,7 +34,6 @@ type LayoutOrientation = "portrait" | "landscape";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
-  private _log = "";
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
@@ -52,14 +52,12 @@ export class MainViewModel extends Observable {
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
-  private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   constructor() {
     super();
     dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
-      this.log = snapshot.log;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
@@ -92,17 +90,6 @@ export class MainViewModel extends Observable {
     if (this._status !== value) {
       this._status = value;
       this.notifyPropertyChange("status", value);
-    }
-  }
-
-  get log(): string {
-    return this._log;
-  }
-
-  set log(value: string) {
-    if (this._log !== value) {
-      this._log = value;
-      this.notifyPropertyChange("log", value);
     }
   }
 
@@ -184,27 +171,6 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
-  }
-
-  get showLog(): boolean {
-    return this._showLog;
-  }
-
-  set showLog(value: boolean) {
-    if (this._showLog !== value) {
-      this._showLog = value;
-      this.notifyPropertyChange("showLog", value);
-      this.notifyPropertyChange("showLogVisibility", this.showLogVisibility);
-      this.notifyPropertyChange("showLogMenuLabel", this.showLogMenuLabel);
-    }
-  }
-
-  get showLogVisibility(): "visible" | "collapse" {
-    return this._showLog ? "visible" : "collapse";
-  }
-
-  get showLogMenuLabel(): string {
-    return this._showLog ? "Hide Log" : "Show Log";
   }
 
   get activeTextSettingId(): string | null {
@@ -473,13 +439,13 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("phase", value);
       this.notifyPropertyChange("buttonLabel", this.buttonLabel);
       this.notifyPropertyChange("canRun", this.canRun);
+      this.notifyPropertyChange("connectItemEnabled", this.connectItemEnabled);
     }
   }
 
   get buttonLabel(): string {
     switch (this.phase) {
       case "connecting":
-        return "Connecting...";
       case "connected":
       case "charging":
         return "Disconnect";
@@ -494,20 +460,28 @@ export class MainViewModel extends Observable {
     return this.phase !== "connecting" && this.phase !== "disconnecting";
   }
 
+  /**
+   * Unlike the other canRun-gated menu items, Connect/Disconnect stays live
+   * while connecting: Disconnect is the only way out of a reconnection-attempt
+   * loop short of force-stopping the app.
+   */
+  get connectItemEnabled(): boolean {
+    return this.phase !== "disconnecting";
+  }
+
   async onTap(): Promise<void> {
-    if (!this.canRun) return;
+    if (!this.connectItemEnabled) return;
 
     try {
-      if (this.phase === "connected" || this.phase === "charging") {
-        await dashboardController.disconnect();
-      } else {
+      if (this.phase === "disconnected") {
         await dashboardController.connect();
+      } else {
+        await dashboardController.disconnect();
       }
     } catch (error) {
       const message = this.formatError(error);
       if (!this.status.startsWith("Failed:")) {
         this.status = `Failed: ${message}`;
-        this.appendLog(`error: ${message}`);
       }
     }
   }
@@ -539,7 +513,10 @@ export class MainViewModel extends Observable {
   /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so
-   * drop the current link first; autoConnect picks it back up afterwards.
+   * drop the current link first. disconnect() enters the manual-disconnected
+   * state; pairing is a detour, not a Disconnect, so lift the suppression
+   * right away — nothing dials the glasses until the main page's autoConnect
+   * runs again on the way back.
    */
   async onPairGlassesTap(): Promise<void> {
     if (!this.canRun) return;
@@ -549,6 +526,7 @@ export class MainViewModel extends Observable {
       } catch {
         // proceed anyway; the pairing page reports what it hears
       }
+      resumeAutoReconnect();
     }
     Frame.topmost()?.navigate({ moduleName: "phone-ui/pairing-page", context: { onboarding: false } });
   }
@@ -574,10 +552,6 @@ export class MainViewModel extends Observable {
       moduleName: "phone-ui/onboarding-flash-page",
       context: { mode, fromOnboarding: false },
     });
-  }
-
-  onToggleLogTap(): void {
-    this.showLog = !this.showLog;
   }
 
   onTextSettingTextChange(args: { value?: string; object?: { text?: string } }): void {
@@ -858,11 +832,6 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
-  private appendLog(line: string): void {
-    const stamp = new Date().toISOString().slice(11, 19);
-    this.log = this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;
-  }
-
   private readLayoutOrientation(): LayoutOrientation {
     const applicationOrientation = Application.orientation();
     if (applicationOrientation === "landscape" || applicationOrientation === "portrait") {
@@ -872,10 +841,7 @@ export class MainViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    const sanitized = raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
-    if (sanitized.length <= 240) return sanitized;
-    return `${sanitized.slice(0, 237)}...`;
+    return formatErrorMessage(error, 240);
   }
 }
 

@@ -19,6 +19,7 @@ import {
   isEvenHubFontAsset,
 } from "./firmware-fonts";
 import { fetchWithUserAgent } from "../util/http";
+import { bytesToHex, hexToBytes as hexToBytesLenient } from "../util/hex-util";
 
 declare const com: any;
 
@@ -237,23 +238,12 @@ function applyPatches(
   return buf;
 }
 
+/** Patch-op hex is data, not user input: reject malformed strings instead of the shared decoder's silent stripping. */
 function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new FirmwareBuildError(`odd-length hex string: ${hex}`);
+  if (hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) {
+    throw new FirmwareBuildError(`invalid hex string: ${hex}`);
   }
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, "0");
-  }
-  return hex;
+  return hexToBytesLenient(hex);
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {

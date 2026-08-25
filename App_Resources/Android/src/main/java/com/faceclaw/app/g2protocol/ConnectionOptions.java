@@ -12,6 +12,14 @@ public class ConnectionOptions {
     public static final int RING_RECONNECT_DELAY_MS = 2_000;
     public static final int WRITE_TIMEOUT_MS = 2_000;
     public static final int PRELUDE_TIMEOUT_MS = 2_000;
+    // Application security-auth exchange (sid 0x80). The success notification
+    // only arrives once the BLE link is encrypted, which on a first-time
+    // connection means SMP pairing — possibly with an OS dialog the user has
+    // to accept — so the stock-firmware paths wait generously.
+    public static final int SECURITY_AUTH_TIMEOUT_MS = 30_000;
+    // The main communicator's wait is soft (it proceeds on timeout so firmware
+    // that never answers can't stall every reconnect), so it is kept short.
+    public static final int SECURITY_AUTH_SOFT_TIMEOUT_MS = 6_000;
     public static final int ACK_TIMEOUT_MS = 3_500;
     public static final int HEARTBEAT_FAILURE_DEADLINE_MS = 10_000;
     public static final int HEARTBEAT_READY_MS = 4_000;

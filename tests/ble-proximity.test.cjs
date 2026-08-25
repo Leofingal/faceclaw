@@ -15,45 +15,43 @@ const {
   MAXIMUM_METERS,
   zoneFromMeters,
   zoneLabel,
-  formatDistance,
-  proximitySummary,
   sortedByProximity,
 } = require("../.test-build/app/g2/ble-proximity.js");
 
 const near = (a, b, eps) => Math.abs(a - b) <= eps;
 
 test("distance falls as signal weakens", () => {
-  const close = estimateProximity(-40, null, GLASSES_CALIBRATION);
-  const mid = estimateProximity(-70, null, GLASSES_CALIBRATION);
-  const farAway = estimateProximity(-95, null, GLASSES_CALIBRATION);
+  const close = estimateProximity(-40, GLASSES_CALIBRATION);
+  const mid = estimateProximity(-70, GLASSES_CALIBRATION);
+  const farAway = estimateProximity(-95, GLASSES_CALIBRATION);
   assert.ok(close.meters < mid.meters);
   assert.ok(mid.meters < farAway.meters);
 });
 
 test("the reference power reads as one metre", () => {
-  const estimate = estimateProximity(GLASSES_CALIBRATION.txPowerAtOneMeter, null, GLASSES_CALIBRATION);
+  const estimate = estimateProximity(GLASSES_CALIBRATION.txPowerAtOneMeter, GLASSES_CALIBRATION);
   assert.ok(near(estimate.meters, 1.0, 0.001));
   assert.equal(estimate.zone, "near");
 });
 
 test("estimates stay inside a plausible band", () => {
-  assert.ok(near(estimateProximity(20, null, GLASSES_CALIBRATION).meters, MINIMUM_METERS, 0.0001));
-  assert.ok(near(estimateProximity(-127, null, GLASSES_CALIBRATION).meters, MAXIMUM_METERS, 0.0001));
+  assert.ok(near(estimateProximity(20, GLASSES_CALIBRATION).meters, MINIMUM_METERS, 0.0001));
+  assert.ok(near(estimateProximity(-127, GLASSES_CALIBRATION).meters, MAXIMUM_METERS, 0.0001));
 });
 
-test("an advertised TX power overrides the calibration", () => {
-  const assumed = estimateProximity(-60, null, GLASSES_CALIBRATION);
-  const measured = estimateProximity(-60, -50, GLASSES_CALIBRATION);
-  // A device that says it transmits at -50 dBm at 1 m, heard at -60, is further
-  // away than one assumed to transmit at -62 — and it is trusted more.
-  assert.ok(measured.meters > assumed.meters);
-  assert.ok(measured.confidence > assumed.confidence);
+test("the calibration table is the only reference power", () => {
+  // An advertised BLE "TX Power Level" is radiated power at the antenna, not a
+  // measured power at 1 m; estimateProximity deliberately takes no TX power
+  // argument, so a 0 dBm advertisement cannot inflate the estimate. The API
+  // itself enforces it — this pins the arity so a txPower parameter cannot
+  // quietly return.
+  assert.equal(estimateProximity.length, 2);
 });
 
 test("no signal yields no estimate (127 is the unavailable sentinel)", () => {
-  assert.equal(estimateProximity(null, null, GLASSES_CALIBRATION), null);
-  assert.equal(estimateProximity(undefined, null, GLASSES_CALIBRATION), null);
-  assert.equal(estimateProximity(127, null, GLASSES_CALIBRATION), null);
+  assert.equal(estimateProximity(null, GLASSES_CALIBRATION), null);
+  assert.equal(estimateProximity(undefined, GLASSES_CALIBRATION), null);
+  assert.equal(estimateProximity(127, GLASSES_CALIBRATION), null);
 });
 
 test("zones and their boundaries", () => {
@@ -66,24 +64,14 @@ test("zones and their boundaries", () => {
   assert.equal(zoneLabel("immediate"), "In your hand");
 });
 
-test("weak signals are marked as approximate", () => {
-  const strong = estimateProximity(-45, -60, GLASSES_CALIBRATION);
-  const weak = estimateProximity(-95, null, GLASSES_CALIBRATION);
-  assert.ok(!formatDistance(strong).startsWith("~"));
-  assert.ok(formatDistance(weak).startsWith("~"));
+test("weak signals carry lower confidence", () => {
+  const strong = estimateProximity(-45, GLASSES_CALIBRATION);
+  const weak = estimateProximity(-95, GLASSES_CALIBRATION);
   assert.ok(weak.confidence < strong.confidence);
 });
 
-test("distance formatting is rounded hard", () => {
-  const centimetres = estimateProximity(-30, -60, GLASSES_CALIBRATION);
-  assert.ok(formatDistance(centimetres).includes("cm"), formatDistance(centimetres));
-  assert.equal(formatDistance({ meters: 2.34, confidence: 1, zone: "near" }), "2.3 m");
-  assert.equal(formatDistance({ meters: 42.6, confidence: 1, zone: "distant" }), "43 m");
-  assert.equal(proximitySummary({ meters: 0.3, confidence: 1, zone: "immediate" }), "In your hand · 30 cm");
-});
-
 const device = (id, rssi) => ({ id, rssi });
-const estimate = (d) => estimateProximity(d.rssi, null, GLASSES_CALIBRATION);
+const estimate = (d) => estimateProximity(d.rssi, GLASSES_CALIBRATION);
 const byId = (d) => d.id;
 
 test("glasses sort closest first", () => {
@@ -106,7 +94,7 @@ test("equal signals keep a stable order", () => {
 test("ring and glasses are calibrated separately", () => {
   // The ring's antenna reads weaker than the glasses at the same distance, so
   // the same RSSI must not be reported as the same distance for both.
-  const ring = estimateProximity(-70, null, RING_CALIBRATION);
-  const glasses = estimateProximity(-70, null, GLASSES_CALIBRATION);
+  const ring = estimateProximity(-70, RING_CALIBRATION);
+  const glasses = estimateProximity(-70, GLASSES_CALIBRATION);
   assert.ok(ring.meters < glasses.meters);
 });

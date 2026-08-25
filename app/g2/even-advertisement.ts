@@ -27,27 +27,14 @@
  * This module is pure (no NativeScript imports) so it can run under node tests.
  */
 
+import { bytesToHex, hexToBytes } from "../util/hex-util";
+
+export { bytesToHex, hexToBytes };
+
 /** Even Realities' manufacturer-data company identifier (`"ER"` read little-endian). */
 export const EVEN_COMPANY_IDENTIFIER = 0x5245;
 
 export type EvenDeviceRole = "left" | "right" | "ring";
-
-export function hexToBytes(hex: string | null | undefined): Uint8Array {
-  const clean = (hex ?? "").replace(/[^0-9a-fA-F]/g, "");
-  const out = new Uint8Array(Math.floor(clean.length / 2));
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(clean.substr(i * 2, 2), 16);
-  }
-  return out;
-}
-
-export function bytesToHex(bytes: ArrayLike<number>): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    out += (bytes[i]! & 0xff).toString(16).padStart(2, "0").toUpperCase();
-  }
-  return out;
-}
 
 /** True when the manufacturer data opens with Even's `"ER"` marker. */
 export function hasEvenManufacturerSignature(mfg: Uint8Array): boolean {
@@ -136,7 +123,7 @@ export function ringNameAddressOctets(name: string | null | undefined): number[]
   const marker = name.indexOf("R1_");
   const suffix = (marker >= 0 ? name.slice(marker + 3) : name).trim();
   if (suffix.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(suffix)) return null;
-  return [0, 2, 4].map((i) => parseInt(suffix.substr(i, 2), 16));
+  return [0, 2, 4].map((i) => parseInt(suffix.slice(i, i + 2), 16));
 }
 
 /**
@@ -233,20 +220,25 @@ export type EvenAdvertisement = {
  * Classify a raw advertisement. Returns null for anything that is not an Even
  * Realities G2 temple or R1 ring. Admission mirrors the SDK: stock names
  * contain "G2"/"R1", but renamed firmware may not, so the "ER" manufacturer
- * signature is an equally strong admission path.
+ * signature is an equally strong admission path. The ring check is anchored to
+ * the stock "EVEN R1…" prefix — a bare `R1` substring also matches unrelated
+ * hardware ("Oppo Enco R1"), and every ring row is selectable, so a loose
+ * match here saves a stranger's earbuds as the ring. Keep this in sync with
+ * the Java pre-filter (FaceclawDeviceDiscovery.isAdmissible), which must stay
+ * a superset of it.
  */
 export function classifyAdvertisement(raw: RawAdvertisement): EvenAdvertisement | null {
   const mfg = hexToBytes(raw.manufacturerData);
   const name = raw.name ?? "";
   const upper = name.toUpperCase();
   const hasSignature = hasEvenManufacturerSignature(mfg);
-  const looksLikeRing = /\bR1\b|EVEN R1|R1_/.test(upper);
+  const looksLikeRing = /^EVEN R1([_ ]|$)/.test(upper);
   const looksLikeG2 = upper.includes("G2");
 
   if (!looksLikeRing && !looksLikeG2 && !hasSignature) return null;
 
   const base = {
-    address: normalizeAddress(raw.address),
+    address: normalizeMacAddress(raw.address),
     name,
     rssi: raw.rssi,
     txPower: raw.txPower,
@@ -295,8 +287,19 @@ export function classifyAdvertisement(raw: RawAdvertisement): EvenAdvertisement 
   };
 }
 
-export function normalizeAddress(value: string | null | undefined): string {
-  const compact = (value ?? "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+/**
+ * Canonical MAC form: uppercase, colon-separated. Anything that does not
+ * contain exactly 12 hex digits is passed through trimmed and uppercased so
+ * an obviously-wrong value stays visible instead of being silently mangled.
+ * The single normalizer for every address comparison in the app — the stored
+ * side (device-addresses.ts re-exports this) and the scanned side must agree
+ * byte for byte or "is this the previously-paired device" checks break.
+ */
+export function normalizeMacAddress(value: string | null | undefined): string {
+  const compact = (value ?? "")
+    .trim()
+    .replace(/[^0-9a-fA-F]/g, "")
+    .toUpperCase();
   if (compact.length !== 12) return (value ?? "").trim().toUpperCase();
   return compact.match(/.{2}/g)!.join(":");
 }

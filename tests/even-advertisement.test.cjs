@@ -19,7 +19,7 @@ const {
   ringMacWireBytes,
   extractRingSerialSuffix,
   classifyAdvertisement,
-  normalizeAddress,
+  normalizeMacAddress,
   EVEN_COMPANY_IDENTIFIER,
 } = require("../.test-build/app/g2/even-advertisement.js");
 
@@ -80,7 +80,7 @@ test("address codec crosses wire/human order exactly once", () => {
   assert.equal(bytesToHex(wire), "E26EB5D27FDA");
   assert.equal(humanReadableAddressFromWireBytes(wire), "DA:7F:D2:B5:6E:E2");
   assert.equal(wireBytesFromHumanReadableAddress("nope"), null);
-  assert.equal(normalizeAddress("e0ecb61412e0"), "E0:EC:B6:14:12:E0");
+  assert.equal(normalizeMacAddress("e0ecb61412e0"), "E0:EC:B6:14:12:E0");
 });
 
 test("ring name suffix octets parse from the full name and the bare id", () => {
@@ -154,4 +154,11 @@ test("classifies the ring from its name and validated MAC", () => {
 test("ignores unrelated advertisers", () => {
   assert.equal(classifyAdvertisement(raw({ name: "Pixel Buds", manufacturerData: "E000010203" })), null);
   assert.equal(classifyAdvertisement(raw({ name: "", manufacturerData: "" })), null);
+});
+
+test("a bare R1 substring is not a ring — only the stock EVEN R1 prefix is", () => {
+  assert.equal(classifyAdvertisement(raw({ name: "Oppo Enco R1", manufacturerData: "" })), null);
+  assert.equal(classifyAdvertisement(raw({ name: "R1 Speaker", manufacturerData: "" })), null);
+  const ad = classifyAdvertisement(raw({ address: "DA:7F:D2:B5:6E:E2", name: "EVEN R1_B56EE2", manufacturerData: "" }));
+  assert.equal(ad.role, "ring");
 });

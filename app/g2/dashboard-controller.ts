@@ -72,7 +72,6 @@ type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
   status: string;
-  log: string;
   displayPreview: ImageSource | null;
   /**
    * When non-empty, the phone UI shows this instead of the display preview:
@@ -181,7 +180,6 @@ function sourceName(eventSource: number): string {
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
-  private log = "";
   private activeTextSettings: ConfigSettingString[] = [];
   private activeTextEditorTitle = "";
   private activeTextEditorOnFinish: (() => void) | null = null;
@@ -257,6 +255,7 @@ class DashboardController {
   // underneath it, so it waits for this to clear.
   private connectRunning = false;
   private incompatibleDisconnectPending = false;
+  private unpairedDisconnectPending = false;
 
   constructor() {
     const sharedActions = {
@@ -822,7 +821,6 @@ class DashboardController {
     return {
       phase: this.phase,
       status: this.status,
-      log: this.log,
       displayPreview: this.displayPreview,
       displayPreviewMessage: this.displayPreviewMessage(),
       activeTextSettingId: primaryTextSetting?.id ?? null,
@@ -941,7 +939,6 @@ class DashboardController {
       this.appendLog(`error: ${message}`);
       throw new Error(message);
     }
-    this.log = "";
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
     this.welcomeSoundArmed = isWelcomeSoundPending();
@@ -977,6 +974,14 @@ class DashboardController {
         this.appendLog(line);
       });
       this.offState = communicator.onStateChange((state) => {
+        if (state.phase === "unpaired") {
+          // Java parked its retry loop: an arm's Android bond is gone, so
+          // every redial would fail the same way until the user re-pairs.
+          // Tear down into the manual-disconnected state and keep the
+          // re-pair instruction as the visible status.
+          this.scheduleUnpairedDisconnect(state.status);
+          return;
+        }
         const mappedPhase =
           state.phase === "connected"
             ? "connected"
@@ -1244,6 +1249,40 @@ class DashboardController {
   }
 
   /**
+   * A connect attempt found an arm whose Android bond is missing, so the Java
+   * worker stopped retrying. Drop into the manual-disconnected state (no
+   * auto-reconnect: it would just fail again) and leave the re-pair
+   * instruction from Java as the status the user sees.
+   */
+  private scheduleUnpairedDisconnect(message: string): void {
+    if (this.unpairedDisconnectPending) return;
+    this.unpairedDisconnectPending = true;
+    const attempt = () => {
+      // The unpaired report can arrive while connect() is still mid-flight;
+      // let it finish so the teardown doesn't race its surface setup.
+      if (this.connectRunning) {
+        setTimeout(attempt, 200);
+        return;
+      }
+      this.unpairedDisconnectPending = false;
+      if (this.phase === "disconnected" || this.phase === "disconnecting") {
+        // The session ended some other way; still stop auto-reconnect from
+        // re-dialing glasses that are no longer paired.
+        suppressAutoReconnect();
+        this.setStatus(message);
+        return;
+      }
+      this.appendLog(`Disconnecting: ${message} Auto-reconnect is disabled until you connect manually.`);
+      void this.disconnect({ skipFirmwareCleanup: true })
+        .then(() => this.setStatus(message))
+        .catch((error) => {
+          this.appendLog(`unpaired disconnect failed: ${this.formatError(error)}`);
+        });
+    };
+    setTimeout(attempt, 0);
+  }
+
+  /**
    * Tear down the connection and enter the manual-disconnected state: every
    * caller is deliberate (the phone/glasses Disconnect actions, entering the
    * flash flow, an incompatible-firmware bailout), so auto-reconnect stays
@@ -1254,6 +1293,14 @@ class DashboardController {
    */
   async disconnect(options?: { skipFirmwareCleanup?: boolean }): Promise<void> {
     suppressAutoReconnect();
+    // The phone menu offers Disconnect during the connecting phase (it is the
+    // only way out of a reconnection-attempt loop), so a call can land while
+    // connect() is still mid-flight; let it finish so the teardown doesn't
+    // race its surface setup. connect() returns once the Java worker thread
+    // owns the retry loop, so this wait is short.
+    while (this.connectRunning) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     if (this.phase === "disconnected" || this.phase === "disconnecting") return;
 
     this.setPhase("disconnecting");
@@ -2078,10 +2125,7 @@ class DashboardController {
   }
 
   private appendLog(line: string): void {
-    const stamped = `[${formatTimestamp(new Date())}] ${line}`;
-    //this.log = this.log ? `${this.log}\n${stamped}` : stamped;
-    console.log(stamped);
-    //this.emit();
+    console.log(`[${formatTimestamp(new Date())}] ${line}`);
   }
 
   private setDisplayPreview(preview: ImageSource | null): void {

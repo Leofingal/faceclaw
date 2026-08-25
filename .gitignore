@@ -13,6 +13,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# npm test compile output (tests/tsconfig.json outDir)
+.test-build/
+
 # General
 .DS_Store
 .AppleDouble

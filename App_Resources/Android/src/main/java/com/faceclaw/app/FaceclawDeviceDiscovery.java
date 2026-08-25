@@ -31,11 +31,12 @@ import java.util.Set;
  * its company identifier restored so the "ER"+serial+MAC layout survives
  * intact, RSSI, advertised TX power, and connectability.
  *
- * Admission is deliberately loose — a name containing G2 or R1, or the Even
- * "ER" manufacturer signature — because renamed custom firmware may drop the
- * stock name. Side, serial, and pair matching are decided in TypeScript
- * (app/g2/even-advertisement.ts, app/g2/pairing-candidates.ts) where they can
- * be unit-tested.
+ * Admission is deliberately loose — a name containing G2, the stock
+ * "EVEN R1…" ring prefix, or the Even "ER" manufacturer signature — because
+ * renamed custom firmware may drop the stock name. Side, serial, and pair
+ * matching are decided in TypeScript (app/g2/even-advertisement.ts,
+ * app/g2/pairing-candidates.ts) where they can be unit-tested; this filter
+ * must stay a superset of the TS classifier's admission.
  *
  * Ported from the discovery path of SybilSight's Bluetooth SDK (G2.didDiscover
  * and R1's advertisement snapshot), reduced to what Android exposes.
@@ -288,7 +289,7 @@ public class FaceclawDeviceDiscovery {
         Integer rssiValue = (rssi == 127 || rssi == 0) ? null : rssi;
         boolean bonded = device.getBondState() == BluetoothDevice.BOND_BONDED;
         return buildJson(
-                device.getAddress(), name, toHex(manufacturerData), rssiValue, txPower,
+                device.getAddress(), name, FaceclawFirmwareUtil.bytesToHex(manufacturerData), rssiValue, txPower,
                 connectable, bonded, "scan", System.currentTimeMillis());
     }
 
@@ -332,7 +333,9 @@ public class FaceclawDeviceDiscovery {
             return false;
         }
         String upper = name.toUpperCase();
-        return upper.contains("G2") || upper.contains("R1");
+        // A bare "R1" substring also matches unrelated hardware ("Oppo Enco
+        // R1"), and TS only classifies rings from the stock name prefix.
+        return upper.contains("G2") || upper.startsWith("EVEN R1");
     }
 
     private static JSONObject buildJson(
@@ -356,17 +359,6 @@ public class FaceclawDeviceDiscovery {
         } catch (JSONException e) {
             return null;
         }
-    }
-
-    private static String toHex(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02X", b & 0xff));
-        }
-        return sb.toString();
     }
 
     private static String describeScanError(int errorCode) {

@@ -1,5 +1,9 @@
 import { ApplicationSettings } from "@nativescript/core";
 
+import { normalizeMacAddress } from "./even-advertisement";
+
+export { normalizeMacAddress };
+
 export type DeviceAddresses = {
   right: string;
   left: string;
@@ -30,17 +34,6 @@ export function saveDeviceAddresses(addresses: DeviceAddresses): void {
   ApplicationSettings.setString(ADDRESS_KEYS.right, normalizeMacAddress(addresses.right));
   ApplicationSettings.setString(ADDRESS_KEYS.left, normalizeMacAddress(addresses.left));
   ApplicationSettings.setString(ADDRESS_KEYS.ring, normalizeMacAddress(addresses.ring));
-}
-
-export function normalizeMacAddress(value: string | null | undefined): string {
-  const compact = (value ?? "")
-    .trim()
-    .replace(/[^0-9a-fA-F]/g, "")
-    .toUpperCase();
-  if (compact.length !== 12) {
-    return (value ?? "").trim().toUpperCase();
-  }
-  return compact.match(/.{1,2}/g)?.join(":") ?? compact;
 }
 
 export function isValidMacAddress(value: string, allowEmpty = false): boolean {

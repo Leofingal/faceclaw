@@ -2,7 +2,7 @@
     <ActionBar title="Configure Devices" />
 
     <GridLayout rows="auto,auto,auto,auto,auto,auto,auto,auto,*" class="p-20">
-        <Label row="0" text="Configure the MAC addresses for the G2 headset arms and optional R1 ring. This page does not test a connection." textWrap="true" />
+        <Label row="0" text="Configure the MAC addresses for the G2 headset arms and optional R1 ring. This page does not test a connection." class="body-text" textWrap="true" />
 
         <GridLayout row="1" columns="96,*" class="pairing-row m-t-12" visibility="{{ identityVisibility }}">
             <Image col="0" src="{{ identityImagePath }}" stretch="aspectFit" width="90" height="34" />
@@ -34,11 +34,11 @@
             <Button col="1" text="Scan for glasses" tap="{{ onScanTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
         </GridLayout>
 
-        <Label row="6" text="{{ status }}" class="m-t-16" textWrap="true" />
+        <Label row="6" text="{{ status }}" class="body-text m-t-16" textWrap="true" />
 
         <GridLayout row="7" columns="*,*" class="m-t-16">
-            <Button col="0" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
-            <Button col="1" text="Back" tap="{{ onBackTap }}" />
+            <Button col="0" text="Back" tap="{{ onBackTap }}" />
+            <Button col="1" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
         </GridLayout>
 
         <ScrollView row="8" class="m-t-16">

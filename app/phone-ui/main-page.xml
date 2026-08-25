@@ -1,12 +1,11 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar title="Faceclaw">
-        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
-        <ActionItem text="{{ showLogMenuLabel }}" tap="{{ onToggleLogTap }}" android.position="popup" />
     </ActionBar>
 
     <GridLayout>
@@ -22,7 +21,7 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
-            <GridLayout row="1" rows="auto,auto,auto,*" class="p-20">
+            <GridLayout row="1" rows="auto,auto,auto" class="p-20">
                 <StackLayout row="0" class="m-b-8">
                     <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
                         <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
@@ -42,9 +41,6 @@
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
-                <ScrollView id="logScrollView" row="3" class="m-t-16" visibility="{{ showLogVisibility }}">
-                    <Label text="{{ log }}" textWrap="true" verticalAlignment="top" />
-                </ScrollView>
             </GridLayout>
         </GridLayout>
 
@@ -60,7 +56,7 @@
                     <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
                 </StackLayout>
             </StackLayout>
-            <GridLayout row="1" rows="auto,auto,*" columns="*,360">
+            <GridLayout row="1" rows="auto,auto" columns="*,360">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
                     <Image
                         src="{{ displayPreview }}"
@@ -84,9 +80,6 @@
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
-                <ScrollView id="logScrollViewLandscape" row="2" col="0" colSpan="2" class="m-t-16" visibility="{{ showLogVisibility }}">
-                    <Label text="{{ log }}" textWrap="true" verticalAlignment="top" />
-                </ScrollView>
             </GridLayout>
         </GridLayout>
         <StackLayout
