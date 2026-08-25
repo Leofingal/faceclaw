@@ -152,6 +152,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile FaceclawAudioPacketListener audioPacketListener;
     private PowerManager.WakeLock g2ScreenWakeLock;
 
+    // BLE bandwidth benchmark (Developer app). Streams no-op image payloads
+    // (CFW mode 7 with an unused sub-op: parsed, acked, and discarded — stock
+    // firmware likewise ignores unknown image modes) for a fixed duration with
+    // a selectable message size and pipeline window, then reports throughput.
+    // While active, desired-frame sends are held back and heartbeats are
+    // satisfied by the benchmark's own acks, so the stream is the only image
+    // traffic. All state below is guarded by `lock`; results are read with
+    // getBandwidthBenchmarkStatus() and survive until the next run starts.
+    private boolean benchmarkActive;
+    private boolean benchmarkAborted;
+    private byte[] benchmarkPayload = new byte[0];
+    private int benchmarkMessageSize;
+    private int benchmarkWindowSize;
+    private int benchmarkDurationMs;
+    private long benchmarkStartAtMs;     // first benchmark write; 0 until then
+    private long benchmarkDeadlineAtMs;  // start + duration; MAX_VALUE until first write
+    private long benchmarkLastAckAtMs;
+    private long benchmarkEndAtMs;       // 0 while running; set when the run drains
+    private int benchmarkMessagesSent;
+    private int benchmarkMessagesAcked;
+    private int benchmarkTimeouts;
+    private long benchmarkPayloadBytesAcked;
+    private long benchmarkWireBytesAcked;
+    // A timed-out benchmark message aborts the run, but its already-in-flight
+    // peers still time out one by one; keep the window comfortably below
+    // MAX_CONSECUTIVE_ACK_TIMEOUTS so a dead run can't escalate into a
+    // transport-failure reconnect all by itself.
+    private static final int BENCHMARK_MAX_WINDOW = 6;
+
     private final BroadcastReceiver phoneLockReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             emitPhoneLockStateIfChanged(true);
@@ -521,6 +550,185 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("queue wear detection enable + current-state query");
         }
         interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Start the BLE bandwidth benchmark: stream messageSize-byte no-op image
+     * payloads for durationMs, keeping up to windowSize messages awaiting ack
+     * at once, then leave the results for getBandwidthBenchmarkStatus().
+     * Returns false when a run is already active or the image path is not
+     * ready. The duration clock starts at the first benchmark write, so
+     * traffic already queued ahead of the run doesn't count against it.
+     */
+    public boolean startBandwidthBenchmark(int messageSize, int windowSize, int durationMs) {
+        synchronized (lock) {
+            if (benchmarkActive || !running || !sessionReady || !fixedLayoutCreated
+                    || shutdownRequested || chargingMode) {
+                logLine("skip bandwidth benchmark; already running or image path not ready");
+                return false;
+            }
+            byte[] payload = new byte[Math.max(2, Math.min(messageSize, ConnectionOptions.IMAGE_FRAGMENT_SIZE))];
+            payload[0] = 7;             // CFW diagnostic-control mode...
+            payload[1] = (byte) 0x7f;   // ...with an unused sub-op: acked, no effect
+            benchmarkPayload = payload;
+            benchmarkMessageSize = payload.length;
+            benchmarkWindowSize = Math.max(1, Math.min(windowSize, BENCHMARK_MAX_WINDOW));
+            benchmarkDurationMs = Math.max(1_000, durationMs);
+            benchmarkStartAtMs = 0;
+            benchmarkDeadlineAtMs = Long.MAX_VALUE;
+            benchmarkLastAckAtMs = 0;
+            benchmarkEndAtMs = 0;
+            benchmarkMessagesSent = 0;
+            benchmarkMessagesAcked = 0;
+            benchmarkTimeouts = 0;
+            benchmarkPayloadBytesAcked = 0;
+            benchmarkWireBytesAcked = 0;
+            benchmarkAborted = false;
+            benchmarkActive = true;
+            logLine("bandwidth benchmark start: size=" + benchmarkMessageSize
+                + "B window=" + benchmarkWindowSize + " duration=" + benchmarkDurationMs + "ms");
+        }
+        interruptibleSleep.interrupt();
+        return true;
+    }
+
+    /**
+     * Cancel an in-progress benchmark (benchmark page closed). Queued no-op
+     * messages are dropped; in-flight ones drain through their normal acks.
+     */
+    public void cancelBandwidthBenchmark() {
+        synchronized (lock) {
+            if (!benchmarkActive) {
+                return;
+            }
+            clearMessagesOfKindLocked("bandwidth");
+            finishBenchmarkLocked(true, "cancelled");
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /** Status/results of the current or most recent benchmark run, as JSON. */
+    public String getBandwidthBenchmarkStatus() {
+        synchronized (lock) {
+            String state = benchmarkActive
+                ? (benchmarkStartAtMs == 0 ? "starting" : "running")
+                : (benchmarkEndAtMs != 0 ? "done" : "idle");
+            long end = benchmarkActive ? SystemClock.elapsedRealtime() : benchmarkEndAtMs;
+            long elapsed = benchmarkStartAtMs == 0 ? 0 : Math.max(0, end - benchmarkStartAtMs);
+            try {
+                org.json.JSONObject status = new org.json.JSONObject();
+                status.put("state", state);
+                status.put("messageSize", benchmarkMessageSize);
+                status.put("windowSize", benchmarkWindowSize);
+                status.put("elapsedMs", elapsed);
+                status.put("messagesSent", benchmarkMessagesSent);
+                status.put("messagesAcked", benchmarkMessagesAcked);
+                status.put("timeouts", benchmarkTimeouts);
+                status.put("payloadBytesAcked", benchmarkPayloadBytesAcked);
+                status.put("wireBytesAcked", benchmarkWireBytesAcked);
+                status.put("aborted", benchmarkAborted);
+                return status.toString();
+            } catch (org.json.JSONException e) {
+                return "{\"state\":\"idle\"}";
+            }
+        }
+    }
+
+    /** Pending + in-flight benchmark no-op messages. */
+    private int benchmarkOutstandingLocked() {
+        int count = 0;
+        for (OutboundMessage message : pendingMessages) {
+            if ("bandwidth".equals(message.kind)) count++;
+        }
+        for (OutboundMessage message : inFlightMessages) {
+            if ("bandwidth".equals(message.kind)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Keep the benchmark stream fed: top the pending queue up so the send
+     * window never starves, stop enqueueing once the run expires (or a message
+     * times out), and finish the run when the last outstanding message drains.
+     */
+    private void maintainBenchmarkLocked(long now) {
+        if (!sessionReady || !fixedLayoutCreated || shutdownRequested) {
+            finishBenchmarkLocked(true, "session no longer ready");
+            return;
+        }
+        if (benchmarkAborted || now >= benchmarkDeadlineAtMs) {
+            // The run is over: drop queued-but-unsent no-ops (sending them
+            // would stretch the run past its deadline) and finish once the
+            // in-flight tail has acked or timed out.
+            Iterator<OutboundMessage> pendingIterator = pendingMessages.iterator();
+            while (pendingIterator.hasNext()) {
+                OutboundMessage queued = pendingIterator.next();
+                if ("bandwidth".equals(queued.kind)) {
+                    pendingIterator.remove();
+                    magicPool.release(queued.sid, queued.magic, queued.label, "benchmark over");
+                }
+            }
+            if (benchmarkOutstandingLocked() == 0) {
+                finishBenchmarkLocked(false, "complete");
+            }
+            return;
+        }
+        // One more than the window so a fresh message is always ready to write
+        // the moment an ack frees a slot.
+        for (int outstanding = benchmarkOutstandingLocked(); outstanding <= benchmarkWindowSize; outstanding++) {
+            enqueueBenchmarkMessageLocked();
+        }
+    }
+
+    private void finishBenchmarkLocked(boolean aborted, String reason) {
+        if (!benchmarkActive) {
+            return;
+        }
+        benchmarkActive = false;
+        benchmarkAborted |= aborted;
+        // Prefer the last ack as the end time so drain lag after the deadline
+        // doesn't dilute the throughput figure.
+        benchmarkEndAtMs = benchmarkLastAckAtMs != 0 ? benchmarkLastAckAtMs : SystemClock.elapsedRealtime();
+        logLine("bandwidth benchmark " + (benchmarkAborted ? "aborted" : "finished") + " (" + reason + "): "
+            + benchmarkMessagesAcked + "/" + benchmarkMessagesSent + " acked, "
+            + benchmarkPayloadBytesAcked + "B payload, " + benchmarkTimeouts + " timeouts");
+    }
+
+    private void enqueueBenchmarkMessageLocked() {
+        OutboundMessage message = messageBuilder.imagePayload(
+            "bandwidth",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            benchmarkPayload,
+            "bandwidth no-op " + benchmarkPayload.length + "B",
+            connectionOptions.sendImagesToLeft);
+        final int payloadBytes = benchmarkPayload.length;
+        // Protobuf-wrapped message bytes; the `aa 21` envelope adds a few more
+        // per MTU-sized BLE frame, which this figure does not include.
+        final int wireBytes = message.message.length;
+        message.onSent = () -> {
+            benchmarkMessagesSent++;
+            if (benchmarkStartAtMs == 0) {
+                benchmarkStartAtMs = SystemClock.elapsedRealtime();
+                benchmarkDeadlineAtMs = benchmarkStartAtMs + benchmarkDurationMs;
+            }
+        };
+        message.onAck = () -> {
+            long ackedAtMs = SystemClock.elapsedRealtime();
+            benchmarkMessagesAcked++;
+            benchmarkPayloadBytesAcked += payloadBytes;
+            benchmarkWireBytesAcked += wireBytes;
+            benchmarkLastAckAtMs = ackedAtMs;
+            // No-op payloads ride the image path, so the firmware resets its
+            // heartbeat timer on them just like real image messages.
+            lastHeartbeatAckedAtMs = ackedAtMs;
+        };
+        message.onTimeout = () -> {
+            benchmarkTimeouts++;
+            benchmarkAborted = true;
+            logLine("bandwidth benchmark ack timeout");
+        };
+        pendingMessages.addLast(message);
     }
 
     public void addImuListener(FaceclawImuListener listener) {
@@ -1768,9 +1976,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueCompassControlLocked(false, compassEnabled);
                     }
 
+                    if (benchmarkActive) {
+                        maintainBenchmarkLocked(now);
+                    }
+
                     // Up to WINDOW_SIZE messages may be in flight at once (full
-                    // pipelining); a slot frees when an ack arrives.
-                    boolean windowHasRoom = inFlightMessages.size() < Math.max(1, connectionOptions.WINDOW_SIZE);
+                    // pipelining); a slot frees when an ack arrives. An active
+                    // bandwidth benchmark measures its own selected window instead.
+                    boolean windowHasRoom = inFlightMessages.size()
+                            < Math.max(1, benchmarkActive ? benchmarkWindowSize : connectionOptions.WINDOW_SIZE);
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
@@ -1781,11 +1995,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // window unprotected and a heartbeat that came due there
                     // cost the frame a full ack round trip (measured 124ms on
                     // frame#232 of the 2026-08-20 02:27 capture).
+                    // A benchmark run counts as image traffic here for the same
+                    // reason: its acks reset the firmware heartbeat timer, so a
+                    // fresh heartbeat in front of it is redundant.
                     boolean imageWaiting = !shutdownRequested && fixedLayoutCreated
                             && !hasPendingOrInflightKindLocked("heartbeat")
-                            && now >= imageRetryAfterMs
-                            && (hasPendingImageLocked()
-                                || !getDesiredFingerprint().equals(lastEnqueuedFingerprint));
+                            && (benchmarkActive
+                                || (now >= imageRetryAfterMs
+                                    && (hasPendingImageLocked()
+                                        || !getDesiredFingerprint().equals(lastEnqueuedFingerprint))));
                     noteImageStallLocked(now, windowHasRoom);
                     if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
@@ -1794,7 +2012,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                    } else if (messageToPrewrite == null && !shutdownRequested && !benchmarkActive
+                            && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
@@ -3043,6 +3262,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         Log.e(TAG, "Transport failure: "+reason);
         synchronized (lock) {
             maybeEmitEvenAppConflictLocked(reason);
+            finishBenchmarkLocked(true, "transport failure");
             sessionReady = false;
             fixedLayoutCreated = false;
             startupProbePending = false;

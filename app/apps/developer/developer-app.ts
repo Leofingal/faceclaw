@@ -2,6 +2,7 @@ import { MenuLayer, drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
 import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
+import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { ResourceUsageLayer } from "./resource-usage";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
 import { type AppContext } from "../app-definition";
@@ -65,6 +66,12 @@ function debugTestsMenu(): MenuLayer {
         label: "Accelerometer demo",
         onSelect: (ctx) => {
           ctx.stack.push(new AccelerometerDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
+        },
+      },
+      {
+        label: "BLE bandwidth",
+        onSelect: (ctx) => {
+          ctx.stack.push(new BandwidthBenchmarkLayer(ctx.actions.requestRender));
         },
       },
     ],
