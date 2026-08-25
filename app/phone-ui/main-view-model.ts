@@ -54,9 +54,25 @@ export class MainViewModel extends Observable {
   private _batteryOptimizationWarningVisible = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
+  // A new view model is built on every navigation to the main page; these
+  // module-level subscriptions must die with it (see dispose) or each
+  // round-trip to another page leaks a listener that pins the dead model.
+  private readonly unsubscribers: Array<() => void> = [];
+
   constructor() {
     super();
-    dashboardController.subscribe((snapshot) => {
+    this.attach();
+  }
+
+  /**
+   * Subscribe to the controller and settings. Idempotent; the page calls it
+   * again from `loaded` because an app suspend fires unloaded/loaded (which
+   * dispose the model) without a navigation building a fresh one. Subscribing
+   * delivers the current snapshot, so a re-attached model catches up.
+   */
+  attach(): void {
+    if (this.unsubscribers.length > 0) return;
+    this.unsubscribers.push(dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
@@ -77,9 +93,16 @@ export class MainViewModel extends Observable {
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
       this.refreshPadFocusLine();
-    });
+    }));
     // Brightness / display mode can change from the glasses' Settings app too.
-    onAnySettingChanged(() => this.refreshDisplayControls());
+    this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+  }
+
+  /** Detach from the controller and settings; the page calls this when it lets go of the model. */
+  dispose(): void {
+    for (const unsubscribe of this.unsubscribers.splice(0)) {
+      unsubscribe();
+    }
   }
 
   get status(): string {
@@ -148,7 +171,8 @@ export class MainViewModel extends Observable {
     // aspect; the width is derived from it, so a wider lens aspect can't
     // grow the preview past the side panel.
     const screenWidth = Screen.mainScreen.widthDIPs;
-    const sidePanelWidth = 260;
+    // Must match the landscape grid's fixed side-panel column in main-page.xml.
+    const sidePanelWidth = 360;
     const availableWidth = Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
     return Math.floor(availableWidth / 2);
   }
@@ -624,7 +648,6 @@ export class MainViewModel extends Observable {
   // tap = select, double-tap / two fingers = back, hold = menu. The ring row
   // above stays on the ring's own scheme.
 
-  private padPointers = 0;
   private padTwoFingerDown = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
@@ -664,13 +687,11 @@ export class MainViewModel extends Observable {
   async onPadTouch(args: TouchGestureEventData): Promise<void> {
     const count = args.getPointerCount();
     if (args.action === "down" || args.action === "move") {
-      this.padPointers = Math.max(this.padPointers, count);
       if (count >= 2) this.padTwoFingerDown = true;
       return;
     }
     if (args.action === "up" || args.action === "cancel") {
       const twoFinger = this.padTwoFingerDown;
-      this.padPointers = 0;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.
         setTimeout(() => {
@@ -735,12 +756,9 @@ export class MainViewModel extends Observable {
     const view = args.object as View | undefined;
     const size = view?.getActualSize?.();
     if (!view || !size || !size.width || !size.height || !args.getX || !args.getY) return null;
-    // On Android the gesture's getX/getY are screen-absolute (in DIPs), not
-    // view-local; the view's own screen position makes them local.
-    const origin = view.getLocationOnScreen?.() ?? { x: 0, y: 0 };
-    const localX = args.getX() - origin.x;
-    const localY = args.getY() - origin.y;
-    return { nx: localX / size.width, ny: localY / size.height };
+    // NativeScript's gesture getX/getY are view-local DIPs (the view's own
+    // MotionEvent coordinates), so they divide straight into the view's size.
+    return { nx: args.getX() / size.width, ny: args.getY() / size.height };
   }
 
   private async mirrorGesture(kind: MirrorTouchKind, args: GestureEventData): Promise<void> {

@@ -27,6 +27,14 @@ export function sidebarWidth(): number {
 }
 
 /**
+ * Whether the sidebar strip is on screen: always when it reserves width; in
+ * the full-panel mode (where it overlays the window) only while it has focus.
+ */
+export function sidebarStripVisible(focus: "sidebar" | "window"): boolean {
+  return sidebarWidth() > 0 || focus === "sidebar";
+}
+
+/**
  * The height an app's requested mode actually gets: the band mode honours
  * it, the taller modes give every window the whole screen.
  */

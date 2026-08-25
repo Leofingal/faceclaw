@@ -13,7 +13,7 @@ import {
   minWindowTop,
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
-  sidebarWidth,
+  sidebarStripVisible,
   TOP_BAR_HEIGHT,
   windowTop,
   type WindowHeightMode,
@@ -49,6 +49,25 @@ function sidebarVariant(windowCount: number): SidebarVariant {
 /** Left x of a sidebar column; columns pack rightward against the separator. */
 function columnLeft(variant: SidebarVariant, column: number): number {
   return SIDEBAR_WIDTH - (variant.columns - column) * variant.columnWidth;
+}
+
+/**
+ * Column and top y of a visible sidebar slot; `position` counts from the
+ * first visible (scrolled-to) icon. Slots fill the rightmost column top to
+ * bottom, then overflow leftward. The single source of slot geometry for
+ * both drawing and hit testing.
+ */
+function slotPosition(variant: SidebarVariant, listTop: number, position: number): { column: number; y: number } {
+  const rows = rowsPerColumn(variant);
+  return {
+    column: variant.columns - 1 - ((position / rows) | 0),
+    y: listTop + (position % rows) * (variant.iconSize + ICON_SPACING),
+  };
+}
+
+/** Top y of the sidebar's icon list (below the band's top bar). */
+function sidebarListTop(): number {
+  return minWindowTop() + TOP_BAR_HEIGHT + LIST_MARGIN;
 }
 
 /**
@@ -169,7 +188,7 @@ export class ShellChromeLayer implements Layer {
     const state = this.getState();
     // Full-panel mode: the strip is an overlay, present only while the user
     // is in it (the window underneath keeps its full width the rest of the time).
-    if (sidebarWidth() > 0 || state.focus === "sidebar") {
+    if (sidebarStripVisible(state.focus)) {
       this.drawSidebar(image, state);
     }
     this.drawTopBar(image, state);
@@ -189,14 +208,10 @@ export class ShellChromeLayer implements Layer {
   windowIndexAt(x: number, y: number, windowCount: number): number | null {
     if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
     const variant = sidebarVariant(windowCount);
-    const rows = rowsPerColumn(variant);
-    const listTop = minWindowTop() + TOP_BAR_HEIGHT + LIST_MARGIN;
-    const itemStride = variant.iconSize + ICON_SPACING;
-    const lastVisible = Math.min(windowCount, this.scrollRow + rows * variant.columns);
+    const listTop = sidebarListTop();
+    const lastVisible = Math.min(windowCount, this.scrollRow + rowsPerColumn(variant) * variant.columns);
     for (let index = this.scrollRow; index < lastVisible; index++) {
-      const position = index - this.scrollRow;
-      const column = variant.columns - 1 - ((position / rows) | 0);
-      const slotY = listTop + (position % rows) * itemStride;
+      const { column, y: slotY } = slotPosition(variant, listTop, index - this.scrollRow);
       const left = columnLeft(variant, column);
       if (x >= left && x < left + variant.columnWidth && y >= slotY - 2 && y < slotY + variant.iconSize + 2) {
         return index;
@@ -223,20 +238,11 @@ export class ShellChromeLayer implements Layer {
     const iconMarginX = ((variant.columnWidth - iconSize) / 2) | 0;
     // Column index of the rightmost column (the one that fills first).
     const firstColumn = variant.columns - 1;
-    const listTop = bandTop + TOP_BAR_HEIGHT + LIST_MARGIN;
-    const itemStride = iconSize + ICON_SPACING;
-    const rows = rowsPerColumn(variant);
-    const visibleCount = rows * variant.columns;
+    const listTop = sidebarListTop();
+    const visibleCount = rowsPerColumn(variant) * variant.columns;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
-    const slotOf = (index: number) => {
-      const position = index - this.scrollRow;
-      const columnsFromRight = (position / rows) | 0;
-      return {
-        column: firstColumn - columnsFromRight,
-        y: listTop + (position % rows) * itemStride,
-      };
-    };
+    const slotOf = (index: number) => slotPosition(variant, listTop, index - this.scrollRow);
 
     // The selection is a "diversion" of the sidebar/main separator line: the
     // line bulges right around the selected icon (rounded on the left, open
@@ -297,7 +303,7 @@ export class ShellChromeLayer implements Layer {
     const barTop = windowTop(state.foregroundHeightMode);
     // The bar spans the app viewport; with the sidebar overlaid (full-panel
     // mode, sidebar focused) it still starts past the strip.
-    const barLeft = sidebarWidth() > 0 || state.focus === "sidebar" ? SIDEBAR_WIDTH : 0;
+    const barLeft = sidebarStripVisible(state.focus) ? SIDEBAR_WIDTH : 0;
     image.fillRect(barLeft, barTop, G2_LENS_WIDTH - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
     image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 

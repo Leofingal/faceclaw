@@ -7,8 +7,6 @@ import org.json.JSONObject
  * (paths) and app/g2/wear-remote.ts (payloads); see ../../PROTOCOL.md.
  */
 object Protocol {
-    const val PROTOCOL_VERSION = 1
-
     /** Advertised by the phone app so the watch can find it. */
     const val CAPABILITY_PHONE = "faceclaw_phone"
 
@@ -92,7 +90,6 @@ data class WindowEntry(
 
 /** The phone's mirrored dashboard state (Data Layer item /faceclaw/state). */
 data class PhoneState(
-    val protocol: Int,
     val version: String,
     val phase: String,
     val status: String,
@@ -120,7 +117,6 @@ data class PhoneState(
                 val o = JSONObject(json)
                 val foreground = o.optJSONObject("foreground")
                 PhoneState(
-                    protocol = o.optInt("protocol", 1),
                     version = o.optString("version", ""),
                     phase = o.optString("phase", "disconnected"),
                     status = o.optString("status", ""),

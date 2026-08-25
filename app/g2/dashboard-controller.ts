@@ -56,7 +56,7 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, SIDEBAR_WIDTH, sidebarWidth, type WindowHeightMode } from "../ui/shell/geometry";
+import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, watchWakesDisplaySetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
@@ -1449,6 +1449,13 @@ class DashboardController {
       return;
     }
     if (!shell.isScreenOn()) {
+      // The same wake policy as the rest of the watch scheme: honour the
+      // "input wakes display" setting; with it off, only a double-tap (a
+      // normal double-click) reaches the dark display.
+      if (!watchWakesDisplaySetting.get()) {
+        if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+        return;
+      }
       shell.wake(shell.getFocus());
       this.requestShellRender();
     }
@@ -1458,7 +1465,7 @@ class DashboardController {
     }
     const x = Math.round(Math.min(1, Math.max(0, nx)) * G2_LENS_WIDTH);
     const y = Math.round(Math.min(1, Math.max(0, ny)) * G2_LENS_HEIGHT);
-    const stripShown = sidebarWidth() > 0 || shell.getFocus() === "sidebar";
+    const stripShown = sidebarStripVisible(shell.getFocus());
     this.appendLog(`mirror tap at ${x},${y}`);
     if (!shell.hasOverlay() && stripShown && x < SIDEBAR_WIDTH) {
       const target = shell.windowAtSidebarPoint(x, y);
@@ -2163,6 +2170,18 @@ class DashboardController {
 
   private updateCompositePreview(): void {
     if (!this.communicator) return;
+    // The floor comes first (and stamps even when backgrounded below): with
+    // it after the background check, per-frame refresh requests from a
+    // backgrounded app never advance the timestamp and every one of them
+    // pays the foreground-activity lookup.
+    const now = Date.now();
+    if (
+      this.lastConnectedPreviewUpdateAtMs > 0 &&
+      now - this.lastConnectedPreviewUpdateAtMs < CONNECTED_PREVIEW_MIN_UPDATE_MS
+    ) {
+      return;
+    }
+    this.lastConnectedPreviewUpdateAtMs = now;
     // The connected foreground service intentionally keeps this controller
     // alive after the phone UI is backgrounded. Do not keep constructing
     // 640x480 Android Bitmaps for a window that cannot display them: besides
@@ -2172,14 +2191,6 @@ class DashboardController {
       const activity = Application.android.foregroundActivity;
       if (!activity || !activity.hasWindowFocus()) return;
     }
-    const now = Date.now();
-    if (
-      this.lastConnectedPreviewUpdateAtMs > 0 &&
-      now - this.lastConnectedPreviewUpdateAtMs < CONNECTED_PREVIEW_MIN_UPDATE_MS
-    ) {
-      return;
-    }
-    this.lastConnectedPreviewUpdateAtMs = now;
     if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
       this.lastRecordCaptureAtMs = now;
       this.communicator.recordScreenFrame();

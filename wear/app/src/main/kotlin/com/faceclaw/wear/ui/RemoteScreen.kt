@@ -37,6 +37,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
@@ -207,16 +210,12 @@ fun RemoteScreen(
 
     // Motion-sensor gestures only count on a wrist (see OnBodyMonitor).
     val onBody = remember { OnBodyMonitor(view.context) }
-    DisposableEffect(onBody) {
-        onBody.start()
-        onDispose { onBody.stop() }
-    }
+    WhileStartedEffect(onBody, start = onBody::start, stop = onBody::stop)
 
     // Fingertip (pinch) taps from the motion sensors, only while the pad is up.
     val fingerTapsEnabled = prefs.fingerTaps
-    DisposableEffect(fingerTapsEnabled, link, haptics) {
-        if (!fingerTapsEnabled) return@DisposableEffect onDispose { }
-        val detector = FingerTapDetector(
+    val fingerTapDetector = remember(fingerTapsEnabled, link, haptics) {
+        if (!fingerTapsEnabled) null else FingerTapDetector(
             context = view.context,
             sensitivity = { currentPrefs.tapSensitivity },
             quietUntil = { haptics.quietUntil() },
@@ -224,23 +223,20 @@ fun RemoteScreen(
             onTap = { flashUntil = System.currentTimeMillis() + FLASH_MS; click() },
             onDoubleTap = { flashUntil = System.currentTimeMillis() + FLASH_MS; doubleClick() },
         )
-        detector.start()
-        onDispose { detector.stop() }
     }
+    WhileStartedEffect(fingerTapDetector, start = { fingerTapDetector?.start() }, stop = { fingerTapDetector?.stop() })
     // Two quick wrist twists = back, from the gyroscope, only while the pad is up.
     val wristTwistEnabled = prefs.wristTwist
-    DisposableEffect(wristTwistEnabled, link, haptics) {
-        if (!wristTwistEnabled) return@DisposableEffect onDispose { }
-        val detector = WristTwistDetector(
+    val wristTwistDetector = remember(wristTwistEnabled, link, haptics) {
+        if (!wristTwistEnabled) null else WristTwistDetector(
             context = view.context,
             sensitivity = { currentPrefs.twistSensitivity },
             quietUntil = { haptics.quietUntil() },
             onBody = { onBody.onBody },
             onDoubleTwist = { flashUntil = System.currentTimeMillis() + FLASH_MS; doubleClick() },
         )
-        detector.start()
-        onDispose { detector.stop() }
     }
+    WhileStartedEffect(wristTwistDetector, start = { wristTwistDetector?.start() }, stop = { wristTwistDetector?.stop() })
     LaunchedEffect(litTick) {
         if (litTick == 0L) return@LaunchedEffect
         delay(ARROW_LIT_MS)
@@ -354,6 +350,32 @@ fun RemoteScreen(
         }
 
         NoticeOverlay(notice)
+    }
+}
+
+/**
+ * Run start/stop with the composition AND the activity lifecycle: started on
+ * ON_START (or immediately if already started), stopped on ON_STOP and on
+ * leaving the composition. A plain DisposableEffect keeps sensors registered
+ * while the activity sits stopped-but-cached (palmed screen, back on the watch
+ * face), which at gyroscope/accelerometer rates is a real battery drain.
+ */
+@Composable
+private fun WhileStartedEffect(key: Any?, start: () -> Unit, stop: () -> Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, key) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> start()
+                Lifecycle.Event.ON_STOP -> stop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            stop()
+        }
     }
 }
 

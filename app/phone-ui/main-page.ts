@@ -33,6 +33,9 @@ function cleanupPage(page: Page): void {
   }
   state.model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.off(Application.orientationChangedEvent, state.orientationHandler)
+  // navigatingTo builds a fresh model each visit; drop the old one's
+  // controller/settings subscriptions or every navigation leaks a listener.
+  state.model.dispose()
   setPageState(page, undefined)
 }
 
@@ -77,6 +80,9 @@ export function loaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
+  // Re-subscribe after a suspend/resume cycle (unloaded disposed the model);
+  // a no-op on the first load after construction.
+  model?.attach()
   // Automatically connect on reaching the main page (no-op if already
   // connected or if no glasses are configured).
   void model?.autoConnect()

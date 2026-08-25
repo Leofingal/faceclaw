@@ -39,57 +39,71 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
         var maxPointers = 1
         var moved = false
         var longPressed = false
+        var longPressEnded = false
         var displacement = Offset.Zero
         var releaseTime = downTime
 
-        while (true) {
-            val remaining = if (longPressed || moved || maxPointers > 1) {
-                HOLD_POLL_MS
-            } else {
-                longPressTimeout - (System.currentTimeMillis() - wallClockAt(downTime))
-            }
-            val event = withTimeoutOrNull(remaining.coerceAtLeast(1L)) { awaitPointerEvent() }
-            if (event == null) {
-                if (!longPressed && !moved && maxPointers == 1) {
-                    longPressed = true
-                    callbacks.onLongPressStart()
+        // The finally clause pairs every onLongPressStart with an
+        // onLongPressEnd, whatever ends the gesture: a parent consuming the
+        // events (the break below) or the pointerInput coroutine being
+        // cancelled mid-hold. The phone treats a start without a release as a
+        // hold still in progress, so dropping the release leaves a stuck
+        // long-press (and eventually the shell escape menu).
+        try {
+            while (true) {
+                val remaining = if (longPressed || moved || maxPointers > 1) {
+                    HOLD_POLL_MS
+                } else {
+                    longPressTimeout - (System.currentTimeMillis() - wallClockAt(downTime))
                 }
-                continue
-            }
-            // Something above us (the system, a parent) took the gesture:
-            // Compose reports that as already-consumed changes. Drop it rather
-            // than mistaking the cancellation for a tap.
-            if (event.changes.any { it.isConsumed }) break
-            val pressedCount = event.changes.count { it.pressed }
-            if (pressedCount > maxPointers) maxPointers = pressedCount
-            val primary = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
-            if (primary.positionChanged()) {
-                displacement = primary.position - down.position
-                if (!moved && !longPressed && displacement.getDistance() > slop) moved = true
-            }
-            for (change in event.changes) change.consume()
-            if (pressedCount > 0) continue
+                val event = withTimeoutOrNull(remaining.coerceAtLeast(1L)) { awaitPointerEvent() }
+                if (event == null) {
+                    if (!longPressed && !moved && maxPointers == 1) {
+                        longPressed = true
+                        callbacks.onLongPressStart()
+                    }
+                    continue
+                }
+                // Something above us (the system, a parent) took the gesture:
+                // Compose reports that as already-consumed changes. Drop it rather
+                // than mistaking the cancellation for a tap.
+                if (event.changes.any { it.isConsumed }) break
+                val pressedCount = event.changes.count { it.pressed }
+                if (pressedCount > maxPointers) maxPointers = pressedCount
+                val primary = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
+                if (primary.positionChanged()) {
+                    displacement = primary.position - down.position
+                    if (!moved && !longPressed && displacement.getDistance() > slop) moved = true
+                }
+                for (change in event.changes) change.consume()
+                if (pressedCount > 0) continue
 
-            releaseTime = event.changes.maxOf { it.uptimeMillis }
-            val duration = releaseTime - downTime
-            when {
-                longPressed -> callbacks.onLongPressEnd()
-                maxPointers >= 2 -> if (moved) callbacks.onTwoFingerSwipe(displacement.x, displacement.y) else callbacks.onTwoFingerTap()
-                moved -> callbacks.onSwipe(displacement.x, displacement.y, duration)
-                else -> {
-                    // A plain tap; give a second tap a chance to make it a double.
-                    val second = withTimeoutOrNull(doubleTapTimeout) { awaitFirstDown() }
-                    if (second == null) {
-                        callbacks.onTap(down.position)
-                    } else {
-                        second.consume()
-                        val up = waitForUpOrCancellation()
-                        if (up != null) up.consume()
-                        callbacks.onDoubleTap(down.position)
+                releaseTime = event.changes.maxOf { it.uptimeMillis }
+                val duration = releaseTime - downTime
+                when {
+                    longPressed -> {
+                        longPressEnded = true
+                        callbacks.onLongPressEnd()
+                    }
+                    maxPointers >= 2 -> if (moved) callbacks.onTwoFingerSwipe(displacement.x, displacement.y) else callbacks.onTwoFingerTap()
+                    moved -> callbacks.onSwipe(displacement.x, displacement.y, duration)
+                    else -> {
+                        // A plain tap; give a second tap a chance to make it a double.
+                        val second = withTimeoutOrNull(doubleTapTimeout) { awaitFirstDown() }
+                        if (second == null) {
+                            callbacks.onTap(down.position)
+                        } else {
+                            second.consume()
+                            val up = waitForUpOrCancellation()
+                            if (up != null) up.consume()
+                            callbacks.onDoubleTap(down.position)
+                        }
                     }
                 }
+                break
             }
-            break
+        } finally {
+            if (longPressed && !longPressEnded) callbacks.onLongPressEnd()
         }
     }
 }

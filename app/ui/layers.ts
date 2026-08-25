@@ -238,6 +238,21 @@ export class LayerStack {
     }
   }
 
+  /**
+   * Pop layers down to and including the given one, wherever it sits in the
+   * stack (e.g. dismissing the assistant while a follow-up voice dialog is
+   * open above it). Returns false if the layer isn't stacked (the base layer
+   * can never be popped). Removal callbacks fire top-down.
+   */
+  popThrough(layer: Layer): boolean {
+    const index = this.layers.indexOf(layer);
+    if (index <= 0) return false;
+    for (const removed of this.layers.splice(index).reverse()) {
+      notifyRemoved(removed);
+    }
+    return true;
+  }
+
   isAtBase(): boolean {
     return this.layers.length === 1;
   }
@@ -271,9 +286,15 @@ export class LayerStack {
     await top.handleInput(delivered, this.ctx);
   }
 
-  /** Pass a mirror touch to the base layer when nothing is stacked on it. */
+  /**
+   * Pass a mirror touch to the base layer when nothing is stacked on it.
+   * With a layer stacked (a menu, a dialog) the touch is consumed without
+   * acting: positions mean nothing to the overlay, and falling back to a
+   * blind synthetic click would activate whatever happens to be highlighted
+   * rather than what was tapped.
+   */
   async hitTest(x: number, y: number): Promise<boolean> {
-    if (this.layers.length !== 1) return false;
+    if (this.layers.length !== 1) return true;
     const base = this.layers[0]!;
     if (!base.hitTest) return false;
     return await base.hitTest(x, y, this.ctx);

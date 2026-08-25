@@ -43,7 +43,7 @@ import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
   minWindowTop,
-  SIDEBAR_WIDTH,
+  sidebarWidth,
   TOP_BAR_HEIGHT,
   windowBandHeight,
   windowTop,
@@ -157,9 +157,10 @@ const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 class ShellOverlayMenuLayer extends MenuLayer {
   constructor(items: MenuItem[], private readonly onClosed: () => void) {
     // Aligned to the min-height window band (like the sidebar), wherever the
-    // vertical position setting currently puts it.
+    // vertical position setting currently puts it; past the sidebar strip
+    // where one reserves width (none in the full-panel mode).
     super(null, items, {
-      x: SIDEBAR_WIDTH + 8,
+      x: sidebarWidth() + 8,
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width: 272,
       minHeight: 0,
@@ -858,9 +859,12 @@ class Shell {
     }
   }
 
-  /** Dismiss the assistant overlay (cancelling any in-flight turn), as Done would. */
-  closeAssistant(): void {
-    this.closeAssistantLayer();
+  /**
+   * Dismiss the assistant overlay (cancelling any in-flight turn), as Done
+   * would. Returns whether an overlay was actually open to close.
+   */
+  closeAssistant(): boolean {
+    return this.closeAssistantLayer();
   }
 
   private ensureAssistantSession(): AssistantSession | null {
@@ -998,13 +1002,16 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private closeAssistantLayer(): void {
+  private closeAssistantLayer(): boolean {
     // Popping fires the layer's onRemoved, which cancels the turn and clears
-    // this.assistantLayer.
+    // this.assistantLayer. popThrough also closes anything stacked above the
+    // overlay (a follow-up voice dialog, an alert), so a close command works
+    // no matter what the conversation is showing.
     const layer = this.assistantLayer;
-    if (layer) this.stack.popIfTop((top) => top === layer);
+    const closed = layer ? this.stack.popThrough(layer) : false;
     this.noteUserActivity();
     this.config.requestShellRender();
+    return closed;
   }
 
   /** Show a brief text popup on the lenses (assistant show_alert / notices). */

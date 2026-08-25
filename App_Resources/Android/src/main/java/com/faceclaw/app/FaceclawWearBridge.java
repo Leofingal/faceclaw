@@ -35,9 +35,11 @@ import java.util.Set;
  * {@link #handleMessage}; it is forwarded to the JS listener on the thread
  * that registered it (the main isolate), mirroring FaceclawSettings. Messages
  * that arrive before a listener exists (the watch poked a phone whose JS
- * dashboard is not up yet) are kept for a short while and replayed on
- * registration; the watch is told with an ack carrying jsReady=false so it
- * can say "open Faceclaw on your phone".
+ * dashboard is not up yet) are acked with jsReady=false so the watch can say
+ * "open Faceclaw on your phone"; only idempotent state requests are kept for
+ * replay on registration — the watch already reported gestures and commands
+ * as failed, and executing them tens of seconds later would act on whatever
+ * the glasses happen to show by then.
  *
  * Outbound: {@link #publishState} mirrors the dashboard state into a Data
  * Layer item (delivered even if the watch is out of range right now, and
@@ -283,17 +285,20 @@ public final class FaceclawWearBridge {
         boolean delivered = dispatchMessage(path, json, nodeId);
         if (delivered) return;
 
-        // No JS listener yet: keep the message briefly, and tell the watch so
-        // it can explain why nothing is happening.
-        synchronized (lock) {
-            long now = System.currentTimeMillis();
-            while (!pending.isEmpty() && now - pending.peekFirst().receivedAt > PENDING_MAX_AGE_MS) {
-                pending.pollFirst();
+        // No JS listener yet: tell the watch so it can explain why nothing is
+        // happening. Only state requests are kept for replay (see class doc);
+        // everything else is dropped after the failure ack.
+        if (PATH_STATE_REQUEST.equals(path)) {
+            synchronized (lock) {
+                long now = System.currentTimeMillis();
+                while (!pending.isEmpty() && now - pending.peekFirst().receivedAt > PENDING_MAX_AGE_MS) {
+                    pending.pollFirst();
+                }
+                if (pending.size() >= PENDING_LIMIT) {
+                    pending.pollFirst();
+                }
+                pending.addLast(new PendingMessage(path, json, nodeId, now));
             }
-            if (pending.size() >= PENDING_LIMIT) {
-                pending.pollFirst();
-            }
-            pending.addLast(new PendingMessage(path, json, nodeId, now));
         }
         sendAck(nodeId, readSeq(json), false, false, "Faceclaw is not running on the phone. Open it to connect the glasses.");
     }

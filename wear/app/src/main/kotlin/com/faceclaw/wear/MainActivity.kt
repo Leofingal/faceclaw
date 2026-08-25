@@ -50,6 +50,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         cancelStemHold()
+        // A stopped activity never sees the key-up, and the phone keeps the
+        // hold (and its escape-menu countdown) running until it hears the
+        // release — so end an in-progress hold before dropping the link.
+        if (stemHoldSent) {
+            stemHoldSent = false
+            link.sendGesture(Gesture.LONG_PRESS_RELEASE)
+        }
         link.stop()
         super.onStop()
     }

@@ -141,7 +141,7 @@ export class WearRemote {
     });
     shell.onAssistantActivity((event) => this.forwardAssistantActivity(event));
     shell.onAlertShown((text) => {
-      if (watchMirrorAssistantSetting.get()) {
+      if (this.watchReachable && watchMirrorAssistantSetting.get()) {
         wearBridge.sendEvent({ type: "alert", text });
       }
     });
@@ -425,8 +425,9 @@ export class WearRemote {
         ack(true);
         return;
       case "close-assistant":
-        shell.closeAssistant();
-        ack(true);
+        // Idempotent: closing an assistant that isn't open still succeeds,
+        // but tell the watch which of the two happened.
+        ack(true, shell.closeAssistant() ? "" : "The assistant was not open.");
         return;
       case "display-mode": {
         const value = String(payload.value ?? "");
@@ -446,6 +447,10 @@ export class WearRemote {
 
   private forwardAssistantActivity(event: AssistantActivityEvent): void {
     if (!watchMirrorAssistantSetting.get()) return;
+    // No watch to mirror to: sending anyway is not free — with no known
+    // watch nodes the Java side runs a capability lookup per event, which a
+    // streaming reply would repeat several times a second.
+    if (!this.watchReachable) return;
     if (event.phase === "streaming") {
       // Coalesce: the newest text wins, sent no more often than the interval.
       this.assistantPendingText = event.text;

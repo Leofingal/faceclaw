@@ -267,7 +267,10 @@ class PhoneLink(context: Context) :
 
     private suspend fun loadStateItem() {
         try {
-            val uri = Uri.Builder().scheme("wear").path(Protocol.PATH_STATE).build()
+            // The item lives under the phone node's authority
+            // (wear://<nodeId>/faceclaw/state); the "*" host matches any node,
+            // where a hostless Uri would match nothing.
+            val uri = Uri.parse("wear://*${Protocol.PATH_STATE}")
             val items = dataClient.getDataItems(uri).await()
             try {
                 for (item in items) applyStateItem(item)
