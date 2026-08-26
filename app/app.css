@@ -50,6 +50,31 @@ Button.-primary {
   tint-color: #e6e6e6;
 }
 
+/* License / privacy-policy links in the onboarding disclaimer footer. The
+ * padding widens the tap target beyond the small text. */
+.footer-link {
+  color: #3b6fd6;
+  font-size: 15;
+  text-decoration: underline;
+  padding: 4 8;
+}
+
+.ns-dark .footer-link {
+  color: #8ab0ff;
+}
+
+.footer-link-separator {
+  color: #777777;
+  font-size: 15;
+  padding: 4 0;
+}
+
+/* Bundled project docs (phone-ui/document-page). LICENSE and PRIVACY are
+ * hard-wrapped plain text, so keep the size modest to limit rewrapping. */
+.document-text {
+  font-size: 13;
+}
+
 /*
  * Stands in for the lens preview when showing it would be misleading (silent
  * mode, or a disconnect explained by a flat battery). Sized by the view model
@@ -200,6 +225,29 @@ Button.pairing-link {
 }
 
 /*
+ * Permissions screen (phone-ui/permissions-page). Cards reuse the pairing-row
+ * / pairing-title / pairing-badge look above; these add the explanation body
+ * and the already-granted checkmark.
+ */
+.permissions-description {
+  font-size: 13;
+  color: #555555;
+  margin-top: 2;
+}
+
+.permissions-check {
+  font-size: 24;
+  color: #2e7d32;
+  margin-left: 10;
+}
+
+/* Continue with required permissions still missing: looks disabled but stays
+ * tappable (the tap raises an are-you-sure prompt instead of being ignored). */
+Button.permissions-primary-dimmed {
+  opacity: 0.45;
+}
+
+/*
  * Dark-mode pairing page. The cards keep their light-mode look above; here
  * they go dark-gray, and every text colour set above gets a light counterpart
  * so nothing renders dark-on-dark (the instructions) or dark-on-a-dark-card.
@@ -276,4 +324,12 @@ Button.pairing-link {
 
 .ns-dark Button.pairing-link {
   color: #7da7f5;
+}
+
+.ns-dark .permissions-description {
+  color: #b0b0b0;
+}
+
+.ns-dark .permissions-check {
+  color: #7bc47f;
 }
