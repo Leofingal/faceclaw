@@ -333,8 +333,8 @@ export class PairingViewModel extends Observable {
     this.dispose();
     if (this.onboarding) {
       setPreviewOnlyMode(false);
-      // Continue the onboarding chain: unpair the official app next.
-      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      // Continue the onboarding chain: check the glasses' firmware next.
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;
     }
     Frame.topmost()?.navigate({ moduleName: "phone-ui/main-page", clearHistory: true });
@@ -348,7 +348,7 @@ export class PairingViewModel extends Observable {
       return;
     }
     frame?.navigate({
-      moduleName: this.onboarding ? "phone-ui/onboarding-page" : "phone-ui/main-page",
+      moduleName: this.onboarding ? "phone-ui/onboarding-unpair-page" : "phone-ui/main-page",
       clearHistory: true,
     });
   }
