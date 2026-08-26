@@ -1,5 +1,12 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
-    <ActionBar title="Faceclaw">
+    <ActionBar>
+        <!-- Custom titleView: app title on the left; connection status and the
+             warning-triangle indicator right-aligned beside the overflow menu. -->
+        <GridLayout columns="auto,*,auto,auto" width="100%" verticalAlignment="center">
+            <Label col="0" text="Faceclaw" class="action-bar-title" />
+            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
+            <Label col="3" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
+        </GridLayout>
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
@@ -22,42 +29,14 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
-            <GridLayout row="1" rows="auto,auto,auto" class="p-20">
-                <StackLayout row="0" class="m-b-8">
-                    <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
-                        <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                        <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
-                    </StackLayout>
-                    <StackLayout visibility="{{ firmwareWarningVisibility }}">
-                        <Label text="{{ firmwareWarningMessage }}" textWrap="true" />
-                        <Button text="Install custom firmware" tap="{{ onInstallFirmwareTap }}" class="-primary" />
-                    </StackLayout>
-                    <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
-                        <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
-                        <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
-                    </StackLayout>
-                </StackLayout>
-                <StackLayout row="1">
-                    <rc:remote-controls />
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-                </StackLayout>
-                <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
-            </GridLayout>
+            <StackLayout row="1" class="p-20">
+                <rc:remote-controls />
+                <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+            </StackLayout>
         </GridLayout>
 
-        <GridLayout rows="auto,*" class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <StackLayout row="0" class="m-b-8">
-                <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
-                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
-                </StackLayout>
-                <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
-                <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
-                    <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
-                    <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
-                </StackLayout>
-            </StackLayout>
-            <GridLayout row="1" rows="auto,auto" columns="*,360">
+        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
+            <GridLayout rows="auto" columns="*,360">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
                     <Image
                         src="{{ displayPreview }}"
@@ -80,9 +59,31 @@
                     <rc:remote-controls />
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
-                <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
             </GridLayout>
         </GridLayout>
+        <ScrollView
+            class="warnings-modal"
+            visibility="{{ warningsModalVisibility }}"
+            width="{{ warningsModalWidth }}"
+            horizontalAlignment="center"
+            verticalAlignment="center">
+            <StackLayout class="warnings-modal-content">
+                <Label text="Attention needed" class="h2" />
+                <StackLayout visibility="{{ evenAppConflictWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
+                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ firmwareWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ firmwareWarningMessage }}" textWrap="true" />
+                    <Button text="Install custom firmware" tap="{{ onInstallFirmwareTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
+                    <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
+                </StackLayout>
+                <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
+            </StackLayout>
+        </ScrollView>
         <StackLayout
             class="system-name-modal"
             visibility="{{ textSettingEditorVisibility }}"

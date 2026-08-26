@@ -15,6 +15,29 @@ ActionItem {
   color: #ffffff;
 }
 
+/* The main page's custom titleView: title left, connection status and the
+ * warning triangle right-aligned beside the overflow menu. */
+.action-bar-title {
+  color: #ffffff;
+  font-size: 18;
+  font-weight: bold;
+  vertical-align: center;
+}
+
+.action-bar-status {
+  color: #ffffff;
+  font-size: 14;
+  margin-right: 12;
+  vertical-align: center;
+}
+
+/* The emoji brings its own yellow; the padding widens the tap target. */
+.action-bar-warning {
+  font-size: 18;
+  padding: 4 6;
+  vertical-align: center;
+}
+
 TextField {
   background-color: #ffffff;
   color: #222222;
@@ -100,6 +123,36 @@ Button.-primary {
   border-color: #222222;
   border-width: 1;
   border-radius: 8;
+}
+
+/* Modal behind the action bar's warning triangle: the problem-status warnings
+ * that used to sit inline on the main page, each with its fix-it button.
+ * The width is set from the view model (near-full-width on phones, capped on
+ * tablets); the padding lives on the content stack because a ScrollView does
+ * not apply its own padding to its content. */
+.warnings-modal {
+  margin: 16;
+  background-color: #f6f6f6;
+  color: #222222;
+  border-color: #222222;
+  border-width: 1;
+  border-radius: 8;
+}
+
+.warnings-modal-content {
+  padding: 16;
+}
+
+/* The modal stays light in dark mode; the .ns-dark pairing outguns the
+ * theme's dark-mode recolour of Label/.h2 so the title doesn't go
+ * white-on-light-gray. */
+.warnings-modal Label,
+.ns-dark .warnings-modal Label {
+  color: #222222;
+}
+
+.warnings-modal-item {
+  margin-bottom: 12;
 }
 
 /* The phone's controller for the glasses (phone-ui/remote-controls.xml). */

@@ -54,6 +54,7 @@ export class MainViewModel extends Observable {
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
+  private _warningsModalVisible = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   // A new view model is built on every navigation to the main page; these
@@ -115,7 +116,34 @@ export class MainViewModel extends Observable {
     if (this._status !== value) {
       this._status = value;
       this.notifyPropertyChange("status", value);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
+  }
+
+  /**
+   * Short connection indicator for the action bar. The full status string
+   * (which can be a sentence, e.g. a failure reason) stays available by
+   * tapping the indicator.
+   */
+  get connectionStatusLabel(): string {
+    switch (this._phase) {
+      case "connected":
+        return "Connected";
+      case "charging":
+        return "Charging";
+      case "disconnecting":
+        return "Disconnecting";
+      case "connecting":
+        // The transport reports retry loops as "Reconnecting..." with the
+        // phase still "connecting"; keep that distinction visible.
+        return this._status.startsWith("Reconnecting") ? "Reconnecting" : "Connecting";
+      default:
+        return this._status.startsWith("Failed") ? "Failed" : "Disconnected";
+    }
+  }
+
+  onConnectionStatusTap(): void {
+    void Dialogs.alert({ title: "Connection status", message: this._status, okButtonText: "OK" });
   }
 
   get displayPreview(): ImageSource | null {
@@ -179,6 +207,11 @@ export class MainViewModel extends Observable {
     return Math.floor(availableWidth / 2);
   }
 
+  /** Near-full-width on phones, capped on tablets (the 32 clears the 16 margins). */
+  get warningsModalWidth(): number {
+    return Math.min(Screen.mainScreen.widthDIPs - 32, 480);
+  }
+
   get portraitLayoutVisibility(): "visible" | "collapse" {
     return this._layoutOrientation === "portrait" ? "visible" : "collapse";
   }
@@ -197,6 +230,7 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
+    this.notifyPropertyChange("warningsModalWidth", this.warningsModalWidth);
   }
 
   get activeTextSettingId(): string | null {
@@ -361,6 +395,7 @@ export class MainViewModel extends Observable {
       this._evenAppConflictWarningVisible = value;
       this.notifyPropertyChange("evenAppConflictWarningVisible", value);
       this.notifyPropertyChange("evenAppConflictWarningVisibility", this.evenAppConflictWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -388,6 +423,7 @@ export class MainViewModel extends Observable {
       this._firmwareWarningVisible = value;
       this.notifyPropertyChange("firmwareWarningVisible", value);
       this.notifyPropertyChange("firmwareWarningVisibility", this.firmwareWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -444,6 +480,7 @@ export class MainViewModel extends Observable {
       this._batteryOptimizationWarningVisible = value;
       this.notifyPropertyChange("batteryOptimizationWarningVisible", value);
       this.notifyPropertyChange("batteryOptimizationWarningVisibility", this.batteryOptimizationWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -452,7 +489,49 @@ export class MainViewModel extends Observable {
   }
 
   onAllowBackgroundUsageTap(): void {
+    this.setWarningsModalVisible(false);
     dashboardController.requestBatteryOptimizationExemption();
+  }
+
+  // ---- the action bar's warning triangle and the modal behind it ----
+
+  get anyWarningVisible(): boolean {
+    return (
+      this._evenAppConflictWarningVisible ||
+      this._firmwareWarningVisible ||
+      this._batteryOptimizationWarningVisible
+    );
+  }
+
+  get warningIconVisibility(): "visible" | "collapse" {
+    return this.anyWarningVisible ? "visible" : "collapse";
+  }
+
+  get warningsModalVisibility(): "visible" | "collapse" {
+    return this._warningsModalVisible ? "visible" : "collapse";
+  }
+
+  onWarningIconTap(): void {
+    this.setWarningsModalVisible(true);
+  }
+
+  onWarningsModalCloseTap(): void {
+    this.setWarningsModalVisible(false);
+  }
+
+  private setWarningsModalVisible(value: boolean): void {
+    if (this._warningsModalVisible !== value) {
+      this._warningsModalVisible = value;
+      this.notifyPropertyChange("warningsModalVisibility", this.warningsModalVisibility);
+    }
+  }
+
+  private refreshWarningIndicator(): void {
+    this.notifyPropertyChange("warningIconVisibility", this.warningIconVisibility);
+    // Don't leave the modal open showing nothing once the last warning clears.
+    if (!this.anyWarningVisible) {
+      this.setWarningsModalVisible(false);
+    }
   }
 
   get phase(): "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" {
@@ -466,6 +545,7 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("buttonLabel", this.buttonLabel);
       this.notifyPropertyChange("canRun", this.canRun);
       this.notifyPropertyChange("connectItemEnabled", this.connectItemEnabled);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
   }
 
@@ -565,6 +645,7 @@ export class MainViewModel extends Observable {
   }
 
   async onInstallFirmwareTap(): Promise<void> {
+    this.setWarningsModalVisible(false);
     await this.openFlashPage("install");
   }
 
@@ -624,6 +705,7 @@ export class MainViewModel extends Observable {
   }
 
   onOpenEvenAppSettingsTap(): void {
+    this.setWarningsModalVisible(false);
     dashboardController.openEvenAppSettings();
   }
 
