@@ -29,10 +29,12 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
-            <StackLayout row="1" class="p-20">
-                <rc:remote-controls />
-                <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-            </StackLayout>
+            <!-- The controls get the whole star row so the active tab's
+                 content can center in the leftover height. -->
+            <GridLayout row="1" rows="*,auto" class="p-20">
+                <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
+                <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+            </GridLayout>
         </GridLayout>
 
         <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
@@ -56,7 +58,7 @@
                     <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
                 </GridLayout>
                 <StackLayout row="0" col="1" class="m-l-16">
-                    <rc:remote-controls />
+                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
             </GridLayout>
@@ -84,13 +86,19 @@
                 <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
             </StackLayout>
         </ScrollView>
+        <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
+             shrunk) page, so it sits in the space below the mirror and only
+             overlaps the mirror when the open keyboard leaves too little
+             room. The tabbed controls are collapsed while it is up. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ textSettingEditorVisibility }}"
             horizontalAlignment="stretch"
-            verticalAlignment="top">
+            verticalAlignment="bottom">
             <Label text="{{ activeTextEditorTitle }}" class="h2" />
-            <Label text="{{ activeTextSettingTitle }}" />
+            <!-- Per-field labels only matter with two fields; a single-field
+                 edit's field title is the same string as the editor title. -->
+            <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
             <TextField
                 id="settingsTextField"
                 text="{{ activeTextSettingValue }}"

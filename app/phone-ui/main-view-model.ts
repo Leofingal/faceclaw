@@ -20,8 +20,6 @@ import {
   displayModeSetting,
   mirrorTouchSetting,
   onAnySettingChanged,
-  showBrightnessControlSetting,
-  showScreenSizeSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
@@ -33,6 +31,12 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
+
+type ControlsTab = "settings" | "watch" | "ring";
+
+// Survives navigation round-trips (a fresh view model is built per visit) but
+// not process restarts.
+let lastControlsTab: ControlsTab = "watch";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
@@ -212,6 +216,22 @@ export class MainViewModel extends Observable {
     return Math.min(Screen.mainScreen.widthDIPs - 32, 480);
   }
 
+  /**
+   * The simulated watch face (and the Back/Menu row under it) is capped at a
+   * 1.5:1 face aspect; on narrow phones the available width governs instead.
+   */
+  get watchFaceWidth(): number {
+    // Must match .touchpad height in app.css.
+    const faceHeight = 230;
+    const available =
+      this._layoutOrientation === "landscape"
+        ? // The landscape side panel column (see main-page.xml) minus its
+          // m-l-16 margin and the controls' own 8+8 margins.
+          360 - 32
+        : Screen.mainScreen.widthDIPs - 56; // p-20 padding + controls margins
+    return Math.min(available, Math.round(faceHeight * 1.5));
+  }
+
   get portraitLayoutVisibility(): "visible" | "collapse" {
     return this._layoutOrientation === "portrait" ? "visible" : "collapse";
   }
@@ -231,6 +251,7 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
     this.notifyPropertyChange("warningsModalWidth", this.warningsModalWidth);
+    this.notifyPropertyChange("watchFaceWidth", this.watchFaceWidth);
   }
 
   get activeTextSettingId(): string | null {
@@ -243,6 +264,8 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("activeTextSettingId", value);
       this.notifyPropertyChange("textSettingEditorVisibility", this.textSettingEditorVisibility);
       this.notifyPropertyChange("isTextSettingEditorActive", this.isTextSettingEditorActive);
+      // Keyboard-input mode: the tabbed controls make way for the editor.
+      this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
     }
   }
 
@@ -871,22 +894,69 @@ export class MainViewModel extends Observable {
     return this.mirrorGesture(swipeKind(args.direction), args);
   }
 
-  // ---- display mode and brightness, beside the mirror ----
+  // ---- the tabbed controls area below the mirror ----
   //
-  // Both controls are hidden unless enabled in Settings > Phone display
-  // (the settings themselves stay reachable through the Settings app).
+  // Three tabs: Settings (screen size + brightness), Watch (the simulated
+  // watch face), Ring (simulated R1 inputs). The whole area collapses while a
+  // text setting is being edited so the editor gets the space instead.
 
-  get screenSizeControlVisibility(): "visible" | "collapse" {
-    return showScreenSizeSetting.get() ? "visible" : "collapse";
+  private _controlsTab: ControlsTab = lastControlsTab;
+
+  get controlsVisibility(): "visible" | "collapse" {
+    return this.isTextSettingEditorActive ? "collapse" : "visible";
   }
 
-  get brightnessControlVisibility(): "visible" | "collapse" {
-    return showBrightnessControlSetting.get() ? "visible" : "collapse";
+  get settingsTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "settings" ? "visible" : "collapse";
   }
 
-  get displayControlsVisibility(): "visible" | "collapse" {
-    return showScreenSizeSetting.get() || showBrightnessControlSetting.get() ? "visible" : "collapse";
+  get watchTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "watch" ? "visible" : "collapse";
   }
+
+  get ringTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "ring" ? "visible" : "collapse";
+  }
+
+  get settingsTabClass(): string {
+    return this._controlsTab === "settings" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  get watchTabClass(): string {
+    return this._controlsTab === "watch" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  get ringTabClass(): string {
+    return this._controlsTab === "ring" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  onSettingsTabTap(): void {
+    this.setControlsTab("settings");
+  }
+
+  onWatchTabTap(): void {
+    this.setControlsTab("watch");
+  }
+
+  onRingTabTap(): void {
+    this.setControlsTab("ring");
+  }
+
+  private setControlsTab(tab: ControlsTab): void {
+    if (this._controlsTab === tab) return;
+    this._controlsTab = tab;
+    // Remembered across navigations (module-level) so the page comes back on
+    // the tab it left on; deliberately not persisted to disk.
+    lastControlsTab = tab;
+    this.notifyPropertyChange("settingsTabVisibility", this.settingsTabVisibility);
+    this.notifyPropertyChange("watchTabVisibility", this.watchTabVisibility);
+    this.notifyPropertyChange("ringTabVisibility", this.ringTabVisibility);
+    this.notifyPropertyChange("settingsTabClass", this.settingsTabClass);
+    this.notifyPropertyChange("watchTabClass", this.watchTabClass);
+    this.notifyPropertyChange("ringTabClass", this.ringTabClass);
+  }
+
+  // ---- display mode and brightness, on the Settings tab ----
 
   get displayModeLabel(): string {
     return displayModeLabel(displayModeSetting.get()) + " ▾";
@@ -950,9 +1020,6 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("brightnessSliderEnabled", this.brightnessSliderEnabled);
     this.notifyPropertyChange("brightnessPercent", this.brightnessPercent);
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
-    this.notifyPropertyChange("screenSizeControlVisibility", this.screenSizeControlVisibility);
-    this.notifyPropertyChange("brightnessControlVisibility", this.brightnessControlVisibility);
-    this.notifyPropertyChange("displayControlsVisibility", this.displayControlsVisibility);
   }
 
   private readLayoutOrientation(): LayoutOrientation {

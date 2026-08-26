@@ -60,6 +60,15 @@ function applySettingsTextFieldContrast(textField: TextField): void {
   nativeTextField.setSelectAllOnFocus(true)
 }
 
+/**
+ * Leaving keyboard-input mode: the glasses navigated away from the text
+ * setting, so the phone's keyboard has nothing to type into any more.
+ */
+function dismissTextEditorKeyboard(page: Page): void {
+  page.getViewById<TextField>('settingsTextField')?.dismissSoftInput()
+  page.getViewById<TextField>('secondarySettingsTextField')?.dismissSoftInput()
+}
+
 function focusTextEditor(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
@@ -109,6 +118,8 @@ export function loaded(args: EventData) {
       if (propertyArgs.propertyName === 'activeTextSettingId') {
         if (model.isTextSettingEditorActive) {
           focusTextEditor(page)
+        } else {
+          dismissTextEditorKeyboard(page)
         }
       }
     },

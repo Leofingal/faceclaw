@@ -308,22 +308,6 @@ export const mirrorTouchSetting = new ConfigSettingBoolean({
     "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
 });
 
-export const showBrightnessControlSetting = new ConfigSettingBoolean({
-  id: "show-brightness-control",
-  label: "Show brightness control",
-  storageKey: "phone.showBrightnessControl",
-  defaultValue: false,
-  description: "Show the brightness slider above the mirror on the phone's main screen.",
-});
-
-export const showScreenSizeSetting = new ConfigSettingBoolean({
-  id: "show-screen-size",
-  label: "Show screen size",
-  storageKey: "phone.showScreenSize",
-  defaultValue: false,
-  description: "Show the screen-size (display mode) picker above the mirror on the phone's main screen.",
-});
-
 // Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
 // every watch message, so a change applies immediately.
 export const watchRemoteEnabledSetting = new ConfigSettingBoolean({

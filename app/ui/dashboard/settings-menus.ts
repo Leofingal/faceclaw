@@ -48,8 +48,6 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
-  showBrightnessControlSetting,
-  showScreenSizeSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
@@ -161,8 +159,6 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(previewColorSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
-        toggleSettingMenuItem(showBrightnessControlSetting),
-        toggleSettingMenuItem(showScreenSizeSetting),
       ],
     },
     {

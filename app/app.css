@@ -159,8 +159,58 @@ Button.-primary {
 .remote-controls {
   margin: 0 8 0 8;
 }
-.display-controls {
-  margin-bottom: 6;
+/* The Settings / Watch / Ring tab bar above the controls. */
+.controls-tab-bar {
+  margin-bottom: 8;
+}
+.tab-button {
+  font-size: 14;
+  padding: 8 0;
+  margin: 0 2;
+  border-radius: 6;
+  background-color: #e2e2e2;
+  color: #333333;
+}
+.tab-button-selected {
+  background-color: #424242;
+  color: #ffffff;
+}
+/* The wakeword button at the tab bar's right edge: icon-only, narrower than
+ * the tabs, and never in the selected state (it isn't a tab). It is a
+ * button-styled GridLayout (Buttons can't hold images), so it borrows the
+ * .tab-button look and adds the elevation MaterialButtons get for free. */
+.tab-mic-button {
+  width: 56;
+  /* The real MaterialButtons render 48dp tall inside a 60dp layout box (6dp
+   * insets top and bottom); the margins and explicit height reproduce that.
+   * The height also bounds the tile's measure, without which its star row
+   * would collapse to content and pin the icon to the top. */
+  height: 48;
+  margin: 6 2;
+  android-elevation: 2;
+}
+.tab-mic-icon {
+  height: 20;
+  tint-color: #333333;
+}
+.ns-dark .tab-mic-icon {
+  tint-color: #cccccc;
+}
+.ns-dark .tab-button {
+  background-color: #333333;
+  color: #cccccc;
+}
+.ns-dark .tab-button-selected {
+  background-color: #e2e2e2;
+  color: #222222;
+}
+/* Settings tab rows. */
+.settings-row {
+  margin-bottom: 8;
+}
+.settings-row-label {
+  font-size: 14;
+  margin-right: 10;
 }
 .mode-button {
   font-size: 13;
@@ -214,20 +264,12 @@ Button.-primary {
   margin: 2;
   font-size: 14;
 }
-.ring-row {
-  margin-top: 4;
-}
-.ring-label {
-  font-size: 12;
-  color: #666666;
-  margin: 0 6 0 4;
-}
-.ring-button {
-  width: 44;
-  height: 36;
-  margin: 1;
+/* Ring tab: simulated R1 inputs. */
+.ring-pad-button {
+  margin: 3;
   padding: 0;
-  font-size: 13;
+  height: 52;
+  font-size: 14;
 }
 /*
  * Pairing scan list (phone-ui/pairing-page). Rows are Repeater items: product
