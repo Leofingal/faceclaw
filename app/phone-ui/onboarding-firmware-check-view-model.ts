@@ -125,7 +125,11 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       frame.goBack();
       return;
     }
-    frame?.navigate({ moduleName: "phone-ui/onboarding-unpair-page", clearHistory: true });
+    frame?.navigate({
+      moduleName: "phone-ui/pairing-page",
+      context: { onboarding: true },
+      clearHistory: true,
+    });
   }
 
   /** Escape hatch when the check itself fails: flash as if stock firmware had been detected. */
