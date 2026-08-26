@@ -36,12 +36,39 @@ export type PushToTalkOptions = {
    * Ignored when the mic is already running for another holder.
    */
   endpointing?: boolean;
+  /**
+   * "My voice only": verify the captured utterance against the enrolled
+   * wearer voice-print, and suppress the final transcript when someone else
+   * spoke. wearerEmbedding is the L2-normalized profile centroid.
+   */
+  speakerVerification?: {
+    speakerModelPath: string;
+    wearerEmbedding: Float32Array;
+    threshold: number;
+  };
+  /** Spectral noise suppression on the decoded stream (Microphones config). */
+  noiseSuppression?: boolean;
+  /**
+   * Sonic Radar beam gating: only listen to the configured wedge (device
+   * frame). Null/absent leaves the mic omnidirectional.
+   */
+  beamFilter?: { centerDeg: number; halfWidthDeg: number } | null;
 };
 
 /** Who currently wants the mic running. */
 type CaptureHolder = "ptt" | "continuous";
 
 export type RawPcmListener = (pcm: Uint8Array) => void;
+
+/**
+ * Per-packet DSP metadata the glasses firmware appends to each 50 ms audio
+ * packet: direction-of-arrival in signed degrees (0 = straight ahead,
+ * positive to the wearer's right) and a signal-strength ratio used as a
+ * confidence/energy proxy. Computed on the raw stereo capture before the
+ * firmware's mono downmix, so it survives even though only mono PCM arrives.
+ */
+export type MicFrameMeta = { angleDegrees: number; ssr: number };
+export type FrameMetaListener = (meta: MicFrameMeta) => void;
 
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
@@ -63,7 +90,13 @@ export class FaceclawVoiceControlBridge {
   // listeners. STT capture preempts it — a live assistant/transcribe session
   // owns the single G2 mic and the raw tap is stopped for its duration.
   private readonly rawPcmListeners = new Set<RawPcmListener>();
+  private readonly frameMetaListeners = new Set<FrameMetaListener>();
   private rawActive = false;
+  // Set when the current capture session runs "my voice only" verification;
+  // a non-wearer verdict arrives just before the final transcript and makes
+  // the bridge swallow it.
+  private verificationActive = false;
+  private verificationRejected = false;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -110,6 +143,12 @@ export class FaceclawVoiceControlBridge {
     return () => this.rawPcmListeners.delete(listener);
   }
 
+  /** Subscribe to per-packet firmware DSP metadata (DOA angle + SSR). */
+  onFrameMeta(listener: FrameMetaListener): () => void {
+    this.frameMetaListeners.add(listener);
+    return () => this.frameMetaListeners.delete(listener);
+  }
+
   /**
    * Start the decode-only raw-PCM tap for an EvenHub mic app. Fails (returns
    * false) if an STT capture already owns the mic; the caller re-tries when its
@@ -123,6 +162,11 @@ export class FaceclawVoiceControlBridge {
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setSaveRecordings(false);
     this.controller?.setEndpointing(false);
+    // Raw means raw: the Microphones session (and EvenHub apps) get the
+    // unprocessed stream and run their own beam/suppression processing.
+    this.controller?.setNoiseSuppression(false);
+    this.controller?.setBeamFilter(false, 0, 180);
+    this.controller?.clearSpeakerVerification();
     this.cloudClient = null;
     this.rawActive = true;
     this.started = true;
@@ -155,6 +199,24 @@ export class FaceclawVoiceControlBridge {
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setSaveRecordings(options.saveRecording);
     this.controller?.setEndpointing(Boolean(options.endpointing));
+    this.controller?.setNoiseSuppression(Boolean(options.noiseSuppression));
+    if (options.beamFilter) {
+      this.controller?.setBeamFilter(true, Math.round(options.beamFilter.centerDeg), Math.round(options.beamFilter.halfWidthDeg));
+    } else {
+      this.controller?.setBeamFilter(false, 0, 180);
+    }
+    this.verificationRejected = false;
+    if (options.speakerVerification) {
+      this.verificationActive = true;
+      this.controller?.setSpeakerVerification(
+        options.speakerVerification.speakerModelPath,
+        toJavaFloats(options.speakerVerification.wearerEmbedding),
+        options.speakerVerification.threshold,
+      );
+    } else {
+      this.verificationActive = false;
+      this.controller?.clearSpeakerVerification();
+    }
 
     const cloudClient = this.createCloudClient(options);
     if (cloudClient) {
@@ -270,9 +332,23 @@ export class FaceclawVoiceControlBridge {
           this.rawPcmListeners.forEach((listener) => listener(bytes));
         }
       },
+      onFrameMeta: (angleDegrees: number, ssr: number) => {
+        if (this.frameMetaListeners.size === 0) return;
+        const meta = { angleDegrees: Number(angleDegrees), ssr: Number(ssr) };
+        this.frameMetaListeners.forEach((listener) => listener(meta));
+      },
       onSpeechEnd: () => {
         for (const listener of this.speechEndListeners) {
           listener();
+        }
+      },
+      onSpeakerVerified: (isWearer: boolean, similarity: number) => {
+        if (!this.verificationActive) return;
+        this.verificationRejected = !isWearer;
+        if (!isWearer) {
+          this.setStatus(
+            `Ignored — not your enrolled voice (match ${Math.round(Number(similarity) * 100)}%).`,
+          );
         }
       },
     });
@@ -280,6 +356,13 @@ export class FaceclawVoiceControlBridge {
   }
 
   private emitTranscript(text: string, isFinal: boolean): void {
+    // "My voice only": a rejected session's final transcript is emptied so
+    // nothing downstream (assistant, dictation) acts on another speaker's
+    // words. The verification verdict is posted before the final, and cloud
+    // finals arrive over the network later still, so the flag is settled.
+    if (isFinal && this.verificationActive && this.verificationRejected) {
+      text = "";
+    }
     const event = { text, isFinal };
     for (const listener of this.transcriptListeners) {
       listener(event);
@@ -292,6 +375,14 @@ export class FaceclawVoiceControlBridge {
       listener({ status });
     }
   }
+}
+
+function toJavaFloats(values: Float32Array): any {
+  const javaFloats = Array.create("float", values.length);
+  for (let i = 0; i < values.length; i++) {
+    javaFloats[i] = values[i]!;
+  }
+  return javaFloats;
 }
 
 export const voiceControlBridge = new FaceclawVoiceControlBridge();

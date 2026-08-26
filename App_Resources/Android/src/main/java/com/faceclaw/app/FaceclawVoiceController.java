@@ -90,6 +90,26 @@ public class FaceclawVoiceController {
     private volatile boolean endpointing;
     private final EndpointDetector endpointDetector = new EndpointDetector();
     private java.io.ByteArrayOutputStream recordingPcm;
+    // Speaker verification against the enrolled wearer voice-print ("my voice
+    // only" command gating). Configured before start(); the utterance PCM is
+    // buffered (capped) and verified once at session end.
+    private static final int VERIFY_MAX_SAMPLES = SAMPLE_RATE * 10;
+    private static final int VERIFY_MIN_SAMPLES = SAMPLE_RATE;
+    private volatile String verifySpeakerModelPath;
+    private volatile float[] verifyWearerEmbedding;
+    private volatile float verifyThreshold = 0.8f;
+    private short[] verifyBuffer;
+    private int verifyCount;
+    // Global mic processing (Microphones app config): spectral noise
+    // suppression and firmware-DoA beam gating, applied to every capture
+    // session that opts in (assistant push-to-talk, Transcribe, hands-free).
+    // The raw tap opts out — raw means raw, and the Microphones session does
+    // its own beam-compensated processing on that path.
+    private volatile boolean suppressionEnabled;
+    private volatile boolean beamFilterEnabled;
+    private volatile int beamCenterDeg;
+    private volatile int beamHalfWidthDeg = 180;
+    private FaceclawNoiseSuppressor suppressor;
     private long queuedPackets;
     private long queueDroppedPackets;
     private long decodedSamples;
@@ -123,6 +143,68 @@ public class FaceclawVoiceController {
      */
     public void setEndpointing(boolean endpointing) {
         this.endpointing = endpointing;
+    }
+
+    /**
+     * Verify this session's speaker against the enrolled wearer voice-print
+     * and report the result via onSpeakerVerified just before the final
+     * transcript. Must be set before {@link #start}; pass a null model path
+     * to disable.
+     */
+    public void setSpeakerVerification(String speakerModelPath, float[] wearerEmbedding, float threshold) {
+        this.verifySpeakerModelPath = speakerModelPath;
+        this.verifyWearerEmbedding = wearerEmbedding;
+        this.verifyThreshold = threshold > 0 ? threshold : 0.8f;
+    }
+
+    public void clearSpeakerVerification() {
+        this.verifySpeakerModelPath = null;
+        this.verifyWearerEmbedding = null;
+    }
+
+    /** Spectral noise suppression on the decoded stream. Safe to flip mid-run. */
+    public void setNoiseSuppression(boolean enabled) {
+        this.suppressionEnabled = enabled;
+    }
+
+    /**
+     * Direction gating from the Sonic Radar beam: packets whose firmware
+     * direction-of-arrival falls outside centerDeg ± halfWidthDeg (device
+     * frame, 0 = straight ahead, positive right) are dropped before any
+     * consumer sees them. Safe to update mid-run.
+     */
+    public void setBeamFilter(boolean enabled, int centerDeg, int halfWidthDeg) {
+        this.beamFilterEnabled = enabled;
+        this.beamCenterDeg = centerDeg;
+        this.beamHalfWidthDeg = Math.max(5, Math.min(180, halfWidthDeg));
+    }
+
+    private boolean withinBeam(int angleDegrees) {
+        int delta = angleDegrees - beamCenterDeg;
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        return Math.abs(delta) <= beamHalfWidthDeg;
+    }
+
+    private void applySuppression(short[] pcm, int count) {
+        try {
+            if (suppressor == null) {
+                suppressor = new FaceclawNoiseSuppressor(SAMPLE_RATE);
+            }
+            byte[] le = new byte[count * 2];
+            for (int i = 0; i < count; i++) {
+                le[i * 2] = (byte) (pcm[i] & 0xff);
+                le[i * 2 + 1] = (byte) ((pcm[i] >> 8) & 0xff);
+            }
+            byte[] cleaned = suppressor.process(le);
+            int cleanedCount = Math.min(count, cleaned.length / 2);
+            for (int i = 0; i < cleanedCount; i++) {
+                pcm[i] = (short) ((cleaned[i * 2] & 0xff) | (cleaned[i * 2 + 1] << 8));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "noise suppression failed; passing audio through", t);
+            suppressionEnabled = false;
+        }
     }
 
     public void start(String requestedMode) {
@@ -195,7 +277,13 @@ public class FaceclawVoiceController {
             }
             lc3Decoder = new FaceclawLc3Decoder();
             endpointDetector.reset();
+            if (suppressor != null) {
+                suppressor.reset();
+            }
             recordingPcm = saveRecordings ? new java.io.ByteArrayOutputStream(SAMPLE_RATE * 2 * 4) : null;
+            boolean verifying = verifySpeakerModelPath != null && verifyWearerEmbedding != null;
+            verifyBuffer = verifying ? new short[VERIFY_MAX_SAMPLES] : null;
+            verifyCount = 0;
             if (!startG2Audio()) {
                 emitStatus("Could not start G2 microphone input.");
                 return;
@@ -205,6 +293,10 @@ public class FaceclawVoiceController {
                     ? "Listening (cloud)..."
                     : "Listening...");
             processG2Audio();
+            // Verification result must precede the final transcript so the
+            // TS bridge can suppress a non-wearer command before it is acted
+            // on (the callbacks are posted in order to the main handler).
+            runSpeakerVerification();
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
             if (currentMode == VoiceInputMode.ONBOARD) {
@@ -374,15 +466,38 @@ public class FaceclawVoiceController {
                 continue;
             }
             decodedSamples += count;
+            // Global mic processing from the Microphones app config: the
+            // beam filter drops packets whose firmware direction-of-arrival
+            // falls outside the listening wedge (isolating the aimed talker
+            // for every consumer, recognition included), and the spectral
+            // noise suppressor cleans what remains before it reaches the
+            // recognizer, cloud PCM, endpointing, or speaker verification.
+            int angleDegrees = currentDecoder.getLastAngleDegrees();
+            int ssr = currentDecoder.getLastSsr();
+            if (beamFilterEnabled && ssr > 0 && !withinBeam(angleDegrees)) {
+                emitFrameMeta(angleDegrees, ssr);
+                maybeEmitAudioStats(false);
+                continue;
+            }
+            if (suppressionEnabled) {
+                applySuppression(pcm, count);
+            }
             if (recordingPcm != null) {
                 appendRecording(pcm, count);
+            }
+            if (verifyBuffer != null && verifyCount < VERIFY_MAX_SAMPLES) {
+                int copied = Math.min(count, VERIFY_MAX_SAMPLES - verifyCount);
+                System.arraycopy(pcm, 0, verifyBuffer, verifyCount, copied);
+                verifyCount += copied;
             }
             if (endpointing && endpointDetector.accept(pcm, count)) {
                 emitSpeechEnd();
             }
-            if (mode == VoiceInputMode.CLOUD) {
-                emitPcm(pcm, count);
-            } else {
+            // PCM and frame metadata flow in every mode so levels, recording,
+            // and the Microphones radar keep working alongside onboard ASR.
+            emitPcm(pcm, count);
+            emitFrameMeta(angleDegrees, ssr);
+            if (mode != VoiceInputMode.CLOUD) {
                 float[] samples = new float[count];
                 for (int i = 0; i < count; i++) {
                     samples[i] = pcm[i] / 32768.0f;
@@ -580,6 +695,83 @@ public class FaceclawVoiceController {
             le[i * 2 + 1] = (byte) ((s >> 8) & 0xff);
         }
         mainHandler.post(() -> currentListener.onPcm(le));
+    }
+
+    /**
+     * Embed the session's buffered utterance and compare it to the enrolled
+     * wearer voice-print. Fails open: a session too short to verify, or a
+     * model that will not load, counts as the wearer rather than silencing
+     * every command.
+     */
+    private void runSpeakerVerification() {
+        short[] buffer = verifyBuffer;
+        float[] wearer = verifyWearerEmbedding;
+        String modelPath = verifySpeakerModelPath;
+        verifyBuffer = null;
+        if (buffer == null || wearer == null || modelPath == null) {
+            return;
+        }
+        if (verifyCount < VERIFY_MIN_SAMPLES) {
+            emitSpeakerVerified(true, 0f);
+            return;
+        }
+        FaceclawSpeakerId speakerId = cachedSpeakerId(modelPath);
+        try {
+            byte[] le = new byte[verifyCount * 2];
+            for (int i = 0; i < verifyCount; i++) {
+                short s = buffer[i];
+                le[i * 2] = (byte) (s & 0xff);
+                le[i * 2 + 1] = (byte) ((s >> 8) & 0xff);
+            }
+            float[] embedding = speakerId.embed(le, SAMPLE_RATE);
+            if (embedding == null || embedding.length != wearer.length) {
+                emitSpeakerVerified(true, 0f);
+                return;
+            }
+            double dot = 0;
+            for (int i = 0; i < embedding.length; i++) {
+                dot += (double) embedding[i] * wearer[i];
+            }
+            boolean isWearer = dot >= verifyThreshold;
+            Log.i(TAG, "speaker verification similarity=" + String.format(java.util.Locale.US, "%.3f", dot)
+                    + " threshold=" + verifyThreshold + " isWearer=" + isWearer);
+            emitSpeakerVerified(isWearer, (float) dot);
+        } catch (Throwable t) {
+            Log.w(TAG, "speaker verification failed", t);
+            emitSpeakerVerified(true, 0f);
+        }
+    }
+
+    // The 28 MB embedding model takes seconds to load; keep one instance
+    // across capture sessions so verification adds only the embed time.
+    private static FaceclawSpeakerId sharedSpeakerId;
+    private static String sharedSpeakerIdPath;
+
+    private static synchronized FaceclawSpeakerId cachedSpeakerId(String modelPath) {
+        if (sharedSpeakerId == null || !modelPath.equals(sharedSpeakerIdPath)) {
+            if (sharedSpeakerId != null) {
+                sharedSpeakerId.close();
+            }
+            sharedSpeakerId = new FaceclawSpeakerId(modelPath);
+            sharedSpeakerIdPath = modelPath;
+        }
+        return sharedSpeakerId;
+    }
+
+    private void emitSpeakerVerified(boolean isWearer, float similarity) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        mainHandler.post(() -> currentListener.onSpeakerVerified(isWearer, similarity));
+    }
+
+    private void emitFrameMeta(int angleDegrees, int ssr) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        mainHandler.post(() -> currentListener.onFrameMeta(angleDegrees, ssr));
     }
 
     private void emitSpeechEnd() {

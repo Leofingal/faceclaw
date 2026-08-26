@@ -66,6 +66,8 @@ import {
   uninstallEvenHubPackage,
 } from "../apps/evenhub/installed-apps";
 import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
+import { wearerVerificationOptions } from "../apps/microphones/speakers";
+import { micSession } from "../apps/microphones/mic-session";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -1563,6 +1565,13 @@ class DashboardController {
           sonioxApiKey: sonioxApiKeySetting.get(),
           saveRecording: saveVoiceRecordingsSetting.get(),
           endpointing,
+          // "My voice only" (Microphones app): verify command utterances
+          // against the enrolled wearer voice-print; non-matching speakers'
+          // finals are suppressed by the bridge.
+          speakerVerification: wearerVerificationOptions() ?? undefined,
+          // The Microphones app's processing config applies to every capture:
+          // spectral noise suppression and the Sonic Radar listening beam.
+          ...micSession.captureProcessingOptions(),
         };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);

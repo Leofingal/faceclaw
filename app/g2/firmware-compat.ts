@@ -78,6 +78,17 @@ export function hasCustomFirmware(info: FirmwareInfo): boolean {
   return REQUIRED_FIRMWARE_EXTENSIONS.every((extension) => tokens.includes(extension));
 }
 
+/**
+ * True when the firmware advertises the optional mic-control extension: the
+ * private field-103/104 channel for per-temple multi-microphone capture that
+ * the Microphones app's 4-mic array mode and beamforming need. Absent on the
+ * stock single-mono-stream path, which still works (firmware-computed
+ * direction of arrival, one mixed channel).
+ */
+export function hasMicControl(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes("micctl");
+}
+
 /** The higher of the two arms' reported versions, or "" if none reported. */
 export function reportedFirmwareVersion(info: FirmwareInfo): string {
   const versions = [info.leftVersion, info.rightVersion].map((v) => v.trim()).filter(Boolean);

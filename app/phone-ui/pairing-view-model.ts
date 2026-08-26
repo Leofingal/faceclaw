@@ -46,8 +46,8 @@ const NO_RESULTS_HINT_AFTER_MS = 10_000;
  * re-renders the pair/ring lists at a calm cadence, and saves the chosen
  * addresses plus the decoded identity when the user continues.
  *
- * Selection is always a deliberate tap (no auto-select on a single result),
- * mirroring SybilSight's pairing flow: a strong signal is a hint, not consent.
+ * Selection is always a deliberate tap (no auto-select on a single result):
+ * a strong signal is a hint, not consent.
  */
 export class PairingViewModel extends Observable {
   private readonly onboarding: boolean;

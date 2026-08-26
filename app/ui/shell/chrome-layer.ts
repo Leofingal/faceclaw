@@ -1,5 +1,7 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { truncateText } from "../../graphics/textwrap";
+import { activeAmbientCards } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
@@ -8,6 +10,7 @@ import { renderIcon, renderIconWithGlyph, type IconName } from "../../graphics/i
 import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
+import { lineStep } from "../metrics";
 import {
   MIN_WINDOW_HEIGHT,
   minWindowTop,
@@ -192,6 +195,7 @@ export class ShellChromeLayer implements Layer {
       this.drawSidebar(image, state);
     }
     this.drawTopBar(image, state);
+    drawAmbientCards(image);
     return image;
   }
 
@@ -379,6 +383,50 @@ export class ShellChromeLayer implements Layer {
       x -= itemGap;
     }
     return x + itemGap;
+  }
+}
+
+// Ambient cards (encounter popups): compact and deliberately unobtrusive,
+// anchored to the bottom-right of the window band and stacking upward, clear
+// of the caption area's left-aligned text. Never interactive.
+const AMBIENT_CARD_WIDTH = 230;
+const AMBIENT_CARD_MARGIN = 6;
+const AMBIENT_CARD_GAP = 4;
+const AMBIENT_CARD_PADDING_X = 8;
+const AMBIENT_CARD_PADDING_Y = 4;
+const AMBIENT_MAX_LINES_PER_CARD = 3;
+
+/**
+ * Paint the active ambient cards bottom-up: the oldest card sits at the very
+ * bottom of the window band and newer ones stack above it. Cards that would
+ * cross into the top bar are dropped rather than clipped.
+ */
+function drawAmbientCards(image: GrayImage): void {
+  const cards = activeAmbientCards();
+  if (!cards.length) return;
+  const font = getDefaultSmallFont();
+  const bandTop = minWindowTop();
+  const bandBottom = bandTop + MIN_WINDOW_HEIGHT;
+  const x = G2_LENS_WIDTH - AMBIENT_CARD_WIDTH - AMBIENT_CARD_MARGIN;
+  const textWidth = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;
+  let bottom = bandBottom - AMBIENT_CARD_MARGIN;
+  for (const card of cards) {
+    const lines = [card.title, ...card.lines].slice(0, 1 + AMBIENT_MAX_LINES_PER_CARD);
+    const height = 2 * AMBIENT_CARD_PADDING_Y + lines.length * lineStep(font);
+    const y = bottom - height;
+    if (y < bandTop + TOP_BAR_HEIGHT) break;
+    image.fillRoundedRect(x, y, AMBIENT_CARD_WIDTH, height, SHELL_OPAQUE_BLACK, 6);
+    image.drawRoundedRect(x, y, AMBIENT_CARD_WIDTH, height, 90, 6);
+    for (let index = 0; index < lines.length; index++) {
+      image.drawText(
+        font,
+        x + AMBIENT_CARD_PADDING_X,
+        y + AMBIENT_CARD_PADDING_Y + index * lineStep(font),
+        truncateText(font, lines[index]!, textWidth),
+        index === 0 ? 220 : 160,
+      );
+    }
+    bottom = y - AMBIENT_CARD_GAP;
   }
 }
 
