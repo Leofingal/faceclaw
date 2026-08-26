@@ -50,6 +50,31 @@ Button.-primary {
   tint-color: #e6e6e6;
 }
 
+/* License / privacy-policy links in the onboarding disclaimer footer. The
+ * padding widens the tap target beyond the small text. */
+.footer-link {
+  color: #3b6fd6;
+  font-size: 15;
+  text-decoration: underline;
+  padding: 4 8;
+}
+
+.ns-dark .footer-link {
+  color: #8ab0ff;
+}
+
+.footer-link-separator {
+  color: #777777;
+  font-size: 15;
+  padding: 4 0;
+}
+
+/* Bundled project docs (phone-ui/document-page). LICENSE and PRIVACY are
+ * hard-wrapped plain text, so keep the size modest to limit rewrapping. */
+.document-text {
+  font-size: 13;
+}
+
 /*
  * Stands in for the lens preview when showing it would be misleading (silent
  * mode, or a disconnect explained by a flat battery). Sized by the view model

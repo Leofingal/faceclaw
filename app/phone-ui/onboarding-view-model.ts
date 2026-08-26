@@ -77,6 +77,21 @@ export class OnboardingViewModel extends Observable {
     Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
   }
 
+  onLicenseTap(): void {
+    this.openDocument("LICENSE", "License (GPLv3)");
+  }
+
+  onPrivacyTap(): void {
+    this.openDocument("PRIVACY", "Privacy Policy");
+  }
+
+  private openDocument(fileName: string, title: string): void {
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/document-page",
+      context: { fileName, title },
+    });
+  }
+
   onSecondaryTap(): void {
     if (this._step === 2) {
       this.setStep(1);
@@ -138,6 +153,11 @@ export class OnboardingViewModel extends Observable {
     return this.showSecondary ? "visible" : "collapse";
   }
 
+  /** License and privacy-policy links, shown only under the disclaimer step. */
+  get footerVisibility(): "visible" | "collapse" {
+    return this._step === 2 ? "visible" : "collapse";
+  }
+
   private setStep(step: OnboardingStep): void {
     if (this._step === step) return;
     this._step = step;
@@ -154,5 +174,6 @@ export class OnboardingViewModel extends Observable {
     this.notifyPropertyChange("splashVisibility", this.splashVisibility);
     this.notifyPropertyChange("contentVisibility", this.contentVisibility);
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
+    this.notifyPropertyChange("footerVisibility", this.footerVisibility);
   }
 }
