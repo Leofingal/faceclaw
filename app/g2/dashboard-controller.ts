@@ -3,6 +3,7 @@ import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, O
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
+import { FakeFaceclawCommunicator } from "../native/fake-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
@@ -935,13 +936,11 @@ class DashboardController {
     resumeAutoReconnect();
 
     const addresses = loadDeviceAddresses();
-    if (!addresses.right || !addresses.left) {
-      const message = "Configure both left and right arm MAC addresses before connecting.";
-      this.setPhase("disconnected");
-      this.setStatus(`Failed: ${message}`);
-      this.appendLog(`error: ${message}`);
-      throw new Error(message);
-    }
+    // No MAC addresses configured (the "Preview Only" onboarding path) means
+    // there is nothing to dial over BLE; use the software-only emulator
+    // communicator instead of failing. If real addresses are configured this
+    // is unchanged from before -- the real bridge is still what connects.
+    const useEmulatedCommunicator = !addresses.right || !addresses.left;
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
     this.welcomeSoundArmed = isWelcomeSoundPending();
@@ -953,7 +952,9 @@ class DashboardController {
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
     this.appendLog(
-      `Using configured arms: R=${addresses.right} L=${addresses.left}${addresses.ring ? ` ring=${addresses.ring}` : ""}`,
+      useEmulatedCommunicator
+        ? "No glasses MAC addresses configured; using the built-in emulator preview communicator (no BLE, no real glasses)."
+        : `Using configured arms: R=${addresses.right} L=${addresses.left}${addresses.ring ? ` ring=${addresses.ring}` : ""}`,
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
@@ -965,13 +966,18 @@ class DashboardController {
     this.connectRunning = true;
 
     try {
-      await ensureBlePermissions();
-      startForegroundNotification("Connecting to the glasses");
-      communicator = new FaceclawCommunicatorBridge({
-        right: addresses.right,
-        left: addresses.left,
-        ring: addresses.ring,
-      });
+      if (useEmulatedCommunicator) {
+        startForegroundNotification("Connecting to the glasses (emulator preview)");
+        communicator = new FakeFaceclawCommunicator() as unknown as FaceclawCommunicatorBridge;
+      } else {
+        await ensureBlePermissions();
+        startForegroundNotification("Connecting to the glasses");
+        communicator = new FaceclawCommunicatorBridge({
+          right: addresses.right,
+          left: addresses.left,
+          ring: addresses.ring,
+        });
+      }
       this.communicator = communicator;
       this.offLog = communicator.onLog((line) => {
         this.appendLog(line);

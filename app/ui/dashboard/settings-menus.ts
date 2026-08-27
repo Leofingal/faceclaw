@@ -37,6 +37,7 @@ import {
   brightnessSetting,
   displayModeSetting,
   elevenLabsApiKeySetting,
+  emulatorPreFirmwareSetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
   openAiApiKeySetting,
@@ -179,6 +180,7 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
+        toggleSettingMenuItem(emulatorPreFirmwareSetting),
       ],
     },
     {

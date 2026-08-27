@@ -382,6 +382,24 @@ export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
   description: "Overlay debug information provided by custom firmware that shows draw timings and dirty rects. Only useful for firmware development.",
 });
 
+/**
+ * Emulator-only (app/native/fake-communicator.ts). Faceclaw's real firmware-
+ * capability detection for a menu-gesture fallback (double-click on ring
+ * firmware that predates long-press, vs. long-press on firmware that
+ * supports it) does not exist yet as of this writing -- this setting lets a
+ * gesture-adaptive UI be designed and previewed against both cases in the
+ * emulator regardless, independent of when/whether that real detection
+ * lands. Has no effect against real glasses.
+ */
+export const emulatorPreFirmwareSetting = new ConfigSettingBoolean({
+  id: "emulator-pre-firmware",
+  label: "Emulator: pre-0.0.14 native firmware",
+  storageKey: "emulator.preFirmware",
+  defaultValue: false,
+  description:
+    "Preview only, no effect on real glasses: the emulator's fake communicator reports older ring firmware that has never seen long-press, so the menu-gesture fallback is double-click. Off reports newer firmware with long-press support.",
+});
+
 export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   id: "suspend-evenhub-screen-off",
   label: "Suspend EvenHub when screen off",
