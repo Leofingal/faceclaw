@@ -328,13 +328,13 @@ export const watchCanUnlockSetting = new ConfigSettingBoolean({
     "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
 });
 
-export const watchWakesDisplaySetting = new ConfigSettingBoolean({
-  id: "watch-wakes-display",
-  label: "Watch input wakes display",
-  storageKey: "watch.wakesDisplay",
-  defaultValue: true,
+export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
+  id: "watch-crown-clockwise-next",
+  label: "Clockwise crown = next",
+  storageKey: "watch.crownClockwiseNext",
+  defaultValue: false,
   description:
-    "Any gesture from the watch turns the glasses display on (the ring only wakes it with a double-tap). Off: watch input is ignored while the display is off, as ring input is.",
+    "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
 });
 
 export const watchMirrorAssistantSetting = new ConfigSettingBoolean({

@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
     private val stemHandler = Handler(Looper.getMainLooper())
     private var stemHoldRunnable: Runnable? = null
     private var stemHoldSent = false
+    private var stemOneIgnored = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,10 +68,16 @@ class MainActivity : ComponentActivity() {
                 if (event.repeatCount == 0) {
                     cancelStemHold()
                     stemHoldSent = false
+                    stemOneIgnored = glassesScreenIsOff()
+                    if (stemOneIgnored) return true
                     val runnable = Runnable {
-                        stemHoldSent = true
-                        haptics.heavy()
-                        link.sendGesture(Gesture.LONG_PRESS_START)
+                        if (glassesScreenIsOff()) {
+                            stemOneIgnored = true
+                        } else {
+                            stemHoldSent = true
+                            haptics.heavy()
+                            link.sendGesture(Gesture.LONG_PRESS_START)
+                        }
                     }
                     stemHoldRunnable = runnable
                     stemHandler.postDelayed(runnable, STEM_HOLD_MS)
@@ -85,7 +92,7 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_STEM_3 -> {
-                if (event.repeatCount == 0) {
+                if (event.repeatCount == 0 && !glassesScreenIsOff()) {
                     haptics.click()
                     link.sendGesture(Gesture.WAKEWORD)
                 }
@@ -98,11 +105,15 @@ class MainActivity : ComponentActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_STEM_1) {
             cancelStemHold()
+            if (stemOneIgnored) {
+                stemOneIgnored = false
+                return true
+            }
             if (stemHoldSent) {
                 stemHoldSent = false
                 haptics.click()
                 link.sendGesture(Gesture.LONG_PRESS_RELEASE)
-            } else {
+            } else if (!glassesScreenIsOff()) {
                 haptics.click()
                 link.sendGesture(Gesture.CLICK)
             }
@@ -116,6 +127,9 @@ class MainActivity : ComponentActivity() {
         stemHoldRunnable?.let { stemHandler.removeCallbacks(it) }
         stemHoldRunnable = null
     }
+
+    private fun glassesScreenIsOff(): Boolean =
+        link.state.value?.let { it.connected && !it.screenOn } == true
 
     private companion object {
         const val STEM_HOLD_MS = 450L

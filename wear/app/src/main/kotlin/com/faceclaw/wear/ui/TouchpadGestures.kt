@@ -4,8 +4,10 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.positionChanged
+import kotlin.math.abs
 
 /** What the remote's touch surface can report. */
 class TouchpadCallbacks(
@@ -17,7 +19,7 @@ class TouchpadCallbacks(
     val onLongPressStart: () -> Unit,
     val onLongPressEnd: () -> Unit,
     /** Finger travelled past touch slop; dx/dy are the total displacement. */
-    val onSwipe: (dx: Float, dy: Float, durationMs: Long) -> Unit,
+    val onSwipe: (start: Offset, dx: Float, dy: Float, durationMs: Long) -> Unit,
 )
 
 /**
@@ -86,7 +88,7 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
                         callbacks.onLongPressEnd()
                     }
                     maxPointers >= 2 -> if (moved) callbacks.onTwoFingerSwipe(displacement.x, displacement.y) else callbacks.onTwoFingerTap()
-                    moved -> callbacks.onSwipe(displacement.x, displacement.y, duration)
+                    moved -> callbacks.onSwipe(down.position, displacement.x, displacement.y, duration)
                     else -> {
                         // A plain tap; give a second tap a chance to make it a double.
                         val second = withTimeoutOrNull(doubleTapTimeout) { awaitFirstDown() }
@@ -104,6 +106,30 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
             }
         } finally {
             if (longPressed && !longPressEnded) callbacks.onLongPressEnd()
+        }
+    }
+}
+
+/**
+ * Observe the button tray before its child buttons consume a pointer. A
+ * downward drag claims the gesture and dismisses the tray; a tap remains
+ * untouched so the button below receives its normal click.
+ */
+suspend fun PointerInputScope.detectTrayDismiss(onDismiss: () -> Unit) {
+    val slop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var dismissed = false
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val primary = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
+            val displacement = primary.position - down.position
+            if (!dismissed && displacement.y > slop && displacement.y >= abs(displacement.x)) {
+                dismissed = true
+                onDismiss()
+            }
+            if (dismissed) event.changes.forEach { it.consume() }
+            if (event.changes.none { it.pressed }) break
         }
     }
 }

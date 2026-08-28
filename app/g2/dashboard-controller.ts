@@ -58,7 +58,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, watchWakesDisplaySetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -1409,22 +1409,17 @@ class DashboardController {
    * finger-down/finger-up (the watch) hold for as long as the user does.
    */
   async injectSyntheticRingInput(kind: WearRemoteInputKind, origin: SyntheticInputOrigin = "ring"): Promise<void> {
-    // Watch-scheme input (the Wear app, the phone's pad/d-pad, mirror touches)
-    // wakes a dark display and then lands normally, resuming the previous
-    // focus. The ring's own scheme keeps its double-tap-only wake.
+    // Match the ring while the display is dark: only a double-click wakes it,
+    // and that wake is handled by Shell.receiveInput. This check also protects
+    // against a watch acting on a stale state snapshot.
     if (
       origin === "watch" &&
       !shell.isScreenOn() &&
-      !this.glassesLocked &&
-      (this.phase === "connected" || this.phase === "charging") &&
-      watchWakesDisplaySetting.get() &&
       kind !== "double-click" &&
-      kind !== "wakeword" &&
       kind !== "long-press-release"
     ) {
-      shell.wake(shell.getFocus());
-      this.requestShellRender();
-      this.appendLog(`${kind} (watch scheme) woke the display`);
+      this.appendLog(`${kind} (watch scheme) ignored while display is off`);
+      return;
     }
     if (kind === "long-press") {
       // Hardware delivers a press event and then a release when the finger
@@ -1452,15 +1447,8 @@ class DashboardController {
       return;
     }
     if (!shell.isScreenOn()) {
-      // The same wake policy as the rest of the watch scheme: honour the
-      // "input wakes display" setting; with it off, only a double-tap (a
-      // normal double-click) reaches the dark display.
-      if (!watchWakesDisplaySetting.get()) {
-        if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
-        return;
-      }
-      shell.wake(shell.getFocus());
-      this.requestShellRender();
+      if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+      return;
     }
     if (kind !== "tap") {
       await this.injectSyntheticRingInput(MIRROR_TOUCH_GESTURES[kind], "watch");

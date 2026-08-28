@@ -64,7 +64,7 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     state.remoteEnabled == false -> StatusLine("Watch control off", StatusTone.PROBLEM)
     state.connected -> when {
         state.locked -> StatusLine("Locked", StatusTone.OFF)
-        !state.screenOn -> StatusLine("Screen off", StatusTone.OFF)
+        !state.screenOn -> StatusLine("●● Wake", StatusTone.OFF)
         state.listening -> StatusLine("Listening…", StatusTone.BUSY)
         else -> StatusLine(state.foreground?.title ?: "Launcher", StatusTone.GOOD)
     }

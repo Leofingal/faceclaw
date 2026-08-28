@@ -32,6 +32,14 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // androidx.lifecycle 2.9.x ships a NullSafeMutableLiveData lint check
+        // that crashes under this AGP's lint (Kotlin analysis API mismatch:
+        // "Found class KaCallableMemberCall, but interface was expected").
+        // We don't use LiveData, so nothing is lost by disabling it.
+        disable += "NullSafeMutableLiveData"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

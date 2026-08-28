@@ -107,6 +107,8 @@ data class PhoneState(
     val windows: List<WindowEntry>,
     val apps: List<AppEntry>,
     val remoteEnabled: Boolean,
+    /** False by default: clockwise moves to the previous item. */
+    val crownClockwiseNext: Boolean,
     val canUnlock: Boolean,
     val mirrorAssistant: Boolean,
     val assistantAvailable: Boolean,
@@ -151,6 +153,7 @@ data class PhoneState(
                         }
                     } ?: emptyList(),
                     remoteEnabled = o.optBoolean("remoteEnabled", true),
+                    crownClockwiseNext = o.optBoolean("crownClockwiseNext", false),
                     canUnlock = o.optBoolean("canUnlock", true),
                     mirrorAssistant = o.optBoolean("mirrorAssistant", true),
                     assistantAvailable = o.optBoolean("assistantAvailable", false),
