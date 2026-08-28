@@ -17,7 +17,7 @@
     </ActionBar>
 
     <GridLayout>
-        <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
+        <GridLayout rows="auto,auto,*" visibility="{{ portraitLayoutVisibility }}">
             <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
                 <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
                     tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
@@ -29,16 +29,22 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
+            <!-- NEW, genuinely separate content (emulator-preview branch): the
+                 virtual phone-screen companion-app panel. Kept in its own row,
+                 its own file (phone-screen-panel.xml), and its own bordered
+                 "device" styling so it reads as new content, not a change to
+                 faceclaw's own remote-controls panel below it. -->
+            <rc:phone-screen-panel row="1" />
             <!-- The controls get the whole star row so the active tab's
                  content can center in the leftover height. -->
-            <GridLayout row="1" rows="*,auto" class="p-20">
+            <GridLayout row="2" rows="*,auto" class="p-20">
                 <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
                 <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
             </GridLayout>
         </GridLayout>
 
         <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <GridLayout rows="auto" columns="*,360">
+            <GridLayout rows="*" columns="*,360">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
                     <Image
                         src="{{ displayPreview }}"
@@ -57,10 +63,17 @@
                     visibility="{{ displayPreviewMessageVisibility }}">
                     <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
                 </GridLayout>
-                <StackLayout row="0" col="1" class="m-l-16">
-                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-                </StackLayout>
+                <!-- ScrollView, not a bare StackLayout: the panel above adds real
+                     height, and this column no longer reliably fits inside a short
+                     landscape viewport (the row is now star-sized, i.e. bounded, so
+                     this can actually scroll instead of silently clipping). -->
+                <ScrollView row="0" col="1">
+                    <StackLayout class="m-l-16">
+                        <rc:phone-screen-panel />
+                        <rc:remote-controls visibility="{{ controlsVisibility }}" />
+                        <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                    </StackLayout>
+                </ScrollView>
             </GridLayout>
         </GridLayout>
         <ScrollView

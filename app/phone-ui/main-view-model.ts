@@ -32,6 +32,28 @@ const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
 
+// NEW (emulator-preview branch, 2026-08-27): the virtual phone-screen
+// companion-app panel's two toggleable device configurations. Faceclaw has
+// no phone-side companion screen of its own to extend (confirmed against
+// main-page.xml -- the mirror + remote-controls together are the whole
+// page), so this state is genuinely new, not a reuse of anything faceclaw
+// already tracks. Real Samsung Galaxy Z Fold 7 display specs (Samsung/
+// GSMArena, checked 2026-08-27): 1080x2520px 21:9 cover display (closed /
+// "normal phone view"), 1968x2184px ~1.11:1 "almost square" inner display
+// (open / "Fold-7-opened view"). Panel height is held fixed across both
+// modes so the toggle's effect is a legible width change, matching Chris's
+// own framing of the fold view as "the wider" configuration.
+type PhoneScreenMode = "normal" | "fold-open";
+
+const FOLD7_COVER_WIDTH_PX = 1080;
+const FOLD7_COVER_HEIGHT_PX = 2520;
+const FOLD7_INNER_WIDTH_PX = 1968;
+const FOLD7_INNER_HEIGHT_PX = 2184;
+const FOLD7_COVER_ASPECT = FOLD7_COVER_WIDTH_PX / FOLD7_COVER_HEIGHT_PX;
+const FOLD7_INNER_ASPECT = FOLD7_INNER_WIDTH_PX / FOLD7_INNER_HEIGHT_PX;
+/** Fixed across both modes; only the panel's width changes on toggle. */
+const PHONE_SCREEN_PANEL_HEIGHT = 200;
+
 type ControlsTab = "settings" | "watch" | "ring";
 
 // Survives navigation round-trips (a fresh view model is built per visit) but
@@ -43,6 +65,7 @@ export class MainViewModel extends Observable {
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
+  private _phoneScreenMode: PhoneScreenMode = "normal";
   private _activeTextSettingId: string | null = null;
   private _activeTextEditorTitle = "";
   private _activeTextSettingTitle = "";
@@ -252,6 +275,52 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
     this.notifyPropertyChange("warningsModalWidth", this.warningsModalWidth);
     this.notifyPropertyChange("watchFaceWidth", this.watchFaceWidth);
+  }
+
+  // --- NEW (emulator-preview branch): virtual phone-screen companion-app
+  // panel. Deliberately skeleton/placeholder content only -- no real
+  // companion-app UI has been designed yet (see wiki/seeds/faceclaw-ui-
+  // takeover.md); this exposes just enough state for the toggle and sizing
+  // to be seen and verified working. Lives on MainViewModel (not a separate
+  // Observable/bindingContext) for the same reason remote-controls.xml
+  // already binds to this model: lowest-risk reuse of an already-wired
+  // pattern, not a new plumbing mechanism.
+
+  get phoneScreenMode(): PhoneScreenMode {
+    return this._phoneScreenMode;
+  }
+
+  get phoneScreenModeLabel(): string {
+    return this._phoneScreenMode === "fold-open" ? "Fold 7 — opened (inner display)" : "Normal phone (cover display)";
+  }
+
+  get phoneScreenToggleButtonLabel(): string {
+    return this._phoneScreenMode === "fold-open" ? "Switch to normal view" : "Switch to Fold-7-opened view";
+  }
+
+  get phoneScreenPanelHeight(): number {
+    return PHONE_SCREEN_PANEL_HEIGHT;
+  }
+
+  /** The only dimension that changes on toggle -- see the type's doc comment above. */
+  get phoneScreenPanelWidth(): number {
+    const aspect = this._phoneScreenMode === "fold-open" ? FOLD7_INNER_ASPECT : FOLD7_COVER_ASPECT;
+    return Math.round(PHONE_SCREEN_PANEL_HEIGHT * aspect);
+  }
+
+  get phoneScreenDimensionsLabel(): string {
+    return this._phoneScreenMode === "fold-open"
+      ? `${FOLD7_INNER_WIDTH_PX} \u00d7 ${FOLD7_INNER_HEIGHT_PX} px \u00b7 ~1.11:1 (unfolded inner display)`
+      : `${FOLD7_COVER_WIDTH_PX} \u00d7 ${FOLD7_COVER_HEIGHT_PX} px \u00b7 21:9 (cover display)`;
+  }
+
+  onTogglePhoneScreenMode(): void {
+    this._phoneScreenMode = this._phoneScreenMode === "fold-open" ? "normal" : "fold-open";
+    this.notifyPropertyChange("phoneScreenMode", this._phoneScreenMode);
+    this.notifyPropertyChange("phoneScreenModeLabel", this.phoneScreenModeLabel);
+    this.notifyPropertyChange("phoneScreenToggleButtonLabel", this.phoneScreenToggleButtonLabel);
+    this.notifyPropertyChange("phoneScreenPanelWidth", this.phoneScreenPanelWidth);
+    this.notifyPropertyChange("phoneScreenDimensionsLabel", this.phoneScreenDimensionsLabel);
   }
 
   get activeTextSettingId(): string | null {

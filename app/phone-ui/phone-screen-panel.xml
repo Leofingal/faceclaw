@@ -1,0 +1,46 @@
+<!--
+  NEW (emulator-preview branch, 2026-08-27 dispatch): a genuinely separate
+  virtual display standing in for our own future companion-app screen.
+  Faceclaw itself has no phone-side companion screen to extend - confirmed
+  directly against main-page.xml, where the glasses-mirror image and
+  <rc:remote-controls> together are the entire page, not a stripped-down view
+  of something richer sitting elsewhere. This panel is new UI, not a
+  modification of faceclaw's own remote-control utility screen, and is kept
+  in its own file/section deliberately so the two never entangle.
+
+  Deliberately placeholder/skeleton content only: no real companion-app UI
+  has been designed yet (the IA/gesture-map/voice-pipeline questions in
+  wiki/seeds/faceclaw-ui-takeover.md are still open). This is panel
+  *infrastructure* - a correctly-sized virtual display that toggles cleanly
+  between two real device configurations - not a design decision about what
+  the real companion app should contain.
+
+  Two toggleable configurations, using real Samsung Galaxy Z Fold 7 display
+  specs (Samsung/GSMArena, checked 2026-08-27): the 1080x2520px 21:9 cover
+  display (closed / "normal phone view") and the 1968x2184px ~1.11:1
+  "almost square" inner display (open / "Fold-7-opened view") - the
+  device's own two real screens, not one screen that just resizes. Height is
+  held fixed across both modes (see PHONE_SCREEN_PANEL_HEIGHT in
+  main-view-model.ts) so the toggle's effect reads as a clear width change.
+
+  Binds to the page's MainViewModel, same as remote-controls.xml - lowest-
+  risk reuse of an already-wired pattern rather than a new bindingContext/
+  Observable plumbing mechanism for one small panel.
+-->
+<StackLayout xmlns="http://schemas.nativescript.org/tns.xsd" class="phone-screen-panel">
+  <GridLayout rows="auto" columns="*,auto" class="phone-screen-panel-header">
+    <Label col="0" text="Companion app preview (skeleton)" class="phone-screen-panel-title" verticalAlignment="center" textWrap="true" />
+    <Button col="1" text="{{ phoneScreenToggleButtonLabel }}" tap="{{ onTogglePhoneScreenMode }}" class="phone-screen-toggle-button" />
+  </GridLayout>
+  <GridLayout
+    class="phone-screen-panel-frame"
+    width="{{ phoneScreenPanelWidth }}"
+    height="{{ phoneScreenPanelHeight }}"
+    horizontalAlignment="left">
+    <StackLayout verticalAlignment="center" horizontalAlignment="center">
+      <Label text="{{ phoneScreenModeLabel }}" textWrap="true" class="phone-screen-panel-mode-label" textAlignment="center" />
+      <Label text="{{ phoneScreenDimensionsLabel }}" textWrap="true" class="phone-screen-panel-dims-label" textAlignment="center" />
+      <Label text="skeleton only -- no companion-app content designed yet" textWrap="true" class="phone-screen-panel-note" textAlignment="center" />
+    </StackLayout>
+  </GridLayout>
+</StackLayout>
