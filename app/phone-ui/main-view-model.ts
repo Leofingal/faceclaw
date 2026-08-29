@@ -766,10 +766,7 @@ export class MainViewModel extends Observable {
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
-    if (this.phase !== "connected" && this.phase !== "charging") return "Glasses disconnected";
-    if (!shell.isScreenOn()) return "Display off";
-    const foreground = shell.getForegroundApp();
-    return foreground ? foreground.title : "Launcher";
+    return dashboardController.glassesDisplayLabel();
   }
 
   private refreshPadFocusLine(): void {

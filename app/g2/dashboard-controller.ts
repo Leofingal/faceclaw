@@ -66,6 +66,7 @@ import {
   uninstallEvenHubPackage,
 } from "../apps/evenhub/installed-apps";
 import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
+import { glassesDisplayLabel } from "./glasses-display-state";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -300,12 +301,13 @@ class DashboardController {
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => {
         this.persistOpenApps();
-        this.wearRemote?.schedulePublish();
+        // The foreground title is mirrored on both remote-control faces.
+        this.emit();
       },
       onScreenStateChanged: (on) => {
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
-        this.wearRemote?.schedulePublish();
+        this.emit();
       },
     });
     // Boot hooks register windows that exist from startup (the launcher,
@@ -353,6 +355,8 @@ class DashboardController {
         status: this.status,
         glassesLocked: this.glassesLocked,
         glassesWorn: this.glassesWorn,
+        silentMode: this.silentMode,
+        lastHeadsetBattery: this.lastHeadsetBattery,
       }),
       appendLog: (line) => this.appendLog(line),
     });
@@ -847,12 +851,15 @@ class DashboardController {
   /**
    * Message to show in place of the display preview, or "" to show the preview.
    *
-   * Both cases look identical to a dead pair of glasses from the phone side:
-   * silent mode blanks the display and swallows input while the BLE session
-   * stays up, and a battery that just ran out simply stops answering.
+   * These states look identical to a dead pair of glasses from the phone side:
+   * charging and silent mode both make the display unavailable while BLE stays
+   * up, and a battery that just ran out simply stops answering.
    */
   private displayPreviewMessage(): string {
-    if (this.silentMode && (this.phase === "connected" || this.phase === "charging")) {
+    if (this.phase === "charging") {
+      return this.glassesDisplayLabel();
+    }
+    if (this.silentMode && this.phase === "connected") {
       return "Connected (Silent mode enabled)";
     }
     const connectionFailing = this.phase === "disconnected" || this.phase === "connecting";
@@ -864,6 +871,17 @@ class DashboardController {
       return "Disconnected (low battery)";
     }
     return "";
+  }
+
+  /** What occupies the foreground-title line on the watch-style controls. */
+  glassesDisplayLabel(): string {
+    return glassesDisplayLabel({
+      phase: this.phase,
+      silentMode: this.silentMode,
+      screenOn: shell.isScreenOn(),
+      battery: this.lastHeadsetBattery,
+      foregroundTitle: shell.getForegroundApp()?.title ?? null,
+    });
   }
 
   /**
@@ -1047,16 +1065,21 @@ class DashboardController {
         this.handlePhoneLockState(locked);
       });
       this.offBattery = communicator.onBatteryState((state) => {
-        this.lastHeadsetBattery = state.battery >= 0 ? state.battery : null;
+        // An unavailable reading must not erase the useful last-known value,
+        // especially while the glasses remain reachable in their case.
+        const hasBatteryLevel = Number.isInteger(state.battery) && state.battery >= 0 && state.battery <= 100;
+        if (hasBatteryLevel) this.lastHeadsetBattery = state.battery;
         shell.setBatteryLevels({
-          headset: state.battery,
+          headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
         });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
           // Repaint the top bar (battery indicators live in the shell chrome).
           this.requestShellRender();
         }
-        this.wearRemote?.schedulePublish();
+        // Battery belongs in the charging stand-in on the phone as well as in
+        // the watch state, so refresh both consumers on every report.
+        this.emit();
       });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
         this.refreshEvenAppStatus();

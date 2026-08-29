@@ -49,7 +49,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "protocol": 1, "version": "…",
   "phase": "connected", "status": "…", "connected": true,
   "screenOn": true, "locked": false, "worn": true, "listening": false,
-  "battery": 78, "charging": false,
+  "battery": 78, "charging": false, "silentMode": false,
   "foreground": {"appId": "music", "title": "Music"},
   "windows": [{"windowId": "…", "title": "…", "appId": "…", "focused": true, "closeable": true, "acceptsText": false}],
   "apps": [{"appId": "timer", "title": "Timer"}],
@@ -59,6 +59,10 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "assistantAvailable": true
 }
 ```
+
+`battery` is the current or last-known G2 percentage. `charging` and
+`silentMode` identify the two states in which the glasses display is not
+visible even though the BLE session remains available.
 
 `protocol` is reserved for incompatible revisions of this format (nothing
 checks it yet); `displayMode` mirrors the phone's Display > Display mode and

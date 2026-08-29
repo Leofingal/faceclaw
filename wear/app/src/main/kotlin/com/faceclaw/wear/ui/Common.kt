@@ -63,6 +63,8 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     state == null -> StatusLine("Waiting for phone", StatusTone.BUSY)
     state.remoteEnabled == false -> StatusLine("Watch control off", StatusTone.PROBLEM)
     state.connected -> when {
+        state.charging || state.phase == "charging" -> StatusLine(chargingLine(state.battery), StatusTone.BUSY)
+        state.silentMode -> StatusLine("Silent mode", StatusTone.OFF)
         state.locked -> StatusLine("Locked", StatusTone.OFF)
         !state.screenOn -> StatusLine("●● Wake", StatusTone.OFF)
         state.listening -> StatusLine("Listening…", StatusTone.BUSY)
@@ -72,6 +74,9 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     state.phase == "disconnecting" -> StatusLine("Disconnecting…", StatusTone.BUSY)
     else -> StatusLine("Glasses disconnected", StatusTone.OFF)
 }
+
+private fun chargingLine(battery: Int?): String =
+    if (battery != null) "Charging · G2 $battery%" else "Charging"
 
 fun StatusTone.color(): Color = when (this) {
     StatusTone.GOOD -> Color(0xFF7BD88F)

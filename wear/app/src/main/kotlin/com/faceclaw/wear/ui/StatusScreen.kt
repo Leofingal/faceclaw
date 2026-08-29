@@ -42,10 +42,13 @@ fun StatusScreen(link: PhoneLink, haptics: Haptics, onOpenSettings: () -> Unit) 
         ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item { ListHeader { Text("Glasses") } }
             item {
-                // No battery figure here: the glasses' own top bar shows it.
+                // Ordinarily the glasses' own top bar shows battery. While
+                // charging that screen is inside the case, so show it here.
                 val phaseLabel = when {
                     state == null -> "No status yet"
-                    connected -> "Connected" + if (state?.charging == true) " · charging" else ""
+                    state?.charging == true || state?.phase == "charging" ->
+                        state?.battery?.let { "Charging · G2 $it%" } ?: "Charging"
+                    connected -> "Connected"
                     state?.phase == "connecting" -> "Connecting…"
                     state?.phase == "disconnecting" -> "Disconnecting…"
                     else -> "Disconnected"

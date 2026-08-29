@@ -15,6 +15,7 @@
     "../app/g2/ble-proximity.ts",
     "../app/g2/even-advertisement.ts",
     "../app/g2/glasses-artwork.ts",
+    "../app/g2/glasses-display-state.ts",
     "../app/g2/pairing-candidates.ts"
   ]
 }

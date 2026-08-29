@@ -102,6 +102,8 @@ export type WearRemoteHost = {
     status: string;
     glassesLocked: boolean;
     glassesWorn: boolean | null;
+    silentMode: boolean;
+    lastHeadsetBattery: number | null;
   };
   appendLog: (line: string) => void;
 };
@@ -196,8 +198,9 @@ export class WearRemote {
       locked: state.glassesLocked,
       worn: state.glassesWorn,
       listening: voiceActivity.isActive(),
-      battery: battery.headset,
-      charging: battery.headsetCharging === true,
+      battery: state.lastHeadsetBattery,
+      charging: state.phase === "charging" || battery.headsetCharging === true,
+      silentMode: state.silentMode,
       foreground: foreground ? { appId: foreground.appId, title: foreground.title } : null,
       windows: shell.getWindows().map((window) => ({
         windowId: window.windowId,
