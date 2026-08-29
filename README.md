@@ -23,17 +23,14 @@ To compile, you will need an Android SDK environment with SDK version 35
 installed and licenses accepted, and the ANDROID_HOME pointing to the install.
 You will need Nativescript installed, and a JDK environment (v21), with the
 JAVA_HOME environment variable pointed at it. You will also need a reasonably
-up to date npm and nodejs installed.
+up to date npm and nodejs installed. You can put environment variables in
+build_paths.sh and they will be used by all build commands.
 
-To install a version that you compiled, you will need `adb` connected. Go to
-Settings>About phone and tap the "Build number" field seven times. Then plug
-the phone's USB-C port into your computer, authorize access on the phone, then
-run `nativescript run android 
-
-The compile, run
-  'npm run build'
-To install, run
-  `nativescript run android --juslaunch`
+To install a version that you compiled, you will need developer mode enabled on
+your phone, and `adb` connected. To enable developer mode, go to Settings>About
+phone and tap the "Build number" field seven times. Then plug the phone's USB-C
+port into your computer, authorize access on the phone, and run
+`./build_and_run.sh` to install.
 
 ## Features
 
@@ -157,7 +154,7 @@ https://github.com/jimrandomh/faceclaw.
 The Typescript and Java code in this repository runs on your phone, not on the
 glasses themselves, and (with the narrow exception of the firmware-updating
 tool), can't hurt your hardware. For changes to the glasses firmware, refer to
-[g2flash](https://github.com/jimrandomh/faceclaw); changes there require more
+[g2flash](https://github.com/jimrandomh/g2flash); changes there require more
 caution.
 
 Faceclaw is Free Software (GPLv3). Please only contribute code that you wrote
