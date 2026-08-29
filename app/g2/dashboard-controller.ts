@@ -702,6 +702,14 @@ class DashboardController {
         return;
       }
 
+      if (voiceControlBridge.isCaptureHeld()) {
+        // Ending the plugin task ends the mic with it, so a live capture (the
+        // Transcribe window, typically) outranks the screen-off power save.
+        // Check before the lease refresh below, which costs a BLE message.
+        this.scheduleEvenHubSuspend();
+        return;
+      }
+
       void (async () => {
         if (this.faceclawWakeLeaseSupported) {
           // Refresh immediately before teardown so the first suspended wake
@@ -727,6 +735,9 @@ class DashboardController {
         .then((suspended) => {
           if (suspended === undefined) return;
           if (suspended) {
+            // A capture that raced the suspend lost its mic with the plugin
+            // task; park it for the resume path.
+            voiceControlBridge.handleSessionEnded();
             this.appendLog("EvenHub session suspended while screen is off");
             return;
           }
@@ -1036,6 +1047,10 @@ class DashboardController {
           // the transport comes back, so do not make lock decisions from a
           // stale pre-disconnect value in the meantime.
           this.glassesWorn = null;
+          // The mic enable was session-scoped too: park any live capture so
+          // the next session restarts it, instead of leaving a holder that
+          // makes every later request think the mic is already running.
+          voiceControlBridge.handleSessionEnded();
         }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);
@@ -1098,6 +1113,10 @@ class DashboardController {
         this.schedulePreviewUpdate();
         if (this.phase === "connected") {
           this.setStatus("Connected.");
+          // A rendered frame also means the display path is warm enough for
+          // the glasses to accept a mic enable, so this is where a capture
+          // parked by the previous session (or by an EvenHub suspend) resumes.
+          this.resumeVoiceCapture();
           // A rendered frame means the session is warmed up (fixedLayoutCreated),
           // so the buzzer won't be dropped. Play the one-time welcome sound now.
           if (this.welcomeSoundArmed) {
@@ -1390,7 +1409,7 @@ class DashboardController {
       // Faceclaw's final BLE message before the transport closes.
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
-      voiceControlBridge.stop();
+      voiceControlBridge.handleSessionEnded();
 
       const cleanupAcked = skipFirmwareCleanup
         ? false
@@ -1558,6 +1577,30 @@ class DashboardController {
     voiceControlBridge.stopContinuousCapture();
   }
 
+  /** Provider and key settings for a capture on the given connection. */
+  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge) {
+    return {
+      communicator: communicator.getNativeCommunicator(),
+      provider: voiceProviderSetting.get(),
+      elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+      openAiApiKey: openAiApiKeySetting.get(),
+      sonioxApiKey: sonioxApiKeySetting.get(),
+      saveRecording: saveVoiceRecordingsSetting.get(),
+    };
+  }
+
+  /**
+   * Restart the mic for a capture that a previous session left holding. Cheap
+   * to call per frame: it does nothing unless one is actually parked.
+   */
+  private resumeVoiceCapture(): void {
+    if (!voiceControlBridge.hasSuspendedCapture()) return;
+    const communicator = this.communicator;
+    if (!communicator || this.phase !== "connected") return;
+    this.appendLog("resuming voice capture on the new glasses session");
+    voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
+  }
+
   private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
     if (this.phase !== "connected" || !this.communicator) {
       return;
@@ -1566,15 +1609,7 @@ class DashboardController {
     void ensureVoicePermissions()
       .then(() => {
         if (this.phase !== "connected" || this.communicator !== communicator) return;
-        const options = {
-          communicator: communicator.getNativeCommunicator(),
-          provider: voiceProviderSetting.get(),
-          elevenLabsApiKey: elevenLabsApiKeySetting.get(),
-          openAiApiKey: openAiApiKeySetting.get(),
-          sonioxApiKey: sonioxApiKeySetting.get(),
-          saveRecording: saveVoiceRecordingsSetting.get(),
-          endpointing,
-        };
+        const options = { ...this.voiceCaptureOptions(communicator), endpointing };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
         } else {

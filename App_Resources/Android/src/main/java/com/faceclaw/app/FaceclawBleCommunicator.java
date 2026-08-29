@@ -361,6 +361,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Whether the glasses mic is enabled right now. The enable lives in the
+     * current EvenHub session, so it dies with a transport drop, the charging
+     * case, or a suspend — silently, from the phone's point of view. Callers
+     * that track a capture across those events must check this rather than
+     * assume their earlier enable still holds.
+     */
+    public boolean isAudioCaptureActive() {
+        synchronized (lock) {
+            return running && sessionReady && !shutdownRequested && audioCaptureActive;
+        }
+    }
+
+    /**
      * Acquire/renew or release CFW's volatile wake-takeover lease on both
      * arms. Delivery (not a protocol ACK) is awaited so a caller can ensure
      * the fail-open firmware policy is installed before relying on wakeword
