@@ -390,6 +390,19 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
 });
 
+export type RingConnectionMode = "glasses" | "direct";
+
+export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({
+  id: "ring-connection-mode",
+  label: "Ring connection",
+  storageKey: "developer.ringConnectionMode",
+  defaultValue: "glasses",
+  values: ["glasses", "direct"],
+  formatValue: (value) => (value === "direct" ? "Direct" : "Only via glasses"),
+  description:
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
+});
+
 export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {

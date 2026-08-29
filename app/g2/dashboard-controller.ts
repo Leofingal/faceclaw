@@ -58,7 +58,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -981,8 +981,13 @@ class DashboardController {
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
+    // "Only via glasses" (the default) means the phone never opens its own
+    // link to the ring: the glasses relay its gestures to us anyway, and the
+    // direct link is currently unreliable. An empty address disables every
+    // direct-ring code path in the communicator.
+    const ringAddress = ringConnectionModeSetting.get() === "direct" ? addresses.ring : "";
     this.appendLog(
-      `Using configured arms: R=${addresses.right} L=${addresses.left}${addresses.ring ? ` ring=${addresses.ring}` : ""}`,
+      `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
@@ -999,7 +1004,7 @@ class DashboardController {
       communicator = new FaceclawCommunicatorBridge({
         right: addresses.right,
         left: addresses.left,
-        ring: addresses.ring,
+        ring: ringAddress,
       });
       this.communicator = communicator;
       this.offLog = communicator.onLog((line) => {
