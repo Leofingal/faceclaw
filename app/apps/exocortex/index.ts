@@ -1,37 +1,50 @@
+import { shell } from "../../ui/shell/shell";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../../native/notification-access";
 import { type AppDefinition } from "../app-definition";
 import { createExocortexWindow, EXOCORTEX_SURFACE_ID, EXOCORTEX_WINDOW_ID } from "./exocortex-app";
+import {
+  getInstalledEvenHubApps,
+  installedEvenHubAppId,
+  renderInstalledEvenHubIcon,
+} from "../evenhub/installed-apps";
 
 /**
- * Exocortex: a notification-first home screen for the glasses — one vertical
- * run of the most recent notification, older ones, then the app list, with no
- * 2D grid to navigate.
+ * Exocortex: the glasses' home screen and launcher — one vertical run of the
+ * most recent notification, older ones, then the app list, with no 2D grid to
+ * navigate.
  *
- * For now this is an ordinary app in the stock launcher's grid, so it can be
- * tried on hardware without giving up a known-good boot screen. Becoming the
- * actual launcher is a follow-up: set showInLauncher false here, move the
- * window to a pinned boot registration (a `boot` callback, as launcher/index.ts
- * does), make its window uncloseable, and retire the stock launcher.
+ * This is the boot screen. Its window is registered from `boot` rather than
+ * opened through launchInProcessApp, and exocortexApp is first in ALL_APPS,
+ * which the controller's boot loop walks in order — so Exocortex's is the
+ * first window pushed onto the shell's registry, landing at index 0, where
+ * selectedIndex starts. That is what makes it the boot foreground. It is
+ * uncloseable: there is nothing behind it and nothing that would re-open it.
+ *
+ * The stock icon-grid launcher this replaced still exists but no longer
+ * registers at boot and is listed nowhere; see ../launcher/index.ts.
  */
 const exocortexApp: AppDefinition = {
   appId: "exocortex",
   title: "Exocortex",
   icon: "bell",
-  launch: (ctx) => {
-    // Without notification-listener access the home screen has no feed at
-    // all; prompt on the phone so the on-glasses message is actionable, the
-    // same way the Notifications app does.
-    if (!isNotificationListenerEnabled()) {
-      requestNotificationListenerAccess();
-    }
-    return ctx.launchInProcessApp(EXOCORTEX_WINDOW_ID, EXOCORTEX_SURFACE_ID, (options) =>
+  // Exocortex is the app run itself, not an entry in it.
+  showInLauncher: false,
+  boot: (ctx) => {
+    shell.registerWindow(
       createExocortexWindow({
-        ...options,
-        // The same apps the stock launcher grid shows, minus Exocortex
-        // itself: it is the surface doing the listing, so a row that
-        // re-focuses it would just be a dead entry.
-        apps: () =>
-          ctx.apps
+        actions: {
+          ...ctx.actions,
+          requestRender: () => shell.foregroundWindow()?.requestRender(),
+        },
+        // Everything launchable: the built-in apps that opt into a launcher
+        // listing, then the EvenHub packages installed right now. Both runs
+        // are what the stock grid used to show — Exocortex is the only home
+        // screen now, so dropping the installed packages would strand them.
+        // Apps that hide themselves (the stock launcher, and Exocortex
+        // itself) fall out on `showInLauncher`; the explicit self-check is
+        // belt-and-braces for a future pass that unhides this app.
+        apps: () => [
+          ...ctx.apps
             .filter((app) => app.showInLauncher !== false && app.appId !== ctx.appId)
             .map((app) => ({
               appId: app.appId,
@@ -39,9 +52,34 @@ const exocortexApp: AppDefinition = {
               icon: app.icon,
               renderIcon: app.renderIcon,
             })),
+          ...getInstalledEvenHubApps().map((app) => ({
+            appId: installedEvenHubAppId(app.packageId),
+            label: app.name,
+            icon: "package" as const,
+            renderIcon: (size: number) => renderInstalledEvenHubIcon(app.packageId, size, app),
+          })),
+        ],
         launchApp: (appId) => ctx.launchApp(appId),
+        submitFrame: (planes, paintMs, frameId) =>
+          ctx.submitWindowFrame(EXOCORTEX_SURFACE_ID, planes, paintMs, frameId),
+        setSurfaceVisible: (visible) => ctx.setWindowSurfaceVisible(EXOCORTEX_SURFACE_ID, visible),
       }),
     );
+  },
+  /**
+   * The home window is pinned and always open, so launching means focusing —
+   * the same shape as the stock launcher's old launch. Reached only by an
+   * explicit launchApp("exocortex") (nothing lists a hidden app), which is
+   * also the one place left that can ask for notification access: without the
+   * listener the feed is empty, and the blank screen says so but cannot open
+   * the phone's settings by itself.
+   */
+  launch: async (ctx) => {
+    if (!isNotificationListenerEnabled()) {
+      requestNotificationListenerAccess();
+    }
+    shell.focusWindow(EXOCORTEX_WINDOW_ID);
+    ctx.requestShellRender();
   },
 };
 

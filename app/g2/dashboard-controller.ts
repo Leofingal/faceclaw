@@ -128,8 +128,12 @@ const LOW_BATTERY_PERCENT = 5;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
-// The launcher grid's app list; also fixes the app ids apps.launch accepts.
+// The home screen's app list; also fixes the app ids apps.launch accepts.
 const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
+
+// Apps whose window is registered at startup by their own boot hook, so it is
+// always there and never worth persisting as "open" (see persistOpenApps).
+const BOOT_PINNED_APP_IDS = new Set(ALL_APPS.filter((app) => app.boot).map((app) => app.appId));
 
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
@@ -250,7 +254,8 @@ class DashboardController {
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
   // Saving the open-app list is gated until the one-time restore has run, so
-  // the boot-time registry (just the launcher) never clobbers the saved list.
+  // the boot-time registry (just the pinned home screen) never clobbers the
+  // saved list.
   private openAppsRestored = false;
   private suppressOpenAppsPersist = false;
   // connect() is a long sequence of awaits against this.communicator; the
@@ -312,8 +317,10 @@ class DashboardController {
         this.emit();
       },
     });
-    // Boot hooks register windows that exist from startup (the launcher,
-    // pinned first in the sidebar and the boot foreground).
+    // Boot hooks register windows that exist from startup (the Exocortex home
+    // screen, pinned first in the sidebar and the boot foreground). ALL_APPS
+    // order decides which of them lands in the foreground: the shell appends
+    // each registration and starts on index 0.
     for (const app of ALL_APPS) {
       app.boot?.(this.buildAppContext(app));
     }
@@ -1889,7 +1896,12 @@ class DashboardController {
     if (!this.openAppsRestored || this.suppressOpenAppsPersist) return;
     const open: string[] = [];
     for (const window of shell.getWindows()) {
-      if (window.appId === "launcher") continue;
+      // Boot-pinned windows (the Exocortex home screen) are registered by
+      // their app's boot hook every run, so there is nothing to restore and
+      // relaunching one would only re-focus it mid-restore. Derived from the
+      // registry rather than hardcoded: this used to name "launcher", which
+      // silently stopped covering the pinned window when Exocortex took over.
+      if (BOOT_PINNED_APP_IDS.has(window.appId)) continue;
       if (!open.includes(window.appId)) open.push(window.appId);
     }
     savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });

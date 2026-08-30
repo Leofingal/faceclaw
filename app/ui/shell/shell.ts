@@ -71,8 +71,15 @@ export type ShellWindow = {
   title: string;
   /** Compositor surface this window renders to; configured at connect / launch. */
   surfaceId: string;
-  /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
+  /** Whether close menu entries (app menu default, shell escape menu) apply (the home screen is pinned). */
   closeable: boolean;
+  /**
+   * True for the home screen — the boot-pinned window the glasses sit on when
+   * the wearer isn't in an app. It is a window like any other to the shell,
+   * but "in no app" is a state the assistant needs to be able to name, so the
+   * window says which one it is rather than the shell knowing an app id.
+   */
+  isHomeScreen?: boolean;
   /**
    * True when the window gives swipe-left / swipe-right (watch directional
    * input) a meaning; otherwise the shell forwards directionalFallback(event).
@@ -420,12 +427,12 @@ class Shell {
   }
 
   /**
-   * The foreground app, or null when only the launcher is showing. The launcher
-   * is a pinned window but counts as "no app" for the assistant's context.
+   * The foreground app, or null when the home screen is showing. Home is a
+   * pinned window but counts as "no app" for the assistant's context.
    */
   getForegroundApp(): { appId: string; title: string } | null {
     const window = this.foregroundWindow();
-    if (!window || window.appId === "launcher") return null;
+    if (!window || window.isHomeScreen) return null;
     return { appId: window.appId, title: window.title };
   }
 
