@@ -117,6 +117,12 @@ export type WorkerWindowSpec = {
   focus?: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
+  /**
+   * Deliver watch swipes to the worker as swipe-* events instead of the
+   * scroll / click / double-click fallback. The worker then owns the meaning
+   * of all four directions in every window state (see ShellWindow).
+   */
+  acceptsDirectional?: boolean;
 };
 
 export type WorkerAppHostOptions = {
@@ -283,6 +289,7 @@ export class WorkerAppHost {
       title: spec.title,
       surfaceId,
       closeable: true,
+      acceptsDirectional: spec.acceptsDirectional,
       heightMode,
       close: () => {
         this.openWindows.delete(spec.windowId);

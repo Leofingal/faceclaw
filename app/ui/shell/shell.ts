@@ -9,6 +9,7 @@ import {
   type InputEventPayload,
   type InputSource,
   isDirectionalInput,
+  isWatchInput,
   makeInputEvent,
 } from "../gestures";
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
@@ -111,6 +112,14 @@ export type ShellWindow = {
   receiveTextInput?: (text: string) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
+  /**
+   * Input focus moved into this window. `lastInput` is the most recent input
+   * event the shell received — for a focus that a click or swipe caused, the
+   * event that caused it. A programmatic focus (a worker's focus-window
+   * request, a wake path) can deliver an older event: check timestampMs
+   * before treating it as current.
+   */
+  onFocus?: (lastInput: InputEvent | null) => void;
   /** Screen turned on/off; hidden or screen-off windows should stop painting. */
   setScreenOn?: (on: boolean) => void;
 };
@@ -238,6 +247,8 @@ class Shell {
   private focus: FocusKind = "sidebar";
   private screenOn = true;
   private lastInputAtMs = Date.now();
+  /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
+  private lastInput: InputEvent | null = null;
   private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
@@ -447,10 +458,18 @@ class Shell {
     return index === null ? null : this.windows[index] ?? null;
   }
 
+  /** Whether input focus currently targets this window (regardless of screen state). */
+  private isFocusTarget(window: ShellWindow | undefined): boolean {
+    return !!window && this.focus === "window" && this.foregroundWindow() === window;
+  }
+
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
+    const gaining = focus === "window" ? this.foregroundWindow() : undefined;
+    const alreadyFocused = this.isFocusTarget(gaining);
     this.focus = focus;
+    if (gaining && !alreadyFocused) gaining.onFocus?.(this.lastInput);
     if (this.screenOn) return false;
     this.screenOn = true;
     this.config.onScreenStateChanged(true);
@@ -479,8 +498,11 @@ class Shell {
   focusWindow(windowId: string): void {
     const index = this.windows.findIndex((w) => w.windowId === windowId);
     if (index < 0) return;
+    const target = this.windows[index];
+    const alreadyFocused = this.isFocusTarget(target);
     this.setSelectedIndex(index);
     this.focus = "window";
+    if (!alreadyFocused) target?.onFocus?.(this.lastInput);
   }
 
   /** Idle timeout: sleep if the configured timeout elapsed. Returns whether it slept. */
@@ -547,6 +569,14 @@ class Shell {
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    const previous = this.lastInput;
+    this.lastInput = event;
+    // A visible window may paint a source-dependent indicator (see
+    // lastInputEvent); when the source class flips (watch <-> ring/arms),
+    // repaint it so the indicator follows the device now in use.
+    if (this.screenOn && previous && isWatchInput(previous) !== isWatchInput(event)) {
+      this.foregroundWindow()?.requestRender();
+    }
     // The stock lifecycle has already interpreted the physical double tap as
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
@@ -610,6 +640,7 @@ class Shell {
       }
       if (this.focus === "sidebar") {
         this.focus = "window";
+        window.onFocus?.(this.lastInput);
       }
       // The window owns frameId from here (render or explicit finish).
       await window.handleInput(event, frameId);
@@ -682,6 +713,22 @@ class Shell {
     return `fg=${foreground} target=${this.focus}`;
   }
 
+  /**
+   * The most recent input event received, from any source. Windows whose
+   * appearance depends on the input device in use (e.g. the launcher's
+   * defocused selection preview) can read it at paint time; the shell
+   * repaints the foreground window whenever the source class changes, so
+   * such paints stay current even while the window is not focused.
+   */
+  lastInputEvent(): InputEvent | null {
+    return this.lastInput;
+  }
+
+  /** Whether the most recent input came from the watch (see lastInputEvent). */
+  lastInputWasWatch(): boolean {
+    return this.lastInput !== null && isWatchInput(this.lastInput);
+  }
+
   /** Whether a window is the current input target (foreground + focus in-window). */
   isWindowFocused(windowId: string): boolean {
     return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
@@ -718,6 +765,7 @@ class Shell {
         // sidebar's right). Left has nowhere further to go and is ignored.
         if (this.windows.length) {
           this.focus = "window";
+          this.foregroundWindow()?.onFocus?.(this.lastInput);
           // Repaint the window now so its selection highlight reflects focus
           // this frame, not one frame late.
           this.foregroundWindow()?.requestRender();

@@ -9,6 +9,8 @@
  * legal run that fits (supermoves via empty cells/columns). Double-click
  * sends the card at the cursor to its foundation, or cancels a pending
  * selection. Long-press opens the window menu (undo, new game, restart).
+ * Watch swipes move the cursor spatially: left/right within the row, up/down
+ * between the top row (cells + foundations) and the cascades.
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
@@ -22,7 +24,7 @@ import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
 declare const com: any;
@@ -256,10 +258,11 @@ function windowMenu(window: FreecellWindow): WindowMenu {
 }
 
 function handleInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`freecell menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -279,6 +282,21 @@ function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: 
       break;
     case "scroll-down":
       window.cursor = (window.cursor + 1) % LOC_COUNT;
+      break;
+    // Watch swipes are spatial over the two rows of eight columns: up/down
+    // switch between the top row (free cells + foundations) and the cascades
+    // keeping the column, left/right move within the row.
+    case "swipe-up":
+      if (window.cursor >= LOC_CASCADE0) window.cursor -= LOC_CASCADE0;
+      break;
+    case "swipe-down":
+      if (window.cursor < LOC_CASCADE0) window.cursor += LOC_CASCADE0;
+      break;
+    case "swipe-left":
+      if (window.cursor % LOC_CASCADE0 > 0) window.cursor--;
+      break;
+    case "swipe-right":
+      if (window.cursor % LOC_CASCADE0 < LOC_CASCADE0 - 1) window.cursor++;
       break;
     case "click":
       if (window.selected === null) {
@@ -312,7 +330,7 @@ function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: 
 }
 
 function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
-  switch (event.type) {
+  switch (directionalFallback(event).type) {
     case "click":
       newGame(window, false);
       playSfx(window, SFX_NEW_GAME);

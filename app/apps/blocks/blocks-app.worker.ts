@@ -4,7 +4,8 @@
  * foreground and the screen is on (losing either auto-pauses).
  *
  * Controls (in play): scroll moves the piece, click rotates, long-press hard
- * drops, double-click pauses. Paused: click resumes, double-click yields
+ * drops, double-click pauses. Watch swipes are spatial: left/right move,
+ * up rotates, down hard-drops. Paused: click resumes, double-click yields
  * focus, long-press opens the window menu.
  */
 import "@nativescript/core/globals";
@@ -18,6 +19,7 @@ import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
@@ -303,10 +305,11 @@ function windowMenu(window: BlocksWindow): WindowMenu {
 }
 
 function handleInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`blocks menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -322,10 +325,20 @@ function handleInput(window: BlocksWindow, event: InputEvent, frameId: number): 
 function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
+    case "swipe-left":
       tryMove(window, -1, 0);
       break;
     case "scroll-down":
+    case "swipe-right":
       tryMove(window, 1, 0);
+      break;
+    // Watch swipes are spatial: left/right move the piece, up rotates it,
+    // down hard-drops (like long-press).
+    case "swipe-up":
+      tryRotate(window);
+      break;
+    case "swipe-down":
+      hardDrop(window);
       break;
     case "click":
       tryRotate(window);
@@ -345,9 +358,9 @@ function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: nu
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused or game over. */
+/** Input while paused or game over. Swipes take their standard fallback meanings. */
 function handleIdleInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
-  switch (event.type) {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);
       window.phase = "playing";

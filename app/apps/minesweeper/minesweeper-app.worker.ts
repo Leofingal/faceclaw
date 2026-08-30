@@ -8,6 +8,8 @@
  * row, click switches to column-select, double-click pauses. Column-select:
  * scroll moves along the row, click reveals (or chords a satisfied number),
  * long-press toggles a flag, double-click returns to row-select.
+ * Watch swipes skip the two-layer scheme and move the cell cursor in four
+ * directions; a watch double-click pauses directly.
  * Paused/won/lost: click resumes or starts a new game, double-click yields
  * focus, long-press opens the window menu.
  */
@@ -22,10 +24,12 @@ import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  isWatchInput,
   type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
@@ -283,10 +287,11 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
 }
 
 function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`minesweeper menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -300,8 +305,25 @@ function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: numb
 }
 
 function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  // The watch's swipes move the cell cursor in four directions; its scheme
+  // has no row-select layer (as in the launcher), so any watch input drops
+  // to cell selection first and its double-click pauses directly.
+  const watch = isWatchInput(event);
+  if (watch) window.selectMode = "column";
   const rowMode = window.selectMode === "row";
   switch (event.type) {
+    case "swipe-up":
+      window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
+      break;
+    case "swipe-down":
+      window.cursorY = clamp(window.cursorY + 1, 0, ROWS - 1);
+      break;
+    case "swipe-left":
+      window.cursorX = clamp(window.cursorX - 1, 0, COLS - 1);
+      break;
+    case "swipe-right":
+      window.cursorX = clamp(window.cursorX + 1, 0, COLS - 1);
+      break;
     case "scroll-up":
       if (rowMode) {
         window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
@@ -331,7 +353,7 @@ function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameI
       toggleFlag(window);
       break;
     case "double-click":
-      if (rowMode) {
+      if (rowMode || watch) {
         window.phase = "paused";
         syncClock(window);
         playSfx(window, SFX_PAUSE);
@@ -346,9 +368,9 @@ function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameI
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused, won, or lost. */
+/** Input while paused, won, or lost. Swipes take their standard fallback meanings. */
 function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
-  switch (event.type) {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "paused") {
         window.phase = "playing";

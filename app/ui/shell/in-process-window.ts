@@ -44,6 +44,8 @@ export type InProcessWindowOptions = {
    * offer "Type Into App" for this window.
    */
   receiveTextInput?: (text: string) => void;
+  /** Input focus moved into this window (see ShellWindow.onFocus). */
+  onFocus?: ShellWindow["onFocus"];
   baseLayer: Layer;
   submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
@@ -210,6 +212,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       return handled;
     },
     receiveTextInput: options.receiveTextInput,
+    onFocus: options.onFocus,
     setForeground: (foreground) => {
       options.setSurfaceVisible(foreground);
     },

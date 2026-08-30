@@ -14,6 +14,8 @@
  * Controls (ball ready): scroll sets launch power, click launches. In play:
  * click flips both flippers, scroll-up/down flips left/right individually,
  * long-press nudges the table (three quick nudges tilt), double-click pauses.
+ * Watch swipes: left/right work the matching flipper, up nudges (or raises
+ * launch power at the plunger), down lowers launch power.
  * Paused/game over: click resumes or starts a new game, double-click yields
  * focus, long-press opens the window menu.
  */
@@ -29,6 +31,7 @@ import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
@@ -468,10 +471,11 @@ function windowMenu(window: PinballWindow): WindowMenu {
 }
 
 function handleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`pinball menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -499,6 +503,26 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
         window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
       } else {
         flip(window, window.flippers[1]!);
+      }
+      break;
+    // Watch swipes: left/right work the matching flipper; up nudges the
+    // table (or raises launch power at the plunger), down lowers it.
+    case "swipe-left":
+      if (!ready) flip(window, window.flippers[0]!);
+      break;
+    case "swipe-right":
+      if (!ready) flip(window, window.flippers[1]!);
+      break;
+    case "swipe-up":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
+      } else {
+        nudge(window);
+      }
+      break;
+    case "swipe-down":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
       }
       break;
     case "click":
@@ -529,9 +553,9 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused or game over. */
+/** Input while paused or game over. Swipes take their standard fallback meanings. */
 function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
-  switch (event.type) {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);
       window.phase = "playing";
