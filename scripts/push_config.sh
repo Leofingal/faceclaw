@@ -1,6 +1,6 @@
 #!/bin/bash
 # Push a shared-preferences file to faceclaw on the attached device.
-# Usage: push_config.sh [input-file]   (default: faceclaw_settings.xml)
+# Usage: push_config.sh [input-file] [-f input-file] [adb-options...]
 # Validates the XML, force-stops the app (so a running instance doesn't
 # overwrite the pushed file from its in-memory prefs), then installs it.
 #
@@ -13,9 +13,26 @@ set -euo pipefail
 
 source "$(cd "$(dirname "$0")" && pwd)/adbutil.sh"
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [input-file] [-f input-file] [adb-options...]
+
+Push input-file (default: faceclaw_settings.xml) as faceclaw's shared
+preferences on the attached device. The input file may be given as a bare
+first argument or with -f anywhere. Any other arguments are passed through
+to adb, e.g. -s SERIAL or -t ID to pick one of several attached devices.
+EOF
+}
+
+adbutil_parse_args "$@"
+if [ "$ADBUTIL_HELP" = 1 ]; then
+    usage
+    exit 0
+fi
+
 PACKAGE=com.faceclaw.app
 PREFS=shared_prefs/faceclaw_settings.xml
-IN="${1:-faceclaw_settings.xml}"
+IN="${ADBUTIL_FILE:-faceclaw_settings.xml}"
 STAGE=/data/local/tmp/faceclaw_settings_push.xml
 IMPORT_REMOTE=/sdcard/Android/data/$PACKAGE/files/faceclaw-settings-import.xml
 

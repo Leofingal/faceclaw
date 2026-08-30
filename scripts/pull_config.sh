@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pull faceclaw's shared preferences off the attached device.
-# Usage: pull_config.sh [output-file]   (default: faceclaw_settings.xml)
+# Usage: pull_config.sh [output-file] [-f output-file] [adb-options...]
 #
 # Uses run-as on debuggable (dev) builds. On release builds, where run-as is
 # refused, falls back to the FaceclawSettingsPortReceiver broadcast, which
@@ -10,9 +10,26 @@ set -euo pipefail
 
 source "$(cd "$(dirname "$0")" && pwd)/adbutil.sh"
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [output-file] [-f output-file] [adb-options...]
+
+Pull faceclaw's shared preferences off the attached device into output-file
+(default: faceclaw_settings.xml). The output file may be given as a bare
+first argument or with -f anywhere. Any other arguments are passed through
+to adb, e.g. -s SERIAL or -t ID to pick one of several attached devices.
+EOF
+}
+
+adbutil_parse_args "$@"
+if [ "$ADBUTIL_HELP" = 1 ]; then
+    usage
+    exit 0
+fi
+
 PACKAGE=com.faceclaw.app
 PREFS=shared_prefs/faceclaw_settings.xml
-OUT="${1:-faceclaw_settings.xml}"
+OUT="${ADBUTIL_FILE:-faceclaw_settings.xml}"
 EXPORT_REMOTE=/sdcard/Android/data/$PACKAGE/files/faceclaw-settings-export.xml
 
 MODE="$(adb_preflight "$PACKAGE")"
