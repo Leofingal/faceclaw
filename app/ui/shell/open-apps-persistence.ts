@@ -7,7 +7,7 @@ import { File, knownFolders } from "@nativescript/core";
  */
 
 export type PersistedOpenApps = {
-  /** App ids in sidebar (registration) order, launcher excluded. */
+  /** App ids in sidebar (registration) order, boot-pinned windows excluded. */
   open: string[];
   foreground: string | null;
 };

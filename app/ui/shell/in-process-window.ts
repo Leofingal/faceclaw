@@ -27,6 +27,8 @@ export type InProcessWindowOptions = {
   /** App-supplied sidebar icon renderer; takes precedence over icon/iconLetter. */
   drawIcon?: ShellWindow["drawIcon"];
   closeable: boolean;
+  /** See ShellWindow.isHomeScreen — set by the boot-pinned home window only. */
+  isHomeScreen?: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
   /**
@@ -168,6 +170,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     title: options.title,
     surfaceId: `window:${options.windowId}`,
     closeable: options.closeable,
+    isHomeScreen: options.isHomeScreen,
     // The window's own LayerStack decides per layer whether a swipe is
     // directional or falls back to click / double-click.
     acceptsDirectional: true,

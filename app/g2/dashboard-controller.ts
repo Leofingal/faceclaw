@@ -254,7 +254,8 @@ class DashboardController {
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
   // Saving the open-app list is gated until the one-time restore has run, so
-  // the boot-time registry (just the launcher) never clobbers the saved list.
+  // the boot-time registry (just the pinned home screen) never clobbers the
+  // saved list.
   private openAppsRestored = false;
   private suppressOpenAppsPersist = false;
   // connect() is a long sequence of awaits against this.communicator; the

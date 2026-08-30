@@ -446,6 +446,11 @@ export function createExocortexWindow(options: ExocortexOptions): ShellWindow {
     iconLetter: "E",
     icon: "activity",
     closeable: false,
+    // "The wearer is on the home screen", not "the wearer is in an app called
+    // Exocortex" — what the assistant's context line reports. The shell used
+    // to spot this by comparing appId to "launcher"; a flag on the window
+    // survives the home screen changing hands.
+    isHomeScreen: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new ExocortexHomeLayer(options)),
     submitFrame: options.submitFrame,
