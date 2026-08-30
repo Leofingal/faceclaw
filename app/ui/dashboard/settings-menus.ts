@@ -42,8 +42,6 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   ringConnectionModeSetting,
-  roamApiTokenSetting,
-  roamGraphNameSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
@@ -144,13 +142,6 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),
-      ],
-    },
-    {
-      label: "Roam",
-      items: [
-        textSettingMenuItem(roamGraphNameSetting),
-        textSettingMenuItem(roamApiTokenSetting),
       ],
     },
     {
