@@ -4,6 +4,7 @@ const minesweeperApp: AppDefinition = {
   appId: "minesweeper",
   title: "Minesweeper",
   icon: "bomb",
+  showInLauncher: false,
   launch: (ctx) =>
     launchWorkerAppWindow(ctx, {
       createWorker: () => new Worker("./minesweeper-app.worker"),

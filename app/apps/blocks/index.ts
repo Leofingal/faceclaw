@@ -4,6 +4,7 @@ const blocksApp: AppDefinition = {
   appId: "blocks",
   title: "Blocks",
   icon: "l-piece",
+  showInLauncher: false,
   launch: (ctx) =>
     launchWorkerAppWindow(ctx, {
       createWorker: () => new Worker("./blocks-app.worker"),

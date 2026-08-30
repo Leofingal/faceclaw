@@ -5,6 +5,7 @@ const developerApp: AppDefinition = {
   appId: "developer",
   title: "Developer",
   icon: "wrench",
+  showInLauncher: false,
   launch: (ctx) =>
     ctx.launchInProcessApp(DEVELOPER_WINDOW_ID, DEVELOPER_SURFACE_ID, (options) =>
       createDeveloperAppWindow(ctx, options),

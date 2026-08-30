@@ -16,7 +16,7 @@ import { createExocortexWindow, EXOCORTEX_SURFACE_ID, EXOCORTEX_WINDOW_ID } from
 const exocortexApp: AppDefinition = {
   appId: "exocortex",
   title: "Exocortex",
-  icon: "activity",
+  icon: "bell",
   launch: (ctx) => {
     // Without notification-listener access the home screen has no feed at
     // all; prompt on the phone so the on-glasses message is actionable, the

@@ -4,6 +4,7 @@ const freecellApp: AppDefinition = {
   appId: "freecell",
   title: "Freecell",
   icon: "spade",
+  showInLauncher: false,
   launch: (ctx) =>
     launchWorkerAppWindow(ctx, {
       createWorker: () => new Worker("./freecell-app.worker"),

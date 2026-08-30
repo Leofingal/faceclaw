@@ -4,6 +4,7 @@ const pinballApp: AppDefinition = {
   appId: "pinball",
   title: "Pinball",
   icon: "pinball",
+  showInLauncher: false,
   launch: (ctx) =>
     launchWorkerAppWindow(ctx, {
       createWorker: () => new Worker("./pinball-app.worker"),

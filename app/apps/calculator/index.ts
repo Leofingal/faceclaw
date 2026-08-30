@@ -14,6 +14,7 @@ const calculatorApp: AppDefinition = {
   appId: "calculator",
   title: "Calculator",
   icon: "calculator",
+  showInLauncher: false,
   launch: (ctx) => ctx.launchInProcessApp(CALCULATOR_WINDOW_ID, CALCULATOR_SURFACE_ID, createCalculatorAppWindow),
 };
 

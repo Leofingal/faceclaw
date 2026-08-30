@@ -4,6 +4,7 @@ const terminalApp: AppDefinition = {
   appId: "terminal",
   title: "Terminal",
   icon: "terminal",
+  showInLauncher: false,
   launch: (ctx) =>
     launchWorkerAppWindow(ctx, {
       createWorker: () => new Worker("./terminal-app.worker"),

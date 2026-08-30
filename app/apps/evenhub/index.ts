@@ -44,6 +44,7 @@ const evenhubApp: AppDefinition = {
   appId: "evenhub",
   title: "EvenHub",
   icon: "package",
+  showInLauncher: false,
   renderIcon: renderEvenRealitiesLogo,
   launch: async (ctx) => {
     const existing = shell.getWindows().find((window) => window.windowId === EVENHUB_STORE_WINDOW_ID);
