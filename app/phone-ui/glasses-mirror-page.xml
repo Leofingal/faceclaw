@@ -1,0 +1,112 @@
+<!--
+  The glasses mirror, reached from the home hub's "Glasses mirror" row (or its
+  overflow menu). This is the layout the app used to open on: a live mirror of
+  the lens display with the simulated ring/watch controllers under it. It is a
+  debugging and hands-on-the-glasses view, not the phone's primary interface —
+  the phone's own screens live on the home hub (phone-ui/main-page).
+
+  Everything below is main-page's old body, unchanged, so the mirror and the
+  three-tab remote controls behave exactly as they did: same MainViewModel,
+  same bindings, same portrait/landscape split, same keyboard-input mode. The
+  "Attention needed" warnings modal deliberately did not come along; it is an
+  app-level concern and stays on the home hub with its action-bar triangle.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+    <ActionBar>
+        <GridLayout columns="auto,*,auto" width="100%" verticalAlignment="center">
+            <Label col="0" text="Glasses mirror" class="action-bar-title" />
+            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
+        </GridLayout>
+        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
+        <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
+        <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
+    </ActionBar>
+
+    <GridLayout>
+        <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
+            <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
+                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
+                    tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
+            </StackLayout>
+            <GridLayout
+                row="0"
+                class="display-preview-message"
+                height="{{ displayPreviewHeight }}"
+                visibility="{{ displayPreviewMessageVisibility }}">
+                <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+            </GridLayout>
+            <!-- The controls get the whole star row so the active tab's
+                 content can center in the leftover height. -->
+            <GridLayout row="1" rows="*,auto" class="p-20">
+                <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
+                <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+            </GridLayout>
+        </GridLayout>
+
+        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
+            <GridLayout rows="auto" columns="*,360">
+                <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
+                    <Image
+                        src="{{ displayPreview }}"
+                        stretch="fill"
+                        width="{{ landscapeDisplayPreviewWidth }}"
+                        height="{{ landscapeDisplayPreviewHeight }}"
+                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
+                </StackLayout>
+                <GridLayout
+                    row="0"
+                    col="0"
+                    class="display-preview-message"
+                    horizontalAlignment="left"
+                    width="{{ landscapeDisplayPreviewWidth }}"
+                    height="{{ landscapeDisplayPreviewHeight }}"
+                    visibility="{{ displayPreviewMessageVisibility }}">
+                    <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                </GridLayout>
+                <StackLayout row="0" col="1" class="m-l-16">
+                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
+                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                </StackLayout>
+            </GridLayout>
+        </GridLayout>
+        <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
+             shrunk) page, so it sits in the space below the mirror and only
+             overlaps the mirror when the open keyboard leaves too little
+             room. The tabbed controls are collapsed while it is up. The home
+             hub carries an identical copy, because the glasses can ask for
+             text while either page is on screen. -->
+        <StackLayout
+            class="system-name-modal"
+            visibility="{{ textSettingEditorVisibility }}"
+            horizontalAlignment="stretch"
+            verticalAlignment="bottom">
+            <Label text="{{ activeTextEditorTitle }}" class="h2" />
+            <!-- Per-field labels only matter with two fields; a single-field
+                 edit's field title is the same string as the editor title. -->
+            <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
+            <TextField
+                id="settingsTextField"
+                text="{{ activeTextSettingValue }}"
+                textChange="{{ onTextSettingTextChange }}"
+                returnPress="{{ onPrimaryTextSettingReturnPress }}"
+                autocorrect="false"
+                autocapitalizationType="none"
+                keyboardType="{{ activeTextSettingKeyboardType }}"
+                secure="{{ activeTextSettingSecure }}"
+                returnKeyType="{{ primaryTextSettingReturnKeyType }}" />
+            <StackLayout visibility="{{ secondaryTextSettingVisibility }}">
+                <Label text="{{ secondaryTextSettingTitle }}" />
+                <TextField
+                    id="secondarySettingsTextField"
+                    text="{{ secondaryTextSettingValue }}"
+                    textChange="{{ onSecondaryTextSettingTextChange }}"
+                    returnPress="{{ onSecondaryTextSettingReturnPress }}"
+                    autocorrect="false"
+                    autocapitalizationType="none"
+                    keyboardType="{{ secondaryTextSettingKeyboardType }}"
+                    secure="{{ secondaryTextSettingSecure }}"
+                    returnKeyType="done" />
+            </StackLayout>
+        </StackLayout>
+    </GridLayout>
+</Page>
