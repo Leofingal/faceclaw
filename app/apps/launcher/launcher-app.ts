@@ -10,7 +10,7 @@ import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type M
 import { iconGridMinRowHeight } from "../../ui/metrics";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
-import { createInProcessWindow } from "../../ui/shell/in-process-window";
+import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
 import {
   getFolderAssignments,
   getFolders,
@@ -18,7 +18,7 @@ import {
   setAppFolder,
   unusedNewFolderName,
 } from "./launcher-folders";
-import { shell, type ShellWindow } from "../../ui/shell/shell";
+import { shell } from "../../ui/shell/shell";
 
 export type LauncherAppEntry = {
   appId: string;
@@ -474,11 +474,16 @@ class LauncherGridLayer implements Layer {
 }
 
 /**
- * The launcher: a pinned, uncloseable in-process window presenting the app
- * grid. Selecting an app asks the controller to launch it and foregrounds the
- * new window.
+ * The stock app grid: an uncloseable in-process window. Selecting an app asks
+ * the controller to launch it and foregrounds the new window.
+ *
+ * No longer pinned at boot — Exocortex is the boot launcher now, and this
+ * window is opened on demand through launchInProcessApp (which is why the
+ * whole InProcessWindow is returned rather than just its ShellWindow: that is
+ * the shape the controller's create callback expects, and it keeps the handle
+ * needed to drop the window from its in-process registry).
  */
-export function createLauncherWindow(options: LauncherOptions): ShellWindow {
+export function createLauncherWindow(options: LauncherOptions): InProcessWindow {
   const gridLayer = new LauncherGridLayer(options);
   const created = createInProcessWindow({
     appId: "launcher",
@@ -498,8 +503,8 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
   // The assistant's folder tools change the grouping from outside the window;
   // the settings broadcast is the change signal, and the fingerprint check
   // keeps every unrelated setting change from repainting the launcher. The
-  // launcher is pinned for the app's lifetime, so the subscription never needs
-  // tearing down.
+  // window is uncloseable, so once opened it lives for the rest of the run and
+  // the subscription still never needs tearing down.
   let lastState = `${getFolderStateFingerprint()}\n${launcherAppsFingerprint(options.apps())}`;
   onAnySettingChanged(() => {
     const state = `${getFolderStateFingerprint()}\n${launcherAppsFingerprint(options.apps())}`;
@@ -507,7 +512,7 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     lastState = state;
     created.requestRender();
   });
-  return created.window;
+  return created;
 }
 
 function launcherAppsFingerprint(apps: LauncherAppEntry[]): string {

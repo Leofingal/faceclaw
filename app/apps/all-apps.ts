@@ -1,6 +1,6 @@
 import { type AppDefinition } from "./app-definition";
-import launcherApp from "./launcher";
 import exocortexApp from "./exocortex";
+import launcherApp from "./launcher";
 import timerApp from "./timer";
 import calculatorApp from "./calculator";
 import terminalApp from "./terminal";
@@ -24,13 +24,17 @@ import evenhubApp from "./evenhub";
 import settingsApp from "./settings";
 
 /**
- * Every app, in launcher-grid order (the launcher itself is first but hidden
- * from the grid). The sole registry: the controller, launcher, and assistant
- * tools all discover apps here.
+ * Every app, in home-screen order. The sole registry: the controller, the
+ * home screen, and the assistant tools all discover apps here.
+ *
+ * Order is load-bearing at the top of the list. The controller boots apps in
+ * this order and the shell foregrounds the first window registered, so
+ * Exocortex — the boot launcher — has to come first. It hides itself from the
+ * app run it draws, as does the retired stock launcher behind it.
  */
 export const ALL_APPS: readonly AppDefinition[] = [
-  launcherApp,
   exocortexApp,
+  launcherApp,
   timerApp,
   calculatorApp,
   terminalApp,

@@ -16,13 +16,10 @@ import { isNotificationListenerEnabled } from "../../native/notification-access"
 import { SingleNotificationLayer } from "../../ui/notifications";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
-import {
-  createInProcessWindow,
-  YieldAtRootLayer,
-  type InProcessAppOptions,
-  type InProcessWindow,
-} from "../../ui/shell/in-process-window";
+import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { type Plane } from "../../graphics/plane";
+import { createInProcessWindow, YieldAtRootLayer } from "../../ui/shell/in-process-window";
+import { type ShellWindow } from "../../ui/shell/shell";
 
 export const EXOCORTEX_WINDOW_ID = "exocortex";
 export const EXOCORTEX_SURFACE_ID = "window:exocortex";
@@ -36,10 +33,24 @@ export type ExocortexAppEntry = {
   renderIcon?: (size: number) => GrayImage | null;
 };
 
-export type ExocortexOptions = InProcessAppOptions & {
+/**
+ * What the home window needs from the controller. Spelled out rather than
+ * extended from InProcessAppOptions (the shape ordinary apps get handed by
+ * launchInProcessApp) because this window is registered at boot instead: it is
+ * never closed, so there is no removeSurface or onClosed to take, and it never
+ * changes height band, so there is no reconfigureSurface. Same reason
+ * LauncherOptions lists its own.
+ */
+export type ExocortexOptions = {
+  /** Shared layer actions; requestRender is rebound to this window's render. */
+  actions: LayerActions;
   /** The launchable apps, read fresh every paint (the registry can change). */
   apps: () => ExocortexAppEntry[];
   launchApp: (appId: string) => Promise<void> | void;
+  /** Submit a painted viewport-sized frame (as planes) to this window's surface. */
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
+  /** Flip the home screen's compositor surface visibility on foreground changes. */
+  setSurfaceVisible: (visible: boolean) => void;
 };
 
 const PAGE_X = 20;
@@ -418,30 +429,32 @@ function notificationBody(notification: AndroidNotification): string {
 }
 
 /**
- * The Exocortex home window. An ordinary closeable app window for now; the
- * pinned, uncloseable boot-launcher form is a follow-up (see index.ts).
+ * The Exocortex home window: the pinned boot launcher. Registered once from
+ * index.ts's `boot` callback, never through launchInProcessApp.
+ *
+ * Uncloseable on purpose. `closeable: false` does two things: it drops "Close
+ * window" from the long-press menu, and it makes shell.closeWindow ignore this
+ * window id, so the shell's own escape paths can't take it either. Nothing
+ * re-opens it — the home screen is what every other window falls back to when
+ * it closes, so losing it would leave the glasses with nothing to show.
  */
-export function createExocortexWindow(options: ExocortexOptions): InProcessWindow {
-  // Newly posted notifications repaint the home screen while it is open —
-  // the same subscription the Notifications app uses.
-  let offNotificationPosted: (() => void) | null = null;
+export function createExocortexWindow(options: ExocortexOptions): ShellWindow {
   const created = createInProcessWindow({
     appId: "exocortex",
     windowId: EXOCORTEX_WINDOW_ID,
     title: "Exocortex",
     iconLetter: "E",
     icon: "activity",
-    closeable: true,
+    closeable: false,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new ExocortexHomeLayer(options)),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
-    removeSurface: options.removeSurface,
-    onClosed: () => {
-      offNotificationPosted?.();
-      options.onClosed();
-    },
   });
-  offNotificationPosted = onAndroidNotificationPosted(() => created.requestRender());
-  return created;
+  // Newly posted notifications repaint the home screen — the same subscription
+  // the Notifications app uses. The window lives for the app's lifetime now,
+  // so the subscription never needs tearing down (the stock launcher's
+  // settings subscription is unhooked for the same reason).
+  onAndroidNotificationPosted(() => created.requestRender());
+  return created.window;
 }
