@@ -6,6 +6,7 @@ import { clamp } from "../../util/numeric-util";
 import { formatRelativeTime } from "../../util/date-util";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import {
+  dismissNotification,
   onAndroidNotificationPosted,
   readActiveNotifications,
   readNotificationIconByKey,
@@ -309,6 +310,26 @@ class ExocortexHomeLayer implements Layer {
           if (app) await this.options.launchApp(app.appId);
         } else if (this.zone === "notification") {
           this.expandSelectedNotification(notifications, ctx);
+        }
+        return;
+      }
+      case "long-press": {
+        // Exocortex's own standard (the interactive pilot, session 0142),
+        // not faceclaw's stock long-press: clear every current notification
+        // in one gesture. There is no native batch-dismiss to call — Android's
+        // NotificationListenerService supports cancelAllNotifications() but
+        // faceclaw's JS bridge (native/notification-icons.ts) only exposes
+        // per-key dismissNotification() — so this loops that per-key call
+        // over every notification currently in the tray. From the user's
+        // side it is one gesture, not one-by-one, which is the actual point:
+        // Even's own app makes you dismiss them individually. Only fires in
+        // the notification zone, matching the pilot; a long-press in the app
+        // zone is deliberately still a no-op (no equivalent destructive
+        // action there to guard against).
+        if (this.zone === "notification") {
+          for (const item of notifications) dismissNotification(item.key);
+          this.zone = "blank";
+          this.selectedKey = "";
         }
         return;
       }
