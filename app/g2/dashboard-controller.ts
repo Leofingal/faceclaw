@@ -34,7 +34,7 @@ import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEdi
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
-import { type LayerActions } from "../ui/layers";
+import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
@@ -66,6 +66,9 @@ export type DashboardSnapshot = {
   secondaryTextSettingTitle: string;
   secondaryTextSettingValue: string;
   secondaryTextSettingInputKind: "text" | "email" | "password";
+  activeTextEditorToggleLabel: string;
+  activeTextEditorToggleValue: boolean;
+  activeTextEditorToggleVisible: boolean;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -152,6 +155,7 @@ class DashboardController {
   private activeTextSettings: ConfigSettingString[] = [];
   private activeTextEditorTitle = "";
   private activeTextEditorOnFinish: (() => void) | null = null;
+  private activeTextEditorToggle: TextSettingsEditToggle | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
@@ -232,7 +236,8 @@ class DashboardController {
         settings: readonly ConfigSettingString[],
         title: string,
         onFinish?: () => void,
-      ) => this.startTextSettingsEdit(settings, title, onFinish),
+        toggle?: TextSettingsEditToggle,
+      ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
@@ -733,6 +738,9 @@ class DashboardController {
       secondaryTextSettingTitle: secondaryTextSetting?.editorTitle ?? "",
       secondaryTextSettingValue: secondaryTextSetting?.get() ?? "",
       secondaryTextSettingInputKind: secondaryTextSetting?.inputKind ?? "text",
+      activeTextEditorToggleLabel: this.activeTextEditorToggle?.label ?? "",
+      activeTextEditorToggleValue: this.activeTextEditorToggle?.setting.get() ?? false,
+      activeTextEditorToggleVisible: this.activeTextEditorToggle !== null,
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -825,6 +833,12 @@ class DashboardController {
     // binding on every keystroke drops fast/pasted characters (observed: a
     // 51-char API key stored as its first 46 chars). Just refresh the preview.
     this.previewOrRenderAfterTextSettingChange();
+  }
+
+  setActiveTextEditorToggleValue(value: boolean): void {
+    if (!this.activeTextEditorToggle || this.activeTextEditorToggle.setting.get() === value) return;
+    this.activeTextEditorToggle.setting.set(value);
+    this.emit();
   }
 
   async connect(): Promise<void> {
@@ -1291,10 +1305,12 @@ class DashboardController {
     settings: readonly ConfigSettingString[],
     title: string,
     onFinish?: () => void,
+    toggle?: TextSettingsEditToggle,
   ): void {
     this.activeTextSettings = Array.from(settings.slice(0, 2));
     this.activeTextEditorTitle = title;
     this.activeTextEditorOnFinish = onFinish ?? null;
+    this.activeTextEditorToggle = toggle ?? null;
     this.emit();
   }
 
@@ -1352,6 +1368,7 @@ class DashboardController {
     this.activeTextSettings = [];
     this.activeTextEditorTitle = "";
     this.activeTextEditorOnFinish = null;
+    this.activeTextEditorToggle = null;
     this.emit();
     if (finishedSettings.includes(nightscoutSiteUrlSetting) || finishedSettings.includes(nightscoutApiTokenSetting)) {
       void this.refreshNightscoutAfterSettingsChange();

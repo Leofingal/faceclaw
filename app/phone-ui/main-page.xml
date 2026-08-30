@@ -130,6 +130,16 @@
                     secure="{{ secondaryTextSettingSecure }}"
                     returnKeyType="done" />
             </StackLayout>
+            <GridLayout
+                columns="*,auto"
+                visibility="{{ activeTextEditorToggleVisibility }}"
+                class="m-t-8">
+                <Label col="0" text="{{ activeTextEditorToggleLabel }}" verticalAlignment="center" />
+                <Switch
+                    col="1"
+                    checked="{{ activeTextEditorToggleValue }}"
+                    checkedChange="{{ onTextSettingToggleChange }}" />
+            </GridLayout>
         </StackLayout>
     </GridLayout>
 </Page>

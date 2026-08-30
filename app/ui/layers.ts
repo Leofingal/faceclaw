@@ -1,7 +1,12 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
-import { type ConfigSettingString } from "./dashboard-settings";
+import { type ConfigSettingBoolean, type ConfigSettingString } from "./dashboard-settings";
+
+export type TextSettingsEditToggle = {
+  setting: ConfigSettingBoolean;
+  label: string;
+};
 
 export type DashboardInputEvent =
   | { type: "click"; source: "ring" | "left-arm" | "right-arm" }
@@ -34,6 +39,7 @@ export type LayerActions = {
     settings: readonly ConfigSettingString[],
     title: string,
     onFinish?: () => void,
+    toggle?: TextSettingsEditToggle,
   ) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   /**

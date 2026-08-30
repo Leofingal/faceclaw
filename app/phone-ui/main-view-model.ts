@@ -23,6 +23,9 @@ export class MainViewModel extends Observable {
   private _secondaryTextSettingTitle = "";
   private _secondaryTextSettingValue = "";
   private _secondaryTextSettingInputKind: "text" | "email" | "password" = "text";
+  private _activeTextEditorToggleLabel = "";
+  private _activeTextEditorToggleValue = false;
+  private _activeTextEditorToggleVisible = false;
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
@@ -49,6 +52,9 @@ export class MainViewModel extends Observable {
       this.secondaryTextSettingTitle = snapshot.secondaryTextSettingTitle;
       this.secondaryTextSettingValue = snapshot.secondaryTextSettingValue;
       this.secondaryTextSettingInputKind = snapshot.secondaryTextSettingInputKind;
+      this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
+      this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
+      this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
@@ -315,6 +321,43 @@ export class MainViewModel extends Observable {
     return this.hasSecondaryTextSetting ? "next" : "done";
   }
 
+  get activeTextEditorToggleLabel(): string {
+    return this._activeTextEditorToggleLabel;
+  }
+
+  set activeTextEditorToggleLabel(value: string) {
+    if (this._activeTextEditorToggleLabel !== value) {
+      this._activeTextEditorToggleLabel = value;
+      this.notifyPropertyChange("activeTextEditorToggleLabel", value);
+    }
+  }
+
+  get activeTextEditorToggleValue(): boolean {
+    return this._activeTextEditorToggleValue;
+  }
+
+  set activeTextEditorToggleValue(value: boolean) {
+    if (this._activeTextEditorToggleValue !== value) {
+      this._activeTextEditorToggleValue = value;
+      this.notifyPropertyChange("activeTextEditorToggleValue", value);
+    }
+  }
+
+  get activeTextEditorToggleVisible(): boolean {
+    return this._activeTextEditorToggleVisible;
+  }
+
+  set activeTextEditorToggleVisible(value: boolean) {
+    if (this._activeTextEditorToggleVisible !== value) {
+      this._activeTextEditorToggleVisible = value;
+      this.notifyPropertyChange("activeTextEditorToggleVisibility", this.activeTextEditorToggleVisibility);
+    }
+  }
+
+  get activeTextEditorToggleVisibility(): "visible" | "collapse" {
+    return this._activeTextEditorToggleVisible ? "visible" : "collapse";
+  }
+
   get isTextSettingEditorActive(): boolean {
     return this._activeTextSettingId !== null;
   }
@@ -571,6 +614,12 @@ export class MainViewModel extends Observable {
       dashboardController.setActiveTextSettingValue(text, this.secondaryTextSettingId ?? undefined);
     }
     dashboardController.finishActiveTextSettingEdit();
+  }
+
+  onTextSettingToggleChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    dashboardController.setActiveTextEditorToggleValue(
+      args.object?.checked ?? args.value ?? false,
+    );
   }
 
   onOpenEvenAppSettingsTap(): void {
