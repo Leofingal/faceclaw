@@ -58,7 +58,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, watchWakesDisplaySetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -68,6 +68,7 @@ import {
 import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
+import { glassesDisplayLabel } from "./glasses-display-state";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -302,12 +303,13 @@ class DashboardController {
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => {
         this.persistOpenApps();
-        this.wearRemote?.schedulePublish();
+        // The foreground title is mirrored on both remote-control faces.
+        this.emit();
       },
       onScreenStateChanged: (on) => {
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
-        this.wearRemote?.schedulePublish();
+        this.emit();
       },
     });
     // Boot hooks register windows that exist from startup (the launcher,
@@ -355,6 +357,8 @@ class DashboardController {
         status: this.status,
         glassesLocked: this.glassesLocked,
         glassesWorn: this.glassesWorn,
+        silentMode: this.silentMode,
+        lastHeadsetBattery: this.lastHeadsetBattery,
       }),
       appendLog: (line) => this.appendLog(line),
     });
@@ -700,6 +704,14 @@ class DashboardController {
         return;
       }
 
+      if (voiceControlBridge.isCaptureHeld()) {
+        // Ending the plugin task ends the mic with it, so a live capture (the
+        // Transcribe window, typically) outranks the screen-off power save.
+        // Check before the lease refresh below, which costs a BLE message.
+        this.scheduleEvenHubSuspend();
+        return;
+      }
+
       void (async () => {
         if (this.faceclawWakeLeaseSupported) {
           // Refresh immediately before teardown so the first suspended wake
@@ -725,6 +737,9 @@ class DashboardController {
         .then((suspended) => {
           if (suspended === undefined) return;
           if (suspended) {
+            // A capture that raced the suspend lost its mic with the plugin
+            // task; park it for the resume path.
+            voiceControlBridge.handleSessionEnded();
             this.appendLog("EvenHub session suspended while screen is off");
             return;
           }
@@ -849,12 +864,15 @@ class DashboardController {
   /**
    * Message to show in place of the display preview, or "" to show the preview.
    *
-   * Both cases look identical to a dead pair of glasses from the phone side:
-   * silent mode blanks the display and swallows input while the BLE session
-   * stays up, and a battery that just ran out simply stops answering.
+   * These states look identical to a dead pair of glasses from the phone side:
+   * charging and silent mode both make the display unavailable while BLE stays
+   * up, and a battery that just ran out simply stops answering.
    */
   private displayPreviewMessage(): string {
-    if (this.silentMode && (this.phase === "connected" || this.phase === "charging")) {
+    if (this.phase === "charging") {
+      return this.glassesDisplayLabel();
+    }
+    if (this.silentMode && this.phase === "connected") {
       return "Connected (Silent mode enabled)";
     }
     const connectionFailing = this.phase === "disconnected" || this.phase === "connecting";
@@ -866,6 +884,17 @@ class DashboardController {
       return "Disconnected (low battery)";
     }
     return "";
+  }
+
+  /** What occupies the foreground-title line on the watch-style controls. */
+  glassesDisplayLabel(): string {
+    return glassesDisplayLabel({
+      phase: this.phase,
+      silentMode: this.silentMode,
+      screenOn: shell.isScreenOn(),
+      battery: this.lastHeadsetBattery,
+      foregroundTitle: shell.getForegroundApp()?.title ?? null,
+    });
   }
 
   /**
@@ -954,8 +983,13 @@ class DashboardController {
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
+    // "Only via glasses" (the default) means the phone never opens its own
+    // link to the ring: the glasses relay its gestures to us anyway, and the
+    // direct link is currently unreliable. An empty address disables every
+    // direct-ring code path in the communicator.
+    const ringAddress = ringConnectionModeSetting.get() === "direct" ? addresses.ring : "";
     this.appendLog(
-      `Using configured arms: R=${addresses.right} L=${addresses.left}${addresses.ring ? ` ring=${addresses.ring}` : ""}`,
+      `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
@@ -972,7 +1006,7 @@ class DashboardController {
       communicator = new FaceclawCommunicatorBridge({
         right: addresses.right,
         left: addresses.left,
-        ring: addresses.ring,
+        ring: ringAddress,
       });
       this.communicator = communicator;
       this.offLog = communicator.onLog((line) => {
@@ -1020,6 +1054,10 @@ class DashboardController {
           // the transport comes back, so do not make lock decisions from a
           // stale pre-disconnect value in the meantime.
           this.glassesWorn = null;
+          // The mic enable was session-scoped too: park any live capture so
+          // the next session restarts it, instead of leaving a holder that
+          // makes every later request think the mic is already running.
+          voiceControlBridge.handleSessionEnded();
         }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);
@@ -1049,16 +1087,21 @@ class DashboardController {
         this.handlePhoneLockState(locked);
       });
       this.offBattery = communicator.onBatteryState((state) => {
-        this.lastHeadsetBattery = state.battery >= 0 ? state.battery : null;
+        // An unavailable reading must not erase the useful last-known value,
+        // especially while the glasses remain reachable in their case.
+        const hasBatteryLevel = Number.isInteger(state.battery) && state.battery >= 0 && state.battery <= 100;
+        if (hasBatteryLevel) this.lastHeadsetBattery = state.battery;
         shell.setBatteryLevels({
-          headset: state.battery,
+          headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
         });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
           // Repaint the top bar (battery indicators live in the shell chrome).
           this.requestShellRender();
         }
-        this.wearRemote?.schedulePublish();
+        // Battery belongs in the charging stand-in on the phone as well as in
+        // the watch state, so refresh both consumers on every report.
+        this.emit();
       });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
         this.refreshEvenAppStatus();
@@ -1077,6 +1120,10 @@ class DashboardController {
         this.schedulePreviewUpdate();
         if (this.phase === "connected") {
           this.setStatus("Connected.");
+          // A rendered frame also means the display path is warm enough for
+          // the glasses to accept a mic enable, so this is where a capture
+          // parked by the previous session (or by an EvenHub suspend) resumes.
+          this.resumeVoiceCapture();
           // A rendered frame means the session is warmed up (fixedLayoutCreated),
           // so the buzzer won't be dropped. Play the one-time welcome sound now.
           if (this.welcomeSoundArmed) {
@@ -1369,7 +1416,7 @@ class DashboardController {
       // Faceclaw's final BLE message before the transport closes.
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
-      voiceControlBridge.stop();
+      voiceControlBridge.handleSessionEnded();
 
       const cleanupAcked = skipFirmwareCleanup
         ? false
@@ -1411,22 +1458,17 @@ class DashboardController {
    * finger-down/finger-up (the watch) hold for as long as the user does.
    */
   async injectSyntheticRingInput(kind: WearRemoteInputKind, origin: SyntheticInputOrigin = "ring"): Promise<void> {
-    // Watch-scheme input (the Wear app, the phone's pad/d-pad, mirror touches)
-    // wakes a dark display and then lands normally, resuming the previous
-    // focus. The ring's own scheme keeps its double-tap-only wake.
+    // Match the ring while the display is dark: only a double-click wakes it,
+    // and that wake is handled by Shell.receiveInput. This check also protects
+    // against a watch acting on a stale state snapshot.
     if (
       origin === "watch" &&
       !shell.isScreenOn() &&
-      !this.glassesLocked &&
-      (this.phase === "connected" || this.phase === "charging") &&
-      watchWakesDisplaySetting.get() &&
       kind !== "double-click" &&
-      kind !== "wakeword" &&
       kind !== "long-press-release"
     ) {
-      shell.wake(shell.getFocus());
-      this.requestShellRender();
-      this.appendLog(`${kind} (watch scheme) woke the display`);
+      this.appendLog(`${kind} (watch scheme) ignored while display is off`);
+      return;
     }
     if (kind === "long-press") {
       // Hardware delivers a press event and then a release when the finger
@@ -1454,15 +1496,8 @@ class DashboardController {
       return;
     }
     if (!shell.isScreenOn()) {
-      // The same wake policy as the rest of the watch scheme: honour the
-      // "input wakes display" setting; with it off, only a double-tap (a
-      // normal double-click) reaches the dark display.
-      if (!watchWakesDisplaySetting.get()) {
-        if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
-        return;
-      }
-      shell.wake(shell.getFocus());
-      this.requestShellRender();
+      if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+      return;
     }
     if (kind !== "tap") {
       await this.injectSyntheticRingInput(MIRROR_TOUCH_GESTURES[kind], "watch");
@@ -1549,6 +1584,37 @@ class DashboardController {
     voiceControlBridge.stopContinuousCapture();
   }
 
+  /** Provider and key settings for a capture on the given connection. */
+  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge) {
+    return {
+      communicator: communicator.getNativeCommunicator(),
+      provider: voiceProviderSetting.get(),
+      elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+      openAiApiKey: openAiApiKeySetting.get(),
+      sonioxApiKey: sonioxApiKeySetting.get(),
+      saveRecording: saveVoiceRecordingsSetting.get(),
+      // "My voice only" (Microphones app): verify command utterances
+      // against the enrolled wearer voice-print; non-matching speakers'
+      // finals are suppressed by the bridge.
+      speakerVerification: wearerVerificationOptions() ?? undefined,
+      // The Microphones app's processing config applies to every capture:
+      // spectral noise suppression and the Sonic Radar listening beam.
+      ...micSession.captureProcessingOptions(),
+    };
+  }
+
+  /**
+   * Restart the mic for a capture that a previous session left holding. Cheap
+   * to call per frame: it does nothing unless one is actually parked.
+   */
+  private resumeVoiceCapture(): void {
+    if (!voiceControlBridge.hasSuspendedCapture()) return;
+    const communicator = this.communicator;
+    if (!communicator || this.phase !== "connected") return;
+    this.appendLog("resuming voice capture on the new glasses session");
+    voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
+  }
+
   private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
     if (this.phase !== "connected" || !this.communicator) {
       return;
@@ -1557,22 +1623,7 @@ class DashboardController {
     void ensureVoicePermissions()
       .then(() => {
         if (this.phase !== "connected" || this.communicator !== communicator) return;
-        const options = {
-          communicator: communicator.getNativeCommunicator(),
-          provider: voiceProviderSetting.get(),
-          elevenLabsApiKey: elevenLabsApiKeySetting.get(),
-          openAiApiKey: openAiApiKeySetting.get(),
-          sonioxApiKey: sonioxApiKeySetting.get(),
-          saveRecording: saveVoiceRecordingsSetting.get(),
-          endpointing,
-          // "My voice only" (Microphones app): verify command utterances
-          // against the enrolled wearer voice-print; non-matching speakers'
-          // finals are suppressed by the bridge.
-          speakerVerification: wearerVerificationOptions() ?? undefined,
-          // The Microphones app's processing config applies to every capture:
-          // spectral noise suppression and the Sonic Radar listening beam.
-          ...micSession.captureProcessingOptions(),
-        };
+        const options = { ...this.voiceCaptureOptions(communicator), endpointing };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
         } else {

@@ -37,7 +37,7 @@ data class Prefs(
      * exactly when a remote wants to stay ready.
      */
     val keepScreenOn: Boolean = true,
-    /** Swipe/crown direction follows the content (touch-scroll style) instead of the ring. */
+    /** Swipe direction follows the content (touch-scroll style) instead of the ring. */
     val naturalScroll: Boolean = false,
     /** Tap the top/bottom of the pad to scroll instead of swiping. */
     val tapZones: Boolean = false,

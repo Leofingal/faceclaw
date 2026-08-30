@@ -15,7 +15,7 @@ the phone it only tells you to install it.
 | double-tap, or a two-finger tap | **back**, everywhere: closes menus, leaves a settings column, leaves a folder or the launcher grid, returns to the sidebar (and from the sidebar turns the display off, as the ring does) |
 | press and hold | the app's context menu (a long press, held until you lift your finger) |
 | swipe ↑ ↓ ← → | **spatial navigation, with no mode to enter first**: the launcher highlights one app and the swipe moves it by a row or a column; the settings panel moves between its columns and down its lists; the sidebar moves up and down; Music skips to the previous / next track. Right goes *into* things (sidebar → window, section → items) and left comes back *out* (first column → sidebar). Anywhere without a spatial meaning, up/down scroll, right selects and left goes back. One step per swipe (long swipes used to repeat, which overshot lists whenever the display lagged); use repeated flicks, the crown, or a two-finger page swipe to cover distance. "Natural swipe" flips the vertical sense; left/right can be remapped in settings. |
-| rotate the crown | up / down (one step per detent-ish, sensitivity adjustable) — in the launcher that is rows, elsewhere scrolling |
+| rotate the crown | previous / next (one step per detent-ish, sensitivity adjustable) — clockwise is previous by default; reverse it in the on-glasses Settings > Watch section |
 | two-finger swipe up / down | scroll a page (3 steps) |
 | **twist the wrist twice** (two brisk flicks, either direction) | back — from the gyroscope; on by default, sensitivity adjustable |
 | **tip taps** — tap your index finger against your thumb | select; two quick taps = back. From the accelerometer; **off by default** (experimental): on a wrist, ordinary hand movement produced phantom selects in testing. Turn on in Watch settings; needs ~¼ s of stillness before a tap counts, and both motion gestures are ignored while the watch is off the wrist or buzzing. |
@@ -31,7 +31,9 @@ ever seeing a difference.
 long press; button 2 = back; button 3 = "Hey Even". You can also set
 the watch's button shortcut to open Faceclaw.
 
-**Bottom row buttons**: Assistant, Type into app, Apps, Status.
+**Bottom row buttons**: Assistant, Type into app, Apps, Status. They are hidden
+by default; swipe up beginning at the bottom edge to slide them in, then swipe
+down beginning in the button tray to hide them.
 
 - **Assistant** — ask the assistant using the *watch's* microphone (system
   speech recognition) or the Wear keyboard, and read the reply on the watch as
@@ -53,9 +55,9 @@ wrist dropping and freezes the app, so the remote would need a wake-up tap
 before every gesture.
 
 Phone-side switches live in Faceclaw's Settings > Watch: turn watch control
-off entirely, decide whether watch input wakes a dark display (on by default —
-the ring only wakes it with a double-tap), forbid unlocking from the watch,
-or stop mirroring assistant replies.
+off entirely, reverse the crown direction, forbid unlocking from the watch,
+or stop mirroring assistant replies. While the glasses display is off, every
+watch gesture except a double-tap is ignored; double-tap wakes it.
 
 The watch buzzes differently when the phone refuses or doesn't answer a
 gesture (glasses disconnected, locked, watch control off); the pill at the

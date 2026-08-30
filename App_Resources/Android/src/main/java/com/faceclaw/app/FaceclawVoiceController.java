@@ -76,6 +76,9 @@ public class FaceclawVoiceController {
     private volatile FaceclawBleCommunicator communicator;
     private Thread workerThread;
     private volatile boolean started;
+    // Set once the worker has the glasses mic enabled for this session.
+    // Read and written under `lock`, so it flips with `started` atomically.
+    private boolean audioStarted;
     private VoiceInputMode mode = VoiceInputMode.CLOUD;
     private OfflineRecognizer recognizer;
     private FaceclawLc3Decoder lc3Decoder;
@@ -219,9 +222,34 @@ public class FaceclawVoiceController {
             }
             mode = parseMode(requestedMode);
             started = true;
+            audioStarted = false;
             workerThread = new Thread(this::runLoop, "FaceclawVoiceController");
             workerThread.start();
         }
+    }
+
+    /**
+     * Whether mic audio is actually flowing. {@link #start} only records
+     * intent: the enable lives in the glasses' EvenHub session, so a transport
+     * drop or a session suspend can leave this controller started with a
+     * worker that will never see another packet. Anything deciding whether to
+     * (re)start capture must ask this rather than assume its own bookkeeping.
+     */
+    public boolean isCapturing() {
+        boolean audioUp;
+        synchronized (lock) {
+            if (!started) {
+                return false;
+            }
+            audioUp = audioStarted;
+        }
+        if (!audioUp) {
+            // The worker is still bringing the mic up; report it as running so
+            // a concurrent request shares it instead of restarting it.
+            return true;
+        }
+        FaceclawBleCommunicator currentCommunicator = communicator;
+        return currentCommunicator != null && currentCommunicator.isAudioCaptureActive();
     }
 
     public void stop() {
@@ -288,6 +316,9 @@ public class FaceclawVoiceController {
                 emitStatus("Could not start G2 microphone input.");
                 return;
             }
+            synchronized (lock) {
+                audioStarted = true;
+            }
 
             emitStatus(currentMode == VoiceInputMode.CLOUD
                     ? "Listening (cloud)..."
@@ -312,6 +343,7 @@ public class FaceclawVoiceController {
             releaseLc3();
             synchronized (lock) {
                 started = false;
+                audioStarted = false;
                 workerThread = null;
             }
         }

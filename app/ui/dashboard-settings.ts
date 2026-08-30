@@ -328,13 +328,13 @@ export const watchCanUnlockSetting = new ConfigSettingBoolean({
     "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
 });
 
-export const watchWakesDisplaySetting = new ConfigSettingBoolean({
-  id: "watch-wakes-display",
-  label: "Watch input wakes display",
-  storageKey: "watch.wakesDisplay",
-  defaultValue: true,
+export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
+  id: "watch-crown-clockwise-next",
+  label: "Clockwise crown = next",
+  storageKey: "watch.crownClockwiseNext",
+  defaultValue: false,
   description:
-    "Any gesture from the watch turns the glasses display on (the ring only wakes it with a double-tap). Off: watch input is ignored while the display is off, as ring input is.",
+    "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
 });
 
 export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
@@ -388,6 +388,19 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   storageKey: "developer.suspendEvenHubWhenScreenOff",
   defaultValue: true,
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
+});
+
+export type RingConnectionMode = "glasses" | "direct";
+
+export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({
+  id: "ring-connection-mode",
+  label: "Ring connection",
+  storageKey: "developer.ringConnectionMode",
+  defaultValue: "glasses",
+  values: ["glasses", "direct"],
+  formatValue: (value) => (value === "direct" ? "Direct" : "Only via glasses"),
+  description:
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
 export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";

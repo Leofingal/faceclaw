@@ -41,6 +41,7 @@ import {
   mirrorTouchSetting,
   openAiApiKeySetting,
   previewColorSetting,
+  ringConnectionModeSetting,
   roamApiTokenSetting,
   roamGraphNameSetting,
   sonioxApiKeySetting,
@@ -60,9 +61,9 @@ import {
   screenTimeoutSetting,
   wakeWordActionSetting,
   watchCanUnlockSetting,
+  watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
-  watchWakesDisplaySetting,
 } from "../dashboard-settings";
 import { wearBridge } from "../../native/wear-bridge";
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
@@ -167,7 +168,7 @@ function settingsSections(): SettingsSection[] {
       // a watch running the companion app is currently reachable.
       items: [
         toggleSettingMenuItem(watchRemoteEnabledSetting),
-        toggleSettingMenuItem(watchWakesDisplaySetting),
+        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
         toggleSettingMenuItem(watchCanUnlockSetting),
         toggleSettingMenuItem(watchMirrorAssistantSetting),
       ],
@@ -176,6 +177,9 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Developer",
       items: [
+        // Whether the phone opens its own BLE link to the R1 ring; the
+        // glasses relay ring gestures either way. Applied at connect time.
+        enumSettingMenuItem(ringConnectionModeSetting),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),

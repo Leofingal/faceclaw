@@ -25,6 +25,7 @@ import {
   displayModeSetting,
   onAnySettingChanged,
   watchCanUnlockSetting,
+  watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
 } from "../ui/dashboard-settings";
@@ -101,6 +102,8 @@ export type WearRemoteHost = {
     status: string;
     glassesLocked: boolean;
     glassesWorn: boolean | null;
+    silentMode: boolean;
+    lastHeadsetBattery: number | null;
   };
   appendLog: (line: string) => void;
 };
@@ -195,8 +198,9 @@ export class WearRemote {
       locked: state.glassesLocked,
       worn: state.glassesWorn,
       listening: voiceActivity.isActive(),
-      battery: battery.headset,
-      charging: battery.headsetCharging === true,
+      battery: state.lastHeadsetBattery,
+      charging: state.phase === "charging" || battery.headsetCharging === true,
+      silentMode: state.silentMode,
       foreground: foreground ? { appId: foreground.appId, title: foreground.title } : null,
       windows: shell.getWindows().map((window) => ({
         windowId: window.windowId,
@@ -209,6 +213,7 @@ export class WearRemote {
       apps: this.listApps(),
       displayMode: displayModeSetting.get(),
       remoteEnabled: watchRemoteEnabledSetting.get(),
+      crownClockwiseNext: watchCrownClockwiseNextSetting.get(),
       canUnlock: watchCanUnlockSetting.get(),
       mirrorAssistant: watchMirrorAssistantSetting.get(),
       assistantAvailable: shell.isAssistantAvailable(),
@@ -294,10 +299,8 @@ export class WearRemote {
       ack(false, "The glasses are not connected.");
       return;
     }
-    // The lock only yields to a double-click, exactly as the ring's does
-    // (handled inside the controller); a dark display wakes on any watch-
-    // scheme gesture (injectSyntheticRingInput, shared with the phone's own
-    // pad and d-pad).
+    // The lock and a dark display only yield to a double-click, exactly as
+    // the ring does (handled inside the controller).
     const repeatable = kind === "scroll-up" || kind === "scroll-down" || kind === "swipe-up" || kind === "swipe-down";
     const steps = repeatable ? Math.min(MAX_SCROLL_STEPS, Math.max(1, Math.round(readNumber(payload.steps, 1)))) : 1;
     for (let i = 0; i < steps; i++) {
@@ -337,6 +340,10 @@ export class WearRemote {
     }
     if (!connected) {
       ack(false, "The glasses are not connected.");
+      return;
+    }
+    if (payload.source === "gesture" && !shell.isScreenOn()) {
+      ack(true);
       return;
     }
     if (state.glassesLocked && command !== "unlock" && command !== "lock") {
