@@ -4,6 +4,7 @@
 * Settings import/export scripts work on release builds
 * Fixed an issue where the onboarding flow failed to detect the existing glasses firmware version
 * Update launcher, files, and game UIs to work better with watch input
+* Calendar app shows the day-of-the-month in its icon
 
 ## 0.6 - 2026-08-29
 - Start keeping a changelog and making signed binaries via GitHub Releases
