@@ -1,0 +1,35 @@
+<!--
+  The cover-screen companion: what the phone shows while the Fold is SHUT.
+
+  The rule this screen is built on (design pilot, and the instruction that
+  followed it): closed is glanceable, closer to what the glasses themselves
+  show than to the full phone app. So it is one screenful, no scrolling, no
+  navigation — is it connected, what is on the lens right now, and the one
+  control worth a thumb on a 411dp-wide screen.
+
+  Everything reachable from the hub is deliberately absent. Unfolding is the
+  navigation; a cover screen that mirrors the whole hub in a narrow column is
+  the "just a rescaled version of the same layout" this exists to avoid.
+
+  Binds to MainViewModel (inherited from the page), so the connection card
+  behaves identically to the hub's.
+-->
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,auto,*,auto" class="cover-glance">
+
+  <GridLayout row="0" rows="auto,auto" columns="*,auto" class="home-card">
+    <Label row="0" col="0" text="{{ connectionStatusLabel }}" class="home-card-title" verticalAlignment="center" />
+    <Label row="1" col="0" text="{{ status }}" class="home-card-meta" textWrap="true" />
+    <Button row="0" rowSpan="2" col="1" text="{{ buttonLabel }}" tap="{{ onTap }}"
+      isEnabled="{{ connectItemEnabled }}" class="-primary home-card-button" verticalAlignment="center" />
+  </GridLayout>
+
+  <Label row="1" text="On the glasses" class="home-section-title" />
+
+  <StackLayout row="2" class="home-card cover-glance-card">
+    <Label text="{{ glassesForegroundLabel }}" class="cover-glance-app" textWrap="true" />
+    <Label text="{{ glassesGlanceText }}" class="cover-glance-text" textWrap="true" />
+  </StackLayout>
+
+  <Label row="3" text="Unfold for the full companion." class="cover-glance-hint" textWrap="true" />
+
+</GridLayout>

@@ -10,8 +10,24 @@
 
   The action bar keeps everything it had, so nothing that used to be one menu
   away has moved further; the rows below are the discoverable version of it.
+
+  THREE BODIES, ONE PAGE. The hub is one of three things this page can show,
+  and neither switch is a navigation the user performs:
+
+    cover-glance      the Fold is shut. One screenful: connection, what is on
+                      the lens, nothing to scroll. Unfolding is the navigation.
+    ghost-companion   the Fold is open and Ghost is the foreground app ON THE
+                      GLASSES. The phone becomes that session's second view.
+    the hub           everything else.
+
+  They share the page's grid cell rather than being separate pages: a page swap
+  would leave a back-stack entry behind a screen nobody asked to leave, and the
+  warnings modal and the glasses' keyboard-input editor have to float over all
+  three regardless. MainViewModel owns the choice; see its "Which body the page
+  is showing" section.
 -->
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:ui="phone-ui"
+    navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar>
         <!-- Custom titleView: app title on the left; connection status and the
              warning-triangle indicator right-aligned beside the overflow menu. -->
@@ -32,8 +48,30 @@
     </ActionBar>
 
     <GridLayout>
-        <ScrollView>
+        <!-- Fold SHUT: the cover screen gets a glance, not the app. -->
+        <ui:cover-glance visibility="{{ coverGlanceVisibility }}" />
+
+        <!-- Fold OPEN and Ghost is the foreground app ON THE GLASSES: the
+             phone becomes Ghost's companion. The bar above it is the only way
+             back to the hub without changing anything on the glasses; the
+             companion itself is bound to its own view model. -->
+        <GridLayout rows="auto,*" visibility="{{ ghostCompanionVisibility }}">
+            <GridLayout row="0" rows="auto" columns="*,auto" class="app-switch-bar">
+                <Label col="0" text="Ghost is open on the glasses" class="app-switch-label" verticalAlignment="center" />
+                <Button col="1" text="Hub" tap="{{ onShowHubTap }}" class="app-switch-button" />
+            </GridLayout>
+            <ui:ghost-companion row="1" bindingContext="{{ ghostCompanion }}" />
+        </GridLayout>
+
+        <ScrollView visibility="{{ hubBodyVisibility }}">
             <StackLayout class="home-body">
+
+                <!-- Only while peeking at the hub with Ghost still focused
+                     over there; the way back to the companion. -->
+                <StackLayout class="home-row" tap="{{ onShowGhostTap }}" visibility="{{ ghostReturnRowVisibility }}">
+                    <Label text="Ghost" class="home-row-title" />
+                    <Label text="Back to the companion for the session on the glasses" class="home-row-meta" textWrap="true" />
+                </StackLayout>
 
                 <!-- Connection. Connect/Disconnect was overflow-only before;
                      on a home screen it is the one control worth a thumb. -->

@@ -22,6 +22,7 @@ import {
   ghostSpeakSetting,
   ghostTokenSetting,
 } from "./ghost-client";
+import { clearGhostCompanion, publishGhostCompanion } from "./ghost-companion-store";
 import { GhostLayer } from "./ghost-layer";
 
 export const GHOST_WINDOW_ID = "ghost";
@@ -100,10 +101,23 @@ export function createGhostAppWindow(options: InProcessAppOptions): InProcessWin
     onClosed: () => {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
+      // The phone's companion screen dies with the window. Leaving the last
+      // feed published would give the phone a frozen conversation it had no
+      // way to know was stale.
+      clearGhostCompanion();
       options.onClosed();
     },
   });
-  layer.requestRender = app.requestRender;
+  // The phone-side companion is fed from the layer's render path rather than
+  // from a poll of its own: a render is exactly "something the wearer would
+  // see changed", and one poll for two surfaces is what keeps them agreeing
+  // about which item is current. The store drops no-op publishes, so the
+  // dictation renders (one per interim transcript) cost nothing.
+  layer.requestRender = () => {
+    publishGhostCompanion(layer.companionState());
+    app.requestRender();
+  };
+  publishGhostCompanion({ open: true, ...layer.companionState() });
   void layer.poll();
   pollTimer = setInterval(() => void layer.poll(), POLL_MS);
   return app;

@@ -158,6 +158,26 @@ export class GhostLayer implements Layer {
     this.unsubscribeStatus = null;
   }
 
+  /**
+   * What the phone's companion screen shows: the feed, where the lens cursor
+   * is, and the failure sentence when there is one.
+   *
+   * A read-only projection of state this layer already holds, published by the
+   * window factory on every render — the phone is a second view of this
+   * session, never a second client of it. The reply slot (cursor ===
+   * items.length) is reported as "no item selected" rather than as an index
+   * the phone would have to know is special.
+   */
+  companionState(): { items: GhostItem[]; cursor: number; status: string; sessionId: string } {
+    const onFeedItem = this.cursor >= 0 && this.cursor < this.items.length;
+    return {
+      items: this.items,
+      cursor: onFeedItem ? this.cursor : -1,
+      status: this.status,
+      sessionId: ghostSessionId(),
+    };
+  }
+
   // =========================================================================
   // Cursor geometry
   //

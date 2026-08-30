@@ -36,6 +36,14 @@ import {
   SENTIMENT_BUCKET_COLORS,
   type SessionRow,
 } from "./conversation-format";
+import {
+  displayClass,
+  foldSnapshot,
+  onFoldStateChanged,
+  refreshFoldTracking,
+  type CompanionDisplayClass,
+} from "../native/fold-state";
+import { GhostCompanionViewModel } from "./ghost-companion-view-model";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
@@ -93,6 +101,31 @@ export class MainViewModel extends Observable {
   private _warningsModalVisible = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
+  // ── What the phone shows, and why ────────────────────────────────────────
+  //
+  // The home hub is one of three bodies this page can be, chosen by two live
+  // signals rather than by navigation:
+  //
+  //   the FOLD    cover screen -> the glance; inner screen -> the full app.
+  //   the GLASSES whichever app has the foreground window over there decides
+  //               what the phone's full app shows. Ghost focused -> Ghost's
+  //               companion. Anything else -> the hub.
+  //
+  // Neither is a phone-side mode the user sets, which is the whole point: the
+  // companion follows the wearer instead of being a menu he has to drive.
+  private _displayClass: CompanionDisplayClass = displayClass(foldSnapshot());
+  private _foregroundAppId: string | null = null;
+  private _foregroundAppTitle: string | null = null;
+  /**
+   * "Show me the hub anyway", from the button on the Ghost companion. Cleared
+   * whenever the glasses change app, so it is a peek and not a mode — the next
+   * thing that happens over there puts the phone back in step.
+   */
+  private _hubOverride = false;
+
+  /** Ghost's companion screen. Built once; it owns its own feed subscription. */
+  readonly ghostCompanion = new GhostCompanionViewModel();
+
   // A new view model is built on every navigation to the main page; these
   // module-level subscriptions must die with it (see dispose) or each
   // round-trip to another page leaks a listener that pins the dead model.
@@ -131,10 +164,23 @@ export class MainViewModel extends Observable {
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
+      this.setForegroundApp(snapshot.foregroundAppId, snapshot.foregroundAppTitle);
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
     this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+    // Folding, unfolding, and any other window resize.
+    this.unsubscribers.push(onFoldStateChanged((snapshot) => this.setDisplayClass(displayClass(snapshot))));
+    this.ghostCompanion.attach();
+    // The companion's own feed drives the cover screen's one line of content,
+    // so the glance updates while the Fold is shut without anything polling.
+    // Observable.on returns void, so the unsubscriber is written by hand.
+    const glanceHandler = () => {
+      if (this._displayClass !== "compact") return;
+      this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
+    };
+    this.ghostCompanion.on(Observable.propertyChangeEvent, glanceHandler);
+    this.unsubscribers.push(() => this.ghostCompanion.off(Observable.propertyChangeEvent, glanceHandler));
   }
 
   /** Detach from the controller and settings; the page calls this when it lets go of the model. */
@@ -142,6 +188,7 @@ export class MainViewModel extends Observable {
     for (const unsubscribe of this.unsubscribers.splice(0)) {
       unsubscribe();
     }
+    this.ghostCompanion.dispose();
   }
 
   get status(): string {
@@ -284,6 +331,100 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
     this.notifyPropertyChange("warningsModalWidth", this.warningsModalWidth);
     this.notifyPropertyChange("watchFaceWidth", this.watchFaceWidth);
+  }
+
+  // =========================================================================
+  // Which body the page is showing
+  //
+  // Three, chosen by the fold and by the glasses (see the field comments):
+  // the cover glance, Ghost's companion, and the home hub. Exactly one is
+  // visible; they share the page's grid cell rather than being separate pages,
+  // because neither signal is a navigation the user performed — a page swap
+  // would put a back-stack entry behind a screen he never asked to leave.
+
+  /**
+   * Re-point fold tracking at the Activity on screen and re-read the posture.
+   * Called from the page's `loaded`: WindowInfoTracker needs an Activity, and
+   * a suspend/resume can hand us a different instance of one.
+   */
+  refreshFoldMetrics(): void {
+    refreshFoldTracking();
+    this.setDisplayClass(displayClass(foldSnapshot()));
+  }
+
+  private setDisplayClass(next: CompanionDisplayClass): void {
+    if (this._displayClass === next) return;
+    this._displayClass = next;
+    this.notifyBodyChange();
+  }
+
+  private setForegroundApp(appId: string | null, title: string | null): void {
+    if (this._foregroundAppId === appId && this._foregroundAppTitle === title) return;
+    // Changing app over there ends any "show me the hub anyway" peek: the
+    // override exists to look away from Ghost, not to pin the phone.
+    if (this._foregroundAppId !== appId) this._hubOverride = false;
+    this._foregroundAppId = appId;
+    this._foregroundAppTitle = title;
+    this.notifyPropertyChange("glassesForegroundLabel", this.glassesForegroundLabel);
+    this.notifyBodyChange();
+  }
+
+  private notifyBodyChange(): void {
+    this.notifyPropertyChange("coverGlanceVisibility", this.coverGlanceVisibility);
+    this.notifyPropertyChange("ghostCompanionVisibility", this.ghostCompanionVisibility);
+    this.notifyPropertyChange("hubBodyVisibility", this.hubBodyVisibility);
+    this.notifyPropertyChange("ghostReturnRowVisibility", this.ghostReturnRowVisibility);
+    this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
+  }
+
+  private get isGhostForeground(): boolean {
+    return this._foregroundAppId === "ghost";
+  }
+
+  get coverGlanceVisibility(): "visible" | "collapse" {
+    return this._displayClass === "compact" ? "visible" : "collapse";
+  }
+
+  get ghostCompanionVisibility(): "visible" | "collapse" {
+    return this._displayClass === "expanded" && this.isGhostForeground && !this._hubOverride
+      ? "visible"
+      : "collapse";
+  }
+
+  get hubBodyVisibility(): "visible" | "collapse" {
+    return this.coverGlanceVisibility === "collapse" && this.ghostCompanionVisibility === "collapse"
+      ? "visible"
+      : "collapse";
+  }
+
+  /** The way back to Ghost's companion after peeking at the hub. */
+  get ghostReturnRowVisibility(): "visible" | "collapse" {
+    return this._hubOverride && this.isGhostForeground ? "visible" : "collapse";
+  }
+
+  onShowHubTap(): void {
+    this._hubOverride = true;
+    this.notifyBodyChange();
+  }
+
+  onShowGhostTap(): void {
+    this._hubOverride = false;
+    this.notifyBodyChange();
+  }
+
+  /** What is on the lens right now, for the cover screen's one content card. */
+  get glassesForegroundLabel(): string {
+    return this._foregroundAppTitle ?? "Home";
+  }
+
+  get glassesGlanceText(): string {
+    if (this._phase !== "connected" && this._phase !== "charging") {
+      return "Not connected to the glasses.";
+    }
+    if (this.isGhostForeground) return this.ghostCompanion.glanceHeadline();
+    return this._foregroundAppTitle
+      ? `${this._foregroundAppTitle} is open on the glasses.`
+      : "Resting on the home screen.";
   }
 
   get activeTextSettingId(): string | null {
@@ -601,6 +742,9 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("canRun", this.canRun);
       this.notifyPropertyChange("connectItemEnabled", this.connectItemEnabled);
       this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
+      // The cover screen leads with connectivity: a disconnected pair makes
+      // "what is on the lens" a lie, so the glance says so instead.
+      this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
     }
   }
 

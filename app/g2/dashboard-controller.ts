@@ -97,6 +97,17 @@ export type DashboardSnapshot = {
   firmwareWarningVisible: boolean;
   screenRecordingActive: boolean;
   batteryOptimizationWarningVisible: boolean;
+  /**
+   * Which app has the foreground window ON THE GLASSES, or null on the home
+   * screen. Already computed for the remote-control faces' mirrored title;
+   * carried in the snapshot so the phone's own screens can be driven by it
+   * too — the companion follows what the wearer is in, rather than being a
+   * fixed menu the phone decides on its own.
+   *
+   * onWindowsChanged already re-emits the snapshot, so this is live.
+   */
+  foregroundAppId: string | null;
+  foregroundAppTitle: string | null;
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -845,6 +856,7 @@ class DashboardController {
   snapshot(): DashboardSnapshot {
     const primaryTextSetting = this.activeTextSettings[0] ?? null;
     const secondaryTextSetting = this.activeTextSettings[1] ?? null;
+    const foregroundApp = shell.getForegroundApp();
     return {
       phase: this.phase,
       status: this.status,
@@ -865,6 +877,8 @@ class DashboardController {
       firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
       screenRecordingActive: this.screenRecordingActive,
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
+      foregroundAppId: foregroundApp?.appId ?? null,
+      foregroundAppTitle: foregroundApp?.title ?? null,
     };
   }
 

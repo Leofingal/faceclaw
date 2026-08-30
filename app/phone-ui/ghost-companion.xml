@@ -1,0 +1,132 @@
+<!--
+  Ghost's phone-side companion, shown in place of the home hub whenever Ghost
+  is the foreground app ON THE GLASSES (main-page.xml swaps them; the signal is
+  the shell's foreground window, mirrored through the dashboard snapshot).
+
+  The four-pane carousel from the design pilot — Terminal, Rich view (the
+  default), Doc viewer, Settings — with the compose box docked below the three
+  content panes and absent on Settings. Panes change by tapping the tab bar or
+  swiping the pane area; the pilot's edge arrows are gone, they existed because
+  the pilot was a mouse-driven mockup in a browser.
+
+  Binds to GhostCompanionViewModel (set as this component's bindingContext by
+  main-page.xml), not to MainViewModel: everything on this screen belongs to
+  one app's session, and the hub's own members have no business here.
+-->
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,auto,*,auto" class="ghost-app">
+
+  <GridLayout row="0" rows="auto,auto,auto" columns="*" class="ghost-header">
+    <Label row="0" text="GHOST" class="ghost-wordmark" />
+    <Label row="1" text="{{ paneName }}" class="ghost-pane-title" />
+    <Label row="2" text="{{ paneStatus }}" class="ghost-pane-status" textWrap="true" />
+  </GridLayout>
+
+  <GridLayout row="1" rows="auto" columns="*,*,*,*" class="ghost-tab-bar">
+    <Button col="0" text="Terminal" tap="{{ onTerminalTabTap }}" class="{{ terminalTabClass }}" />
+    <Button col="1" text="Rich" tap="{{ onRichTabTap }}" class="{{ richTabClass }}" />
+    <Button col="2" text="Doc" tap="{{ onDocTabTap }}" class="{{ docTabClass }}" />
+    <Button col="3" text="Settings" tap="{{ onSettingsTabTap }}" class="{{ settingsTabClass }}" />
+  </GridLayout>
+
+  <!-- The four panes share the star row; only one is visible at a time, so the
+       compose bar below keeps the same position however deep a pane scrolls. -->
+  <GridLayout row="2" swipe="{{ onPaneSwipe }}">
+
+    <!-- Rich view: the feed the lens is paging through, its cursor marked.
+         Tapping a row opens that turn in the Doc viewer. -->
+    <ScrollView visibility="{{ richPaneVisibility }}">
+      <StackLayout class="ghost-pane-body">
+        <Label text="{{ feedEmptyMessage }}" visibility="{{ feedEmptyVisibility }}"
+          class="ghost-empty" textWrap="true" />
+        <Repeater items="{{ turns }}">
+          <Repeater.itemsLayout>
+            <StackLayout />
+          </Repeater.itemsLayout>
+          <Repeater.itemTemplate>
+            <StackLayout class="{{ rowClass }}" tap="{{ onRowTap }}">
+              <Label text="{{ who }}" class="ghost-turn-who" />
+              <Label text="{{ headline }}" class="ghost-turn-headline" textWrap="true" />
+              <Label text="{{ body }}" visibility="{{ bodyVisibility }}"
+                class="ghost-turn-body" textWrap="true" />
+            </StackLayout>
+          </Repeater.itemTemplate>
+        </Repeater>
+      </StackLayout>
+    </ScrollView>
+
+    <!-- Terminal: the same feed undigested. Not a live PTY — see the view
+         model's header for why the glasses client has no such stream. -->
+    <ScrollView visibility="{{ terminalPaneVisibility }}" orientation="vertical">
+      <ScrollView orientation="horizontal">
+        <Label text="{{ terminalText }}" class="ghost-terminal" />
+      </ScrollView>
+    </ScrollView>
+
+    <!-- Doc viewer: one turn's full text, pinned or following the lens. -->
+    <GridLayout rows="auto,*" visibility="{{ docPaneVisibility }}">
+      <GridLayout row="0" rows="auto" columns="*,auto" class="ghost-doc-bar">
+        <Label col="0" text="{{ docTitle }}" class="ghost-doc-path" textWrap="true" />
+        <Button col="1" text="&#x2715;" tap="{{ onDocUnpinTap }}"
+          visibility="{{ docUnpinVisibility }}" class="ghost-doc-close" />
+      </GridLayout>
+      <ScrollView row="1">
+        <Label text="{{ docText }}" class="ghost-doc-body" textWrap="true" />
+      </ScrollView>
+    </GridLayout>
+
+    <!-- Settings: Ghost's real ConfigSettings, the same objects the glasses
+         menu edits, so a change here shows up there and vice versa. -->
+    <ScrollView visibility="{{ settingsPaneVisibility }}">
+      <StackLayout class="ghost-pane-body">
+        <Label text="Session" class="home-section-title" />
+        <StackLayout class="ghost-setting">
+          <Label text="Host" class="ghost-setting-label" />
+          <Label text="Address of the box running cc-web" class="ghost-setting-desc" textWrap="true" />
+          <TextField text="{{ ghostHost }}" hint="http://100.100.41.21:32352"
+            autocorrect="false" autocapitalizationType="none" class="ghost-setting-field" />
+        </StackLayout>
+        <StackLayout class="ghost-setting">
+          <Label text="Token" class="ghost-setting-label" />
+          <Label text="Bearer token for the box's --auth. Empty sends no header at all." class="ghost-setting-desc" textWrap="true" />
+          <TextField text="{{ ghostToken }}" secure="true"
+            autocorrect="false" autocapitalizationType="none" class="ghost-setting-field" />
+        </StackLayout>
+        <StackLayout class="ghost-setting">
+          <Label text="Session id" class="ghost-setting-label" />
+          <Label text="Setting this by hand turns auto-follow off." class="ghost-setting-desc" textWrap="true" />
+          <TextField text="{{ ghostSession }}" autocorrect="false" autocapitalizationType="none"
+            class="ghost-setting-field" />
+        </StackLayout>
+
+        <Label text="Behaviour" class="home-section-title" />
+        <GridLayout rows="auto" columns="*,auto" class="ghost-setting">
+          <StackLayout col="0">
+            <Label text="Follow active session" class="ghost-setting-label" />
+            <Label text="Track whichever session the box has marked active." class="ghost-setting-desc" textWrap="true" />
+          </StackLayout>
+          <Switch col="1" checked="{{ autoFollow }}" checkedChange="{{ onAutoFollowChange }}" verticalAlignment="center" />
+        </GridLayout>
+        <GridLayout rows="auto" columns="*,auto" class="ghost-setting">
+          <StackLayout col="0">
+            <Label text="Speak replies" class="ghost-setting-label" />
+            <Label text="Read new arrivals aloud through the phone's audio route." class="ghost-setting-desc" textWrap="true" />
+          </StackLayout>
+          <Switch col="1" checked="{{ speakReplies }}" checkedChange="{{ onSpeakChange }}" verticalAlignment="center" />
+        </GridLayout>
+      </StackLayout>
+    </ScrollView>
+
+  </GridLayout>
+
+  <!-- The compose box: the one thing this screen does that the lens cannot,
+       which is why it is docked rather than reached for. -->
+  <GridLayout row="3" rows="auto,auto" columns="*,auto" class="ghost-compose" visibility="{{ composeVisibility }}">
+    <TextView row="0" col="0" text="{{ composeText }}" hint="Type into the live session…"
+      class="ghost-compose-input" />
+    <Button row="0" col="1" text="Send" tap="{{ onSendTap }}" isEnabled="{{ sendEnabled }}"
+      class="-primary ghost-send" verticalAlignment="bottom" />
+    <Label row="1" colSpan="2" text="{{ composeStatus }}" visibility="{{ composeStatusVisibility }}"
+      class="ghost-compose-status" textWrap="true" />
+  </GridLayout>
+
+</GridLayout>

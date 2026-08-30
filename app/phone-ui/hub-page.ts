@@ -108,6 +108,10 @@ export function hubPageLoaded(args: EventData) {
   void dashboardController.restoreOpenApps()
   const settingsTextField = page.getViewById<TextField>('settingsTextField')
   model?.refreshLayoutMetrics()
+  // Jetpack WindowManager needs an Activity, which exists only once a page is
+  // up; and a suspend/resume can hand us a different one. Idempotent when the
+  // Activity has not changed.
+  model?.refreshFoldMetrics()
   // Cheap (three rows, newest-first) and re-run on every back-navigation, so
   // the home hub's recent list reflects deletions and renames made elsewhere.
   model?.refreshRecentConversations()
