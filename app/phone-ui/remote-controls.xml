@@ -4,9 +4,9 @@
   scheme as the watch pad - tap = select, double-tap or two fingers = back,
   hold = menu, swipes navigate), and Ring (simulated R1 inputs on the ring's
   own scheme). The narrow mic button at the tab bar's right edge fires the
-  wakeword without changing the selected tab. Used by main-page.xml in both
-  orientations; binds to the page's MainViewModel, which collapses the whole
-  area while a text setting is being edited (keyboard-input mode).
+  wakeword without changing the selected tab. Used by glasses-mirror-page.xml
+  in both orientations; binds to the page's MainViewModel, which collapses the
+  whole area while a text setting is being edited (keyboard-input mode).
 
   The root is a rows="auto,*" grid so the active section can use the leftover
   height (the Watch face centers in it); the three sections share the star

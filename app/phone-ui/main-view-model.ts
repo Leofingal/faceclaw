@@ -27,6 +27,15 @@ import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
+import { sentimentBucket } from "../apps/microphones/sentiment";
+import {
+  conversationStore,
+  formatDateTime,
+  formatDuration,
+  NO_CONVERSATIONS_MESSAGE,
+  SENTIMENT_BUCKET_COLORS,
+  type SessionRow,
+} from "./conversation-format";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
@@ -34,10 +43,33 @@ type LayoutOrientation = "portrait" | "landscape";
 
 type ControlsTab = "settings" | "watch" | "ring";
 
+/** How many recent conversations the home hub shows before "See all". */
+const HOME_RECENT_LIMIT = 3;
+
+/**
+ * One home-hub conversation row. A trimmed version of the conversations page's
+ * row (no speaker chips) — the home screen is a glance, not the list.
+ */
+export type HomeConversationRow = {
+  title: string;
+  meta: string;
+  sentimentColor: string;
+  onRowTap: () => void;
+};
+
 // Survives navigation round-trips (a fresh view model is built per visit) but
 // not process restarts.
 let lastControlsTab: ControlsTab = "watch";
 
+/**
+ * Backs both pages that sit at the top of the app: the home hub (main-page)
+ * and the glasses mirror (glasses-mirror-page). They share one model because
+ * they share one job — holding the live connection state, the app-level
+ * warnings and the glasses-driven text editor — and only ever one of them is
+ * on screen at a time. The home hub binds the navigation and recent-
+ * conversation members plus the two display settings; the mirror page binds
+ * the preview, the tabbed controllers and the same display settings.
+ */
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
   private _displayPreview: ImageSource | null = null;
@@ -649,6 +681,112 @@ export class MainViewModel extends Observable {
   /** Review saved caption sessions; works without a glasses connection. */
   onConversationsTap(): void {
     Frame.topmost()?.navigate("phone-ui/conversations-page");
+  }
+
+  onAskTap(): void {
+    Frame.topmost()?.navigate("phone-ui/ask-page");
+  }
+
+  onSpeakersTap(): void {
+    Frame.topmost()?.navigate("phone-ui/speakers-page");
+  }
+
+  /**
+   * The lens mirror and the simulated ring/watch pads. Kept for debugging and
+   * for driving the glasses when the ring is out of reach; not where the phone
+   * lands any more.
+   */
+  onGlassesMirrorTap(): void {
+    Frame.topmost()?.navigate("phone-ui/glasses-mirror-page");
+  }
+
+  /** The bundled project docs, in the phone-side text viewer. */
+  async onAboutTap(): Promise<void> {
+    const docs = [
+      { action: "License (GPLv3)", fileName: "LICENSE" },
+      { action: "Privacy Policy", fileName: "PRIVACY" },
+    ];
+    const picked = await Dialogs.action({
+      title: "About",
+      cancelButtonText: "Cancel",
+      actions: docs.map((doc) => doc.action),
+    });
+    const doc = docs.find((candidate) => candidate.action === picked);
+    if (!doc) return;
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/document-page",
+      context: { fileName: doc.fileName, title: doc.action },
+    });
+  }
+
+  // ---- the home hub's recent-conversations glance ----
+
+  private _recentConversations: HomeConversationRow[] = [];
+  private _recentConversationsMessage = "";
+
+  get recentConversations(): HomeConversationRow[] {
+    return this._recentConversations;
+  }
+
+  get recentConversationsMessage(): string {
+    return this._recentConversationsMessage;
+  }
+
+  get recentConversationsMessageVisibility(): "visible" | "collapse" {
+    return this._recentConversationsMessage ? "visible" : "collapse";
+  }
+
+  /**
+   * Re-read the newest few sessions. The page calls this from `loaded`, which
+   * also fires on the way back from a conversation, so a deletion or a rename
+   * made elsewhere shows up here. The store sorts newest-first and honours
+   * `limit`, so this stays a three-row query however long the history gets.
+   */
+  refreshRecentConversations(): void {
+    if (!global.isAndroid) {
+      this.setRecentConversations([], "Conversation review is only available on Android.");
+      return;
+    }
+    let rows: SessionRow[] = [];
+    try {
+      rows = JSON.parse(
+        String(conversationStore().querySessions(JSON.stringify({ limit: HOME_RECENT_LIMIT }))),
+      ) as SessionRow[];
+    } catch (error) {
+      console.error(`recent conversations query failed: ${String(error)}`);
+      this.setRecentConversations([], "Could not read saved conversations.");
+      return;
+    }
+    this.setRecentConversations(
+      rows.map((row) => this.toRecentRow(row)),
+      rows.length > 0 ? "" : NO_CONVERSATIONS_MESSAGE,
+    );
+  }
+
+  private setRecentConversations(rows: HomeConversationRow[], message: string): void {
+    this._recentConversations = rows;
+    this._recentConversationsMessage = message;
+    this.notifyPropertyChange("recentConversations", rows);
+    this.notifyPropertyChange("recentConversationsMessage", message);
+    this.notifyPropertyChange("recentConversationsMessageVisibility", this.recentConversationsMessageVisibility);
+  }
+
+  private toRecentRow(row: SessionRow): HomeConversationRow {
+    const durationMs = row.endedAt > row.startedAt ? row.endedAt - row.startedAt : 0;
+    const meta = [formatDateTime(row.startedAt), formatDuration(durationMs), `${row.segmentCount} lines`]
+      .filter((part) => part.length > 0)
+      .join(" · ");
+    return {
+      title: row.title || formatDateTime(row.startedAt),
+      meta,
+      sentimentColor: SENTIMENT_BUCKET_COLORS[sentimentBucket(row.avgSentiment ?? 0)],
+      onRowTap: () => {
+        Frame.topmost()?.navigate({
+          moduleName: "phone-ui/conversation-page",
+          context: { sessionId: row.id },
+        });
+      },
+    };
   }
 
   /**

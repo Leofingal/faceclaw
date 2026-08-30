@@ -1,4 +1,17 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+<!--
+  The phone's home hub, and the app's landing page (everything that finishes an
+  onboarding/pairing/flash flow navigates back here with clearHistory).
+
+  What the phone is good at gets the screen: the conversations it has recorded,
+  the questions you can put to them, the speakers it has learned, and the
+  settings that are easier to change with a thumb than through the ring. The
+  live lens mirror and the simulated ring/watch pads used to open here; they
+  are a debugging view now and live one tap away on phone-ui/glasses-mirror-page.
+
+  The action bar keeps everything it had, so nothing that used to be one menu
+  away has moved further; the rows below are the discoverable version of it.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar>
         <!-- Custom titleView: app title on the left; connection status and the
              warning-triangle indicator right-aligned beside the overflow menu. -->
@@ -12,58 +25,114 @@
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
         <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
+        <ActionItem text="Glasses mirror" tap="{{ onGlassesMirrorTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
     </ActionBar>
 
     <GridLayout>
-        <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
-            <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
-                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
-                    tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
-            </StackLayout>
-            <GridLayout
-                row="0"
-                class="display-preview-message"
-                height="{{ displayPreviewHeight }}"
-                visibility="{{ displayPreviewMessageVisibility }}">
-                <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
-            </GridLayout>
-            <!-- The controls get the whole star row so the active tab's
-                 content can center in the leftover height. -->
-            <GridLayout row="1" rows="*,auto" class="p-20">
-                <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
-                <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-            </GridLayout>
-        </GridLayout>
+        <ScrollView>
+            <StackLayout class="home-body">
 
-        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <GridLayout rows="auto" columns="*,360">
-                <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
-                    <Image
-                        src="{{ displayPreview }}"
-                        stretch="fill"
-                        width="{{ landscapeDisplayPreviewWidth }}"
-                        height="{{ landscapeDisplayPreviewHeight }}"
-                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
-                </StackLayout>
-                <GridLayout
-                    row="0"
-                    col="0"
-                    class="display-preview-message"
-                    horizontalAlignment="left"
-                    width="{{ landscapeDisplayPreviewWidth }}"
-                    height="{{ landscapeDisplayPreviewHeight }}"
-                    visibility="{{ displayPreviewMessageVisibility }}">
-                    <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                <!-- Connection. Connect/Disconnect was overflow-only before;
+                     on a home screen it is the one control worth a thumb. -->
+                <GridLayout rows="auto,auto" columns="*,auto" class="home-card">
+                    <Label row="0" col="0" text="{{ connectionStatusLabel }}" class="home-card-title" verticalAlignment="center" />
+                    <Label row="1" col="0" text="{{ status }}" class="home-card-meta" textWrap="true" />
+                    <Button row="0" rowSpan="2" col="1" text="{{ buttonLabel }}" tap="{{ onTap }}"
+                        isEnabled="{{ connectItemEnabled }}" class="-primary home-card-button" verticalAlignment="center" />
                 </GridLayout>
-                <StackLayout row="0" col="1" class="m-l-16">
-                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+
+                <!-- Screen recording is started from the overflow menu, so its
+                     stop button has to be reachable from the page you are left
+                     on. The mirror page carries the same button. -->
+                <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+
+                <!-- Recent conversations, straight through to the transcript.
+                     Three rows: enough to recognise "the one from this
+                     morning" without turning the home screen into the list. -->
+                <GridLayout columns="*,auto" class="home-section-head">
+                    <Label col="0" text="Recent conversations" class="home-section-title" verticalAlignment="center" />
+                    <Label col="1" text="See all" class="home-section-link" tap="{{ onConversationsTap }}" verticalAlignment="center" />
+                </GridLayout>
+                <Label text="{{ recentConversationsMessage }}" class="conversation-empty" textWrap="true"
+                    visibility="{{ recentConversationsMessageVisibility }}" />
+                <Repeater items="{{ recentConversations }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <StackLayout class="conversation-row" tap="{{ onRowTap }}">
+                            <GridLayout columns="*,auto">
+                                <Label col="0" text="{{ title }}" class="conversation-title" textWrap="true" />
+                                <Label col="1" text="" width="12" height="12" borderRadius="6"
+                                    backgroundColor="{{ sentimentColor }}" verticalAlignment="center" />
+                            </GridLayout>
+                            <Label text="{{ meta }}" class="conversation-meta" />
+                        </StackLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <!-- The two genuinely phone-native glasses settings. They are
+                     still on the mirror page's Settings tab as well; both read
+                     and write the same setting objects, so they stay in step. -->
+                <Label text="Glasses display" class="home-section-title" />
+                <GridLayout rows="auto" columns="auto,*" class="settings-row">
+                    <Label col="0" text="Screen size" class="settings-row-label" verticalAlignment="center" />
+                    <Button col="1" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" horizontalAlignment="left" />
+                </GridLayout>
+                <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
+                    <Label col="0" text="&#x2600;" class="brightness-icon" verticalAlignment="center" />
+                    <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}"
+                        valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
+                    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
+                        <Label text="Auto" verticalAlignment="center" />
+                        <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
+                    </StackLayout>
+                </GridLayout>
+
+                <Label text="Review" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onConversationsTap }}">
+                    <Label text="Conversations" class="home-row-title" />
+                    <Label text="Search and read back everything the glasses have captioned" class="home-row-meta" textWrap="true" />
                 </StackLayout>
-            </GridLayout>
-        </GridLayout>
+                <StackLayout class="home-row" tap="{{ onAskTap }}">
+                    <Label text="Ask AI" class="home-row-title" />
+                    <Label text="Put a question to your saved conversations" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onSpeakersTap }}">
+                    <Label text="Speakers" class="home-row-title" />
+                    <Label text="Name, merge and re-assign the voices we have heard" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+                <Label text="Devices" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onPairGlassesTap }}">
+                    <Label text="Pair glasses" class="home-row-title" />
+                    <Label text="Scan for a nearby G2 pair and check both arms match" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onConfigureTap }}">
+                    <Label text="Configure devices" class="home-row-title" />
+                    <Label text="Arm and ring addresses, entered by hand" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onPermissionsTap }}">
+                    <Label text="Permissions" class="home-row-title" />
+                    <Label text="What Android has granted, and what is still missing" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+                <Label text="Diagnostics" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onGlassesMirrorTap }}">
+                    <Label text="Glasses mirror" class="home-row-title" />
+                    <Label text="Live view of the lens display, with simulated ring and watch input. For debugging — the screens above are the phone's job." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onAboutTap }}">
+                    <Label text="About" class="home-row-title" />
+                    <Label text="License and privacy policy" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+            </StackLayout>
+        </ScrollView>
+
         <ScrollView
             class="warnings-modal"
             visibility="{{ warningsModalVisibility }}"
@@ -87,10 +156,10 @@
                 <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
             </StackLayout>
         </ScrollView>
-        <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
-             shrunk) page, so it sits in the space below the mirror and only
-             overlaps the mirror when the open keyboard leaves too little
-             room. The tabbed controls are collapsed while it is up. -->
+        <!-- Keyboard-input mode: the glasses navigated into a text setting and
+             the phone is the keyboard. Anchored to the bottom of the (keyboard-
+             shrunk) page. The mirror page carries an identical copy, because
+             the glasses can ask for text while either page is on screen. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ textSettingEditorVisibility }}"

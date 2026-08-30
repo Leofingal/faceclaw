@@ -155,6 +155,108 @@ Button.-primary {
   margin-bottom: 12;
 }
 
+/*
+ * The home hub (phone-ui/main-page.xml): the phone's own screens, which is
+ * what the app now opens on. Cards and rows borrow the .conversation-row look
+ * so the home screen and the conversation list read as one surface.
+ */
+.home-body {
+  padding: 12 12 24 12;
+}
+
+.home-card {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 12;
+  margin-bottom: 4;
+}
+
+.home-card-title {
+  font-size: 18;
+  font-weight: bold;
+  color: #222222;
+}
+
+.home-card-meta {
+  font-size: 12;
+  color: #666666;
+}
+
+/* Sits beside two rows of text, so it needs its own vertical breathing room. */
+.home-card-button {
+  margin-left: 12;
+}
+
+.home-section-head {
+  margin-top: 16;
+}
+
+/* Also used standalone (no "see all" link), hence the margin here rather than
+ * only on .home-section-head. */
+.home-section-title {
+  font-size: 13;
+  font-weight: bold;
+  color: #666666;
+  text-transform: uppercase;
+  letter-spacing: 0.08;
+  margin: 16 2 6 2;
+}
+
+.home-section-head .home-section-title {
+  margin: 0 2 6 2;
+}
+
+/* The padding widens the tap target beyond the small text. */
+.home-section-link {
+  font-size: 13;
+  color: #3b6fd6;
+  padding: 4 8;
+}
+
+.home-row {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 12;
+  margin-bottom: 8;
+}
+
+.home-row-title {
+  font-size: 16;
+  font-weight: bold;
+  color: #222222;
+}
+
+.home-row-meta {
+  font-size: 12;
+  color: #666666;
+  margin-top: 2;
+}
+
+.ns-dark .home-card,
+.ns-dark .home-row {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .home-card-title,
+.ns-dark .home-row-title {
+  color: #f0f0f0;
+}
+
+.ns-dark .home-card-meta,
+.ns-dark .home-row-meta,
+.ns-dark .home-section-title {
+  color: #a0a0a0;
+}
+
+.ns-dark .home-section-link {
+  color: #8ab0ff;
+}
+
 /* The phone's controller for the glasses (phone-ui/remote-controls.xml). */
 .remote-controls {
   margin: 0 8 0 8;
