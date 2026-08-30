@@ -23,6 +23,22 @@ public class MessageBuilder {
         );
     }
 
+    /** The per-connection sid-0x80 security-auth request (one per arm). */
+    public OutboundMessage securityAuth(boolean leftArm) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "security-auth",
+            "security auth " + (leftArm ? "L" : "R"),
+            BleProtocol.SID_SECURITY_AUTH,
+            BleProtocol.FLAG_SECURITY_AUTH,
+            magic,
+            BleProtocol.buildAuthenticationRequest(magic),
+            ConnectionOptions.SECURITY_AUTH_SOFT_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
     public OutboundMessage shutdown(int exitMode) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
@@ -245,6 +261,21 @@ public class MessageBuilder {
             BleProtocol.FLAG_REQUEST,
             0,
             BleProtocol.buildFaceclawWakeControl(operation, 0),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
+    /** CFW mic_control write (settings field 103) targeted at one temple. */
+    public OutboundMessage faceclawMicControl(byte[] record, String label, boolean leftArm) {
+        return new OutboundMessage(
+            "mic-control",
+            "mic control " + label + (leftArm ? " L" : " R"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawMicControl(record),
             ACK_TIMEOUT_MS,
             -1,
             leftArm

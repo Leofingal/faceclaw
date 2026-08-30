@@ -1,9 +1,19 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
+import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
-import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
+import {
+  DashboardInputEvent,
+  directionalFallback,
+  type InputSource,
+  isDirectionalInput,
+  Layer,
+  LayerActions,
+  LayerContext,
+  LayerStack,
+  noopLayerActions,
+} from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { voiceActivity } from "./voice-activity";
@@ -26,13 +36,14 @@ import {
   timeFormatSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
+import { onAmbientCardsChanged } from "./ambient-cards";
 import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
   minWindowTop,
-  SIDEBAR_WIDTH,
+  sidebarWidth,
   TOP_BAR_HEIGHT,
   windowBandHeight,
   windowTop,
@@ -63,6 +74,11 @@ export type ShellWindow = {
   /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
   closeable: boolean;
   /**
+   * True when the window gives swipe-left / swipe-right (watch directional
+   * input) a meaning; otherwise the shell forwards directionalFallback(event).
+   */
+  acceptsDirectional?: boolean;
+  /**
    * Window height: the standard 288px band ("min") or the full screen
    * ("max", terminal views). Decides the surface rect and where the shell
    * draws this window's top bar.
@@ -79,6 +95,17 @@ export type ShellWindow = {
   handleInput: (event: DashboardInputEvent, frameId: number) => Promise<void> | void;
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
+  /**
+   * Re-measure against the current display mode (viewport size / band) and
+   * repaint. Windows without it (workers, whose canvas is fixed at open) are
+   * closed and relaunched by the controller instead.
+   */
+  relayout?: () => void;
+  /**
+   * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
+   * True if the window acted on it; otherwise the controller sends a select.
+   */
+  hitTest?: (x: number, y: number) => Promise<boolean> | boolean;
   /**
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
@@ -104,7 +131,18 @@ export type ShellConfig = {
 /** Which surfaces need re-rendering after an input event. */
 export type ShellInputOutcome = { shell: boolean; window: boolean };
 
-type FocusKind = "sidebar" | "window";
+/**
+ * Assistant overlay activity, for mirrors outside the glasses (the watch).
+ * "streaming" carries the reply so far (replace semantics); "done" the final
+ * reply; "error" the message; "closed" fires when the overlay leaves the
+ * stack by any path.
+ */
+export type AssistantActivityEvent = {
+  phase: "thinking" | "streaming" | "done" | "error" | "closed";
+  text: string;
+};
+
+export type FocusKind = "sidebar" | "window";
 
 const noopActions: LayerActions = noopLayerActions;
 
@@ -119,9 +157,10 @@ const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 class ShellOverlayMenuLayer extends MenuLayer {
   constructor(items: MenuItem[], private readonly onClosed: () => void) {
     // Aligned to the min-height window band (like the sidebar), wherever the
-    // vertical position setting currently puts it.
+    // vertical position setting currently puts it; past the sidebar strip
+    // where one reserves width (none in the full-panel mode).
     super(null, items, {
-      x: SIDEBAR_WIDTH + 8,
+      x: sidebarWidth() + 8,
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width: 272,
       minHeight: 0,
@@ -209,6 +248,8 @@ class Shell {
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private assistantSession: AssistantSession | null = null;
   private assistantLayer: AssistantLayer | null = null;
+  private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
+  private readonly alertListeners = new Set<(text: string) => void>();
   private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -217,10 +258,8 @@ class Shell {
     requestShellRender: () => {},
     onScreenStateChanged: () => {},
   };
-  private readonly stack = new LayerStack(
-    new ShellChromeLayer(() => this.chromeState()),
-    this.actions,
-  );
+  private readonly chrome = new ShellChromeLayer(() => this.chromeState());
+  private readonly stack = new LayerStack(this.chrome, this.actions);
 
   // Top-bar settings we mirror into the chrome; a change to either repaints
   // the shell surface so the top bar reflects it immediately.
@@ -232,6 +271,21 @@ class Shell {
     this.config = config;
     this.stack.setActions(config.actions);
     this.subscribeToTopBarSettings();
+    this.subscribeToAmbientCards();
+  }
+
+  // Ambient (encounter) cards live in the chrome paint; a posted or expired
+  // card repaints the shell surface so it appears and disappears on time.
+  private ambientCardsSubscribed = false;
+
+  private subscribeToAmbientCards(): void {
+    if (this.ambientCardsSubscribed) return;
+    this.ambientCardsSubscribed = true;
+    onAmbientCardsChanged(() => {
+      if (this.screenOn) {
+        this.config.requestShellRender();
+      }
+    });
   }
 
   private subscribeToTopBarSettings(): void {
@@ -377,6 +431,22 @@ class Shell {
 
   noteUserActivity(nowMs = Date.now()): void {
     this.lastInputAtMs = nowMs;
+  }
+
+  /** Where input currently goes: the sidebar strip or the foreground window. */
+  getFocus(): FocusKind {
+    return this.focus;
+  }
+
+  /** True while a shell overlay (menu, dialog, voice input) is above the chrome. */
+  hasOverlay(): boolean {
+    return !this.stack.isAtBase();
+  }
+
+  /** The window whose sidebar icon is at screen (x, y), for mirror touches. */
+  windowAtSidebarPoint(x: number, y: number): ShellWindow | null {
+    const index = this.chrome.windowIndexAt(x, y, this.windows.length);
+    return index === null ? null : this.windows[index] ?? null;
   }
 
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
@@ -572,7 +642,8 @@ class Shell {
     const window = this.foregroundWindow();
     if (window) {
       // The window owns frameId from here (render or explicit finish).
-      await window.handleInput(event, frameId);
+      const delivered = isDirectionalInput(event) && !window.acceptsDirectional ? directionalFallback(event) : event;
+      await window.handleInput(delivered, frameId);
       return { shell: false, window: true };
     }
     return { shell: false, window: false };
@@ -630,15 +701,23 @@ class Shell {
   private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":
+        // A double-tap at the root (the app switcher selected) turns the
+        // display off — from the ring and the watch scheme alike; watch-scheme
+        // gestures wake it again (or a ring double-tap does).
         this.sleep();
         return { shell: true, window: false };
       case "scroll-up":
+      case "swipe-up":
         this.moveSelection(-1);
         return { shell: true, window: false };
       case "scroll-down":
+      case "swipe-down":
         this.moveSelection(1);
         return { shell: true, window: false };
       case "click":
+      case "swipe-right":
+        // Right: into the selected window (spatially, the window is to the
+        // sidebar's right). Left has nowhere further to go and is ignored.
         if (this.windows.length) {
           this.focus = "window";
           // Repaint the window now so its selection highlight reflects focus
@@ -763,8 +842,42 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private isAssistantAvailable(): boolean {
+  isAssistantAvailable(): boolean {
     return this.resolveAssistantConfiguration() !== null;
+  }
+
+  /** Observe assistant turns (see AssistantActivityEvent). */
+  onAssistantActivity(listener: (event: AssistantActivityEvent) => void): () => void {
+    this.assistantActivityListeners.add(listener);
+    return () => {
+      this.assistantActivityListeners.delete(listener);
+    };
+  }
+
+  /** Observe showAlert popups (mirrored to the watch). */
+  onAlertShown(listener: (text: string) => void): () => void {
+    this.alertListeners.add(listener);
+    return () => {
+      this.alertListeners.delete(listener);
+    };
+  }
+
+  private emitAssistantActivity(event: AssistantActivityEvent): void {
+    for (const listener of Array.from(this.assistantActivityListeners)) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn("assistant activity listener failed", error);
+      }
+    }
+  }
+
+  /**
+   * Dismiss the assistant overlay (cancelling any in-flight turn), as Done
+   * would. Returns whether an overlay was actually open to close.
+   */
+  closeAssistant(): boolean {
+    return this.closeAssistantLayer();
   }
 
   private ensureAssistantSession(): AssistantSession | null {
@@ -834,6 +947,7 @@ class Shell {
           // stop the turn and drop the reference so a later query starts clean.
           this.assistantSession?.cancel();
           if (this.assistantLayer === created) this.assistantLayer = null;
+          this.emitAssistantActivity({ phase: "closed", text: "" });
         },
       });
       layer = created;
@@ -846,11 +960,23 @@ class Shell {
 
   private runAssistantTurn(session: AssistantSession, layer: AssistantLayer, text: string): void {
     layer.startTurn();
+    let replySoFar = "";
+    this.emitAssistantActivity({ phase: "thinking", text: "" });
     session.sendUtterance(text, this.buildAssistantContext(), {
-      onTextDelta: (delta, textSoFar) => layer.onTextDelta(delta, textSoFar),
+      onTextDelta: (delta, textSoFar) => {
+        replySoFar = textSoFar;
+        layer.onTextDelta(delta, textSoFar);
+        this.emitAssistantActivity({ phase: "streaming", text: textSoFar });
+      },
       onToolActivity: (label) => layer.onToolActivity(label),
-      onTurnDone: () => layer.onTurnDone(),
-      onError: (message) => layer.onError(message),
+      onTurnDone: () => {
+        layer.onTurnDone();
+        this.emitAssistantActivity({ phase: "done", text: replySoFar });
+      },
+      onError: (message) => {
+        layer.onError(message);
+        this.emitAssistantActivity({ phase: "error", text: message });
+      },
     });
   }
 
@@ -889,18 +1015,28 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private closeAssistantLayer(): void {
+  private closeAssistantLayer(): boolean {
     // Popping fires the layer's onRemoved, which cancels the turn and clears
-    // this.assistantLayer.
+    // this.assistantLayer. popThrough also closes anything stacked above the
+    // overlay (a follow-up voice dialog, an alert), so a close command works
+    // no matter what the conversation is showing.
     const layer = this.assistantLayer;
-    if (layer) this.stack.popIfTop((top) => top === layer);
+    const closed = layer ? this.stack.popThrough(layer) : false;
     this.noteUserActivity();
     this.config.requestShellRender();
+    return closed;
   }
 
   /** Show a brief text popup on the lenses (assistant show_alert / notices). */
   showAlert(text: string): void {
     if (!this.screenOn) this.wake("sidebar");
+    for (const listener of Array.from(this.alertListeners)) {
+      try {
+        listener(text);
+      } catch (error) {
+        console.warn("alert listener failed", error);
+      }
+    }
     const layer = new ShellAlertLayer(text, () => {
       this.stack.popIfTop((top) => top === layer);
       this.config.requestShellRender();
@@ -1024,16 +1160,28 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
         source: eventSourceToString(event.eventSource),
       };
     } else if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
+      return scrollEvent("scroll-down", event.eventSource);
     } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
+      return scrollEvent("scroll-up", event.eventSource);
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) {
       // CFW-forwarded long-press (replaces the firmware's force-quit dialog).
-      // The CFW gates this to the ring, so eventSource may be 0 (unknown);
-      // eventSourceToString falls back to "ring".
+      // Current CFW supplies the physical source for ring and temple presses;
+      // eventSourceToString's ring fallback keeps older CFW builds compatible.
       return { type: "long-press", source: eventSourceToString(event.eventSource) };
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
+    }
+  } else if (event.kind === "watch-gesture") {
+    // Synthetic, from the Wear OS remote (app/g2/wear-remote.ts); the glasses
+    // firmware never produces these.
+    if (event.eventType === WatchGestureType.SWIPE_LEFT) {
+      return { type: "swipe-left", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_RIGHT) {
+      return { type: "swipe-right", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_UP) {
+      return { type: "swipe-up", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_DOWN) {
+      return { type: "swipe-down", source: "watch" };
     }
   } else if (event.kind === "even-ai") {
     // sid 0x07 EvenAIDataPackage; eventType carries eEvenAIStatus. Only the
@@ -1048,9 +1196,9 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
     return { type: "display-wake" };
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
+      return scrollEvent("scroll-down", event.eventSource);
     } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
+      return scrollEvent("scroll-up", event.eventSource);
     }
   }
   return {
@@ -1061,13 +1209,20 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
   };
 }
 
-function eventSourceToString(eventSource: number): "ring" | "left-arm" | "right-arm" {
+/** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
+function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): DashboardInputEvent {
+  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
+}
+
+function eventSourceToString(eventSource: number): InputSource {
   if (eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
     return "ring";
   } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L) {
     return "left-arm";
   } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R) {
     return "right-arm";
+  } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH) {
+    return "watch";
   }
   return "ring";
 }
@@ -1086,6 +1241,14 @@ export function inputEventToString(event: DashboardInputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "swipe-left":
+      return `Swipe left from ${event.source}`;
+    case "swipe-right":
+      return `Swipe right from ${event.source}`;
+    case "swipe-up":
+      return `Swipe up from ${event.source}`;
+    case "swipe-down":
+      return `Swipe down from ${event.source}`;
     case "display-wake":
       return `Display wake`;
     case "wakeword":

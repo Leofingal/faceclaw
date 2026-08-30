@@ -64,6 +64,23 @@ public class FaceclawBleManager {
         this.listener = listener;
     }
 
+    /**
+     * Whether Android still holds a bond (pairing) for this address. Returns
+     * true when the state cannot be determined, so callers only act on a
+     * definite BOND_NONE.
+     */
+    public boolean isBonded(String address) {
+        if (address == null || address.trim().isEmpty()) {
+            return true;
+        }
+        try {
+            BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            return device == null || device.getBondState() != BluetoothDevice.BOND_NONE;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     public boolean connect(String address, int timeoutMs) {
         if (address == null || address.trim().isEmpty()) {
             throw new IllegalArgumentException("address is required");

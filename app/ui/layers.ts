@@ -8,13 +8,35 @@ export type TextSettingsEditToggle = {
   label: string;
 };
 
+/**
+ * Where an input came from. The ring and the glasses' arms are the stock
+ * sources; "watch" is the Wear OS remote, which components may treat with a
+ * richer scheme (see isWatchInput) — the ring's semantics are never changed
+ * by it.
+ */
+export type InputSource = "ring" | "left-arm" | "right-arm" | "watch";
+
 export type DashboardInputEvent =
-  | { type: "click"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "double-click"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "scroll-up" }
-  | { type: "scroll-down" }
-  | { type: "long-press"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "long-press-release"; source: "ring" | "left-arm" | "right-arm" }
+  | { type: "click"; source: InputSource }
+  | { type: "double-click"; source: InputSource }
+  /** Ring scroll (or a watch crown turn, then tagged source "watch"). */
+  | { type: "scroll-up"; source?: InputSource }
+  | { type: "scroll-down"; source?: InputSource }
+  | { type: "long-press"; source: InputSource }
+  | { type: "long-press-release"; source: InputSource }
+  /**
+   * Spatial (four-way) input, which only a watch can produce: the ring's
+   * scroll is a one-dimensional cursor, these are directions. Components with
+   * a spatial meaning for them opt in with Layer.acceptsDirectional /
+   * ShellWindow.acceptsDirectional and must then handle all four; for the
+   * rest, directionalFallback turns up/down into scroll, right into "select"
+   * (click) and left into "back" (double-click), so a swipe always does
+   * something sensible.
+   */
+  | { type: "swipe-up"; source: "watch" }
+  | { type: "swipe-down"; source: "watch" }
+  | { type: "swipe-left"; source: "watch" }
+  | { type: "swipe-right"; source: "watch" }
   /**
    * The stock display lifecycle woke while no EvenHub page was running. This
    * is wake-only, unlike a normal double-click (which turns an on screen off).
@@ -28,6 +50,44 @@ export type DashboardInputEvent =
    */
   | { type: "wakeword" }
   | { type: "unknown"; kind: string; eventSource: number; eventType: number };
+
+/** True for input from the Wear OS remote (any type that carries a source). */
+export function isWatchInput(event: DashboardInputEvent): boolean {
+  return "source" in event && event.source === "watch";
+}
+
+export type DirectionalInputEvent = Extract<
+  DashboardInputEvent,
+  { type: "swipe-up" | "swipe-down" | "swipe-left" | "swipe-right" }
+>;
+
+export function isDirectionalInput(event: DashboardInputEvent): event is DirectionalInputEvent {
+  return (
+    event.type === "swipe-up" ||
+    event.type === "swipe-down" ||
+    event.type === "swipe-left" ||
+    event.type === "swipe-right"
+  );
+}
+
+/**
+ * The ring-vocabulary equivalent of a directional swipe: up/down scroll,
+ * right selects, left backs out.
+ */
+export function directionalFallback(event: DashboardInputEvent): DashboardInputEvent {
+  switch (event.type) {
+    case "swipe-up":
+      return { type: "scroll-up" };
+    case "swipe-down":
+      return { type: "scroll-down" };
+    case "swipe-right":
+      return { type: "click", source: "ring" };
+    case "swipe-left":
+      return { type: "double-click", source: "ring" };
+    default:
+      return event;
+  }
+}
 
 export type LayerActions = {
   /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */
@@ -102,6 +162,17 @@ export interface Layer {
   readonly paintOverBase?: boolean;
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage;
   handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> | void;
+  /**
+   * True when handleInput gives swipe-left / swipe-right a meaning of its own.
+   * Otherwise the stack hands the layer directionalFallback(event) instead.
+   */
+  readonly acceptsDirectional?: boolean;
+  /**
+   * A touch at (x, y) in this layer's own canvas coordinates, from the phone's
+   * mirror view. Return true if the layer acted on it (selected / opened what
+   * is there); false sends a plain select (click) instead.
+   */
+  hitTest?(x: number, y: number, ctx: LayerContext): Promise<boolean> | boolean;
   /** Called when the layer leaves the stack by any path (pop or clearToBase). */
   onRemoved?(): void;
   /**
@@ -173,6 +244,21 @@ export class LayerStack {
     }
   }
 
+  /**
+   * Pop layers down to and including the given one, wherever it sits in the
+   * stack (e.g. dismissing the assistant while a follow-up voice dialog is
+   * open above it). Returns false if the layer isn't stacked (the base layer
+   * can never be popped). Removal callbacks fire top-down.
+   */
+  popThrough(layer: Layer): boolean {
+    const index = this.layers.indexOf(layer);
+    if (index <= 0) return false;
+    for (const removed of this.layers.splice(index).reverse()) {
+      notifyRemoved(removed);
+    }
+    return true;
+  }
+
   isAtBase(): boolean {
     return this.layers.length === 1;
   }
@@ -201,7 +287,23 @@ export class LayerStack {
   }
 
   async handleInput(event: DashboardInputEvent): Promise<void> {
-    await this.layers[this.layers.length - 1]!.handleInput(event, this.ctx);
+    const top = this.layers[this.layers.length - 1]!;
+    const delivered = isDirectionalInput(event) && !top.acceptsDirectional ? directionalFallback(event) : event;
+    await top.handleInput(delivered, this.ctx);
+  }
+
+  /**
+   * Pass a mirror touch to the base layer when nothing is stacked on it.
+   * With a layer stacked (a menu, a dialog) the touch is consumed without
+   * acting: positions mean nothing to the overlay, and falling back to a
+   * blind synthetic click would activate whatever happens to be highlighted
+   * rather than what was tapped.
+   */
+  async hitTest(x: number, y: number): Promise<boolean> {
+    if (this.layers.length !== 1) return true;
+    const base = this.layers[0]!;
+    if (!base.hitTest) return false;
+    return await base.hitTest(x, y, this.ctx);
   }
 
   /** Hand text to the top layer; false if it doesn't take text input. */

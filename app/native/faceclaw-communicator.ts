@@ -11,6 +11,7 @@ export type CommunicatorPhase =
   | "connected"
   | "charging"
   | "retrying"
+  | "unpaired"
   | "disconnecting";
 
 export type CommunicatorState = {
@@ -83,6 +84,18 @@ export type RawInputEvent =
        * act on is EVEN_AI_WAKE_UP, i.e. the "Hey Even" wakeword.
        */
       kind: "even-ai";
+      containerName: string;
+      eventType: number;
+      eventSource: number;
+      systemExitReasonCode: number;
+      frameId: number;
+    }
+  | {
+      /**
+       * Synthetic directional gesture from the Wear OS remote; `eventType` is
+       * a WatchGestureType (app/g2/events.ts). Never produced by Java.
+       */
+      kind: "watch-gesture";
       containerName: string;
       eventType: number;
       eventSource: number;
@@ -443,10 +456,14 @@ export class FaceclawCommunicatorBridge {
     });
   }
 
-  /** Phone-UI preview of the current composited screen, or null if none yet. */
-  getCompositePreview(): ImageSource | null {
+  /**
+   * Phone-UI preview of the current composited screen, or null if none yet.
+   * `green` tints it green-on-black (the Preview color setting) instead of
+   * grayscale.
+   */
+  getCompositePreview(green = false): ImageSource | null {
     if (!global.isAndroid) return null;
-    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA);
+    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
     return bitmap ? new ImageSource(bitmap) : null;
   }
 

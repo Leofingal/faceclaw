@@ -6,9 +6,12 @@ public interface FaceclawFirmwareFlasherListener {
 
     /**
      * Fine-grained progress for the UI bar. `lens` is "left"/"right";
-     * component/block indices are 1-based against their counts.
+     * component/block indices are 1-based against their counts. `bytesSent` /
+     * `bytesTotal` cover the whole lens image, so a bar driven by them moves
+     * evenly even though the components differ wildly in size.
      */
-    void onProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount);
+    void onProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount,
+            long bytesSent, long bytesTotal);
 
     /**
      * Coarse lifecycle. `state` is one of: validating, connecting, flashing,

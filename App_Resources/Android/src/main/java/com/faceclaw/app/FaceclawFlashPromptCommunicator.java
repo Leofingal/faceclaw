@@ -26,6 +26,10 @@ import java.util.concurrent.TimeUnit;
  * protobuf helpers (BleProtocol), but owns its own GATT connection and runs its
  * whole lifecycle on a single worker thread. It expects the main app to be
  * disconnected while it runs (onboarding, before flashing).
+ *
+ * Only the right arm is used: the lenses relay messages to each other, so
+ * anything sent to the right arm reaches both, and acks/events only ever come
+ * from the right arm anyway.
  */
 public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private static final String TAG = "FaceclawFlashPrompt";
@@ -43,13 +47,13 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
     private final Context context;
     private final String rightAddress;
-    private final String leftAddress;
     private final String warningText;
     private final FaceclawBleManager bleManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final Object lock = new Object();
     private final ConcurrentHashMap<String, CountDownLatch> pendingAcks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, byte[]> ackPayloads = new ConcurrentHashMap<>();
     private final CountDownLatch selectionLatch = new CountDownLatch(1);
 
     private volatile FaceclawFlashPromptListener listener;
@@ -57,7 +61,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private volatile boolean cancelled = false;
     private volatile boolean finished = false;
     private volatile boolean rightConnected = false;
-    private volatile boolean leftConnected = false;
     private volatile boolean rightLost = false;
     private volatile Boolean approved = null;
     private volatile ScheduledExecutorService heartbeatExecutor;
@@ -65,10 +68,9 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private int nextMagic = 100;
     private int nextSeq = 0x40;
 
-    public FaceclawFlashPromptCommunicator(Context context, String rightAddress, String leftAddress, String warningText) {
+    public FaceclawFlashPromptCommunicator(Context context, String rightAddress, String warningText) {
         this.context = context.getApplicationContext();
         this.rightAddress = rightAddress == null ? "" : rightAddress;
-        this.leftAddress = leftAddress == null ? "" : leftAddress;
         this.warningText = warningText == null ? "" : warningText;
         this.bleManager = new FaceclawBleManager(this.context);
         this.bleManager.setListener(this);
@@ -115,18 +117,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             }
 
             emitState("connecting", "");
-            connectArm(rightAddress, "right");
+            connectArm(rightAddress);
             rightConnected = true;
-
-            boolean haveLeft = !leftAddress.trim().isEmpty() && !leftAddress.equalsIgnoreCase(rightAddress);
-            if (haveLeft) {
-                try {
-                    connectArm(leftAddress, "left");
-                    leftConnected = true;
-                } catch (Exception e) {
-                    emitLog("left arm connect failed (continuing on right only): " + e.getMessage());
-                }
-            }
             if (cancelled) {
                 teardown();
                 return;
@@ -134,14 +126,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
             emitState("connected", "");
             bringUpArm(rightAddress);
-            if (leftConnected) {
-                try {
-                    bringUpArm(leftAddress);
-                } catch (Exception e) {
-                    emitLog("left arm prompt failed (continuing on right only): " + e.getMessage());
-                    leftConnected = false;
-                }
-            }
 
             startHeartbeat();
             emitState("prompting", "");
@@ -157,7 +141,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             if (approved != null) {
                 boolean result = Boolean.TRUE.equals(approved);
                 try {
-                    sendShutdownBoth();
+                    sendShutdown();
                 } catch (Exception ignored) {
                 }
                 emitResult(result);
@@ -181,7 +165,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         }
     }
 
-    private void connectArm(String address, String labelForLog) {
+    private void connectArm(String address) {
         if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
             throw new IllegalStateException("connect failed: " + address);
         }
@@ -193,42 +177,75 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
             throw new IllegalStateException("enableNotifications failed: " + address);
         }
-        emitLog("connected " + labelForLog + " arm");
+        emitLog("connected right arm");
     }
 
     private void bringUpArm(String address) throws InterruptedException {
-        // 1. Mandatory session prelude on sid=0x01 (app-launch).
-        if (!writeAndAwaitAck(
+        // 1. Security-auth exchange on sid=0x80: firmware 2.2.9 will not run a
+        //    session (and closes the link after ~30 s) without it, and on an
+        //    unbonded phone this is what triggers SMP pairing, so it may sit
+        //    waiting on an OS pairing prompt.
+        int authMagic = allocMagic();
+        byte[] authAck = writeAndAwaitAck(
+            address,
+            BleProtocol.SID_SECURITY_AUTH,
+            BleProtocol.FLAG_SECURITY_AUTH,
+            authMagic,
+            BleProtocol.buildAuthenticationRequest(authMagic),
+            ConnectionOptions.SECURITY_AUTH_TIMEOUT_MS);
+        if (authAck == null || !BleProtocol.isAuthenticationSuccess(authAck, authMagic)) {
+            throw new IllegalStateException(
+                "could not authenticate with the glasses (" + address
+                    + ") — if Android shows a Bluetooth pairing request, accept it and try again");
+        }
+        // 2. Mandatory session prelude on sid=0x01 (app-launch).
+        if (writeAndAwaitAck(
                 address,
                 BleProtocol.PRELUDE_ACK_SID,
                 BleProtocol.FLAG_REQUEST,
                 BleProtocol.PRELUDE_ACK_MAGIC,
                 BleProtocol.PRELUDE_F5872_PAYLOAD,
-                ConnectionOptions.PRELUDE_TIMEOUT_MS)) {
+                ConnectionOptions.PRELUDE_TIMEOUT_MS) == null) {
             throw new IllegalStateException("session prelude not acked: " + address);
         }
-        // 2. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
-        int magic = allocMagic();
-        byte[] page = BleProtocol.buildCreatePromptPage(
-            magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
-        if (!writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS)) {
+        // 3. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
+        //    Two attempts: on 2.2.9 the first request sent right after the
+        //    prelude can be dropped while the lens emits its own sid-0x80
+        //    notifications (observed with the device-info settings read).
+        byte[] pageAck = null;
+        for (int attempt = 0; attempt < 2 && pageAck == null && !cancelled; attempt++) {
+            int magic = allocMagic();
+            byte[] page = BleProtocol.buildCreatePromptPage(
+                magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
+            pageAck = writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS);
+            if (pageAck == null) {
+                emitLog("prompt page attempt " + (attempt + 1) + " unacked: " + address);
+            }
+        }
+        if (pageAck == null) {
             throw new IllegalStateException("prompt page not acked: " + address);
         }
         emitLog("prompt page shown on " + address);
     }
 
-    private boolean writeAndAwaitAck(String address, int sid, int flag, int magic, byte[] payload, int timeoutMs)
+    /** Write and wait for the matching ack; returns the ack's protobuf (may be empty), or null on timeout/write failure. */
+    private byte[] writeAndAwaitAck(String address, int sid, int flag, int magic, byte[] payload, int timeoutMs)
             throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(1);
         String key = ackKey(sid, magic);
         pendingAcks.put(key, latch);
         try {
             if (!writeFrame(address, sid, flag, payload)) {
-                return false;
+                return null;
             }
-            return latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                return null;
+            }
+            byte[] pb = ackPayloads.get(key);
+            return pb == null ? new byte[0] : pb;
         } finally {
             pendingAcks.remove(key, latch);
+            ackPayloads.remove(key);
         }
     }
 
@@ -267,9 +284,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             if (rightConnected) {
                 writeFrame(rightAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, heartbeat);
             }
-            if (leftConnected) {
-                writeFrame(leftAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, heartbeat);
-            }
         } catch (Exception e) {
             Log.w(TAG, "heartbeat failed: " + e.getMessage());
         }
@@ -283,13 +297,10 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         }
     }
 
-    private void sendShutdownBoth() {
+    private void sendShutdown() {
         byte[] shutdown = BleProtocol.buildShutdown(allocMagic(), 0);
         if (rightConnected) {
             writeFrame(rightAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, shutdown);
-        }
-        if (leftConnected) {
-            writeFrame(leftAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, shutdown);
         }
     }
 
@@ -301,7 +312,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         } catch (Exception ignored) {
         }
         rightConnected = false;
-        leftConnected = false;
     }
 
     @Override
@@ -309,20 +319,26 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equalsIgnoreCase(characteristicUuid)) {
             return;
         }
-        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        // A value can carry several envelope frames back to back.
+        for (byte[] buf : BleProtocol.splitFrames(data)) {
+            handleFrame(address, buf);
+        }
+    }
+
+    private void handleFrame(String address, byte[] buf) {
+        BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(buf);
         if (!frame.ok) {
             return;
         }
         if (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT) {
-            // Async events (taps/selections) only ever come from the right arm.
-            if (address.equalsIgnoreCase(rightAddress)) {
-                handleEvent(frame);
-            }
+            handleEvent(frame);
             return;
         }
         if (frame.msgSeq >= 0) {
-            CountDownLatch latch = pendingAcks.get(ackKey(frame.sid, frame.msgSeq));
+            String key = ackKey(frame.sid, frame.msgSeq);
+            CountDownLatch latch = pendingAcks.get(key);
             if (latch != null) {
+                ackPayloads.put(key, frame.pb);
                 latch.countDown();
             }
         }
@@ -364,8 +380,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                     selectionLatch.countDown();
                 }
             }
-        } else if (address.equalsIgnoreCase(leftAddress)) {
-            leftConnected = false;
         }
     }
 

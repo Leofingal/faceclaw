@@ -60,9 +60,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawCompassListener> compassListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile String lastFirmwareCapabilities = "";
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
+    // Set when a connect attempt failed while an arm's Android bond is gone:
+    // retrying is pointless until the user re-pairs, so the worker loop parks
+    // instead of redialing. Cleared by start() (a fresh explicit connect).
+    private volatile boolean reconnectHalted;
 
     private String phase = "disconnected";
     private String status = "Disconnected.";
@@ -239,6 +246,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             running = true;
             userDisconnectRequested = false;
+            reconnectHalted = false;
             shutdownRequested = false;
             activeInstance = this;
             workerThread = new Thread(this, "FaceclawBleCommunicator");
@@ -352,6 +360,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public boolean isSessionReady() {
         synchronized (lock) {
             return running && sessionReady;
+        }
+    }
+
+    /**
+     * Whether the glasses mic is enabled right now. The enable lives in the
+     * current EvenHub session, so it dies with a transport drop, the charging
+     * case, or a suspend — silently, from the phone's point of view. Callers
+     * that track a capture across those events must check this rather than
+     * assume their earlier enable still holds.
+     */
+    public boolean isAudioCaptureActive() {
+        synchronized (lock) {
+            return running && sessionReady && !shutdownRequested && audioCaptureActive;
         }
     }
 
@@ -530,6 +551,98 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /** The CFW capability token string from the last firmware-info read ("" before one arrives). */
+    public String getFirmwareCapabilities() {
+        return lastFirmwareCapabilities;
+    }
+
+    public void addMicStatusListener(FaceclawMicStatusListener listener) {
+        if (listener != null) {
+            micStatusListeners.add(listener);
+        }
+    }
+
+    public void removeMicStatusListener(FaceclawMicStatusListener listener) {
+        if (listener != null) {
+            micStatusListeners.remove(listener);
+        }
+    }
+
+    private void emitMicStatus(byte[] body, String address) {
+        if (micStatusListeners.isEmpty()) {
+            return;
+        }
+        String arm = address.equalsIgnoreCase(leftAddress) ? "L"
+            : address.equalsIgnoreCase(rightAddress) ? "R" : "?";
+        byte[] copy = java.util.Arrays.copyOf(body, body.length);
+        mainHandler.post(() -> {
+            for (FaceclawMicStatusListener micListener : micStatusListeners) {
+                try {
+                    micListener.onMicStatus(copy, arm);
+                } catch (Throwable t) {
+                    Log.w(TAG, "mic status listener failed", t);
+                }
+            }
+        });
+    }
+
+    /**
+     * Queue a CFW mic_control record (['M','C',ver,op,...]) as a settings
+     * field-103 write to both temples, or to a single one. Fire-and-forget:
+     * the firmware answers with a field-104 status notify per temple, which
+     * arrives through addMicStatusListener.
+     */
+    public void sendFaceclawMicControl(byte[] record, String label, boolean rightTemple, boolean leftTemple) {
+        if (record == null || record.length < 4) {
+            return;
+        }
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip mic control (" + label + "); session not ready");
+                return;
+            }
+            if (rightTemple) {
+                pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, false));
+            }
+            if (leftTemple) {
+                pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, true));
+            }
+            logLine("queue mic control " + label);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Forward render-characteristic audio packets to the listener WITHOUT
+     * sending the stock EvenHub audio-control enable. Used for the CFW
+     * mic_control streaming path, where capture is armed through settings
+     * field 103 and the temples emit 'SM' frames on the same characteristic
+     * that stock mono LC3 uses. Returns false when no session is up.
+     */
+    public boolean startG2AudioForwarding(FaceclawAudioPacketListener listener) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener is required");
+        }
+        synchronized (lock) {
+            if (!running || !sessionReady || shutdownRequested) {
+                logLine("skip G2 audio forwarding; session not ready");
+                return false;
+            }
+            audioPacketListener = listener;
+            audioCaptureActive = true;
+            logLine("G2 audio forwarding enabled");
+        }
+        return true;
+    }
+
+    public void stopG2AudioForwarding() {
+        synchronized (lock) {
+            audioPacketListener = null;
+            audioCaptureActive = false;
+            logLine("G2 audio forwarding disabled");
+        }
+    }
+
     public void addCompassListener(FaceclawCompassListener listener) {
         if (listener != null) {
             compassListeners.add(listener);
@@ -564,12 +677,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * foreground), including worker-app frames the TS side never sees.
      */
     public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma) {
+        return getCompositePreviewBitmap(brightenGamma, false);
+    }
+
+    /** As above; `green` renders the preview green-on-black (Settings > Phone display > Preview color). */
+    public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma, boolean green) {
         SurfaceCompositor.Composite composite = compositor.previewComposite();
         if (composite == null) {
             return null;
         }
         return PreviewBitmapUtil.fromGray(
-                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma);
+                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma, green);
     }
 
     /** Save the current composite as a 4-bit grayscale PNG; returns the path or "". */
@@ -1118,6 +1236,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 emitPhoneLockStateIfChanged(false);
                 if (!sessionReady) {
+                    if (reconnectHalted) {
+                        interruptibleSleep.sleep(ConnectionOptions.IDLE_SLEEP_MS);
+                        continue;
+                    }
                     long now = SystemClock.elapsedRealtime();
                     if (now < reconnectAfterMs) {
                         interruptibleSleep.sleep(Math.min(ConnectionOptions.IDLE_SLEEP_MS, reconnectAfterMs - now));
@@ -1215,6 +1337,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     0,
                     0
                 );
+            }
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // CFW mic status (field 104) rides both standalone pushes and
+                // settings read acks, from each temple on its own link.
+                byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
+                if (micStatus != null) {
+                    emitMicStatus(micStatus, address);
+                }
             }
             if (!faceclawWakeNotification
                     && decodedWearState < 0
@@ -1365,13 +1497,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
-                reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
+                if (!reconnectHalted) {
+                    reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
+                }
             }
         }
         interruptibleSleep.interrupt();
         if (connected) {
             setStateDisplay("connected", "Connected.");
-        } else {
+        } else if (!reconnectHalted) {
+            // While parked on a missing bond, keep the "unpaired" display: this
+            // callback is just the teardown of the arm that did connect.
             setStateDisplay("connecting", "Connecting to the glasses...");
         }
     }
@@ -1384,6 +1520,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!sleepDuringConnectSettling(800)) {
                 return;
             }
+            authenticateArms();
             sendPrelude();
 
             synchronized (lock) {
@@ -1440,7 +1577,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             tryConnectRing("initial");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
-            handleTransportFailure("connect failed");
+            String unpairedArm = firstUnpairedArm();
+            if (unpairedArm != null) {
+                handleUnpairedFailure(unpairedArm);
+            } else {
+                handleTransportFailure("connect failed");
+            }
         }
     }
 
@@ -1557,6 +1699,55 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             Log.d(TAG, "direct ring notify subscribe skipped: " + characteristicUuid + " " + safeMessage(t));
             return false;
         }
+    }
+
+    /**
+     * Complete the sid-0x80 security-auth exchange on both freshly opened arm
+     * connections. Firmware 2.2.9 answers no queries until it completes over an
+     * encrypted link and closes unauthenticated links after ~30 s (see
+     * ../notes/ble-connections-2.2.9.md); on an unbonded phone the exchange is
+     * also what triggers SMP pairing. Deliberately soft: on timeout we log and
+     * continue rather than fail the connect — the custom firmware's response
+     * behavior is not yet hardware-verified, and on stock firmware an
+     * unanswered auth just means the prelude fails exactly as it did before.
+     * A pairing prompt accepted after our window still bonds at the OS level,
+     * so the next reconnect attempt authenticates promptly.
+     */
+    private void authenticateArms() throws InterruptedException {
+        OutboundMessage right = messageBuilder.securityAuth(false);
+        OutboundMessage left = messageBuilder.securityAuth(true);
+        long now = SystemClock.elapsedRealtime();
+        for (OutboundMessage message : new OutboundMessage[] {right, left}) {
+            message.onAck = () -> {
+            };
+            message.onTimeout = () -> {
+            };
+            message.sentAtMs = now;
+            writeMessage(message);
+        }
+        long deadline = SystemClock.elapsedRealtime() + ConnectionOptions.SECURITY_AUTH_SOFT_TIMEOUT_MS;
+        while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
+            synchronized (lock) {
+                if (!running || userDisconnectRequested || inFlightMessages.isEmpty()) {
+                    break;
+                }
+            }
+            long remaining = deadline - SystemClock.elapsedRealtime();
+            if (remaining <= 0) {
+                break;
+            }
+            interruptibleSleep.sleep(Math.min(remaining, 100));
+        }
+        synchronized (lock) {
+            if (!inFlightMessages.isEmpty()) {
+                clearInFlightMessagesLocked("security auth timeout");
+                logLine("security auth not acknowledged; continuing (2.2.9 stock requires it; older/custom firmware may not answer)");
+                return;
+            }
+        }
+        boolean rightOk = BleProtocol.isAuthenticationSuccess(right.ackPayload, right.magic);
+        boolean leftOk = BleProtocol.isAuthenticationSuccess(left.ackPayload, left.magic);
+        logLine("security auth R=" + (rightOk ? "ok" : "unconfirmed") + " L=" + (leftOk ? "ok" : "unconfirmed"));
     }
 
     private void sendPrelude() throws InterruptedException {
@@ -2429,6 +2620,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
+                lastFirmwareCapabilities = firmwareInfo.capabilities == null ? "" : firmwareInfo.capabilities;
                 cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
                 textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
                         && hasCapability(firmwareInfo.capabilities, "texstr14");
@@ -2928,6 +3120,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " release=" + previous.reason);
     }
 
+    /** The address of a configured arm Android no longer holds a bond for, or null. */
+    private String firstUnpairedArm() {
+        if (!bleManager.isBonded(rightAddress)) return rightAddress;
+        if (!bleManager.isBonded(leftAddress)) return leftAddress;
+        return null;
+    }
+
+    /**
+     * A connect failure while an arm's bond is missing (the pairing was
+     * forgotten in Android settings, or the address was typed in by hand and
+     * never paired) will repeat forever, so instead of scheduling a retry,
+     * park the worker loop and tell the user to re-pair. Only an explicit
+     * connect (which builds a fresh communicator) starts a new attempt.
+     */
+    private void handleUnpairedFailure(String address) {
+        Log.e(TAG, "Connect failed and " + address + " is not paired; suspending reconnect");
+        synchronized (lock) {
+            reconnectHalted = true;
+            sessionReady = false;
+            fixedLayoutCreated = false;
+            startupProbePending = false;
+            shutdownRequested = false;
+            chargingMode = false;
+            imageRetryAfterMs = 0;
+            displayedFingerprint = "";
+            faceclawWakePendingNonce = -1;
+            lastFaceclawWakeLeaseQueuedAtMs = 0;
+            faceclawWakeControlSentCount = 0;
+            clearAllMessagesLocked("arm not paired: " + address);
+            reconnectAfterMs = Long.MAX_VALUE;
+            bleManager.disconnect(rightAddress);
+            bleManager.disconnect(leftAddress);
+        }
+        if (!userDisconnectRequested) {
+            setStateDisplay(
+                "unpaired",
+                "The glasses (" + address + ") are not paired with this phone."
+                    + " Use \"Pair glasses\" to pair them again, then connect."
+            );
+        }
+        interruptibleSleep.interrupt();
+    }
+
     private void handleTransportFailure(String reason) {
         Log.e(TAG, "Transport failure: "+reason);
         synchronized (lock) {
@@ -2963,6 +3198,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         ringConnected = false;
         ringNotificationsReady = false;
         reconnectAfterMs = 0;
+        reconnectHalted = false;
         ringReconnectAfterMs = 0;
         lastAckAtMs = 0;
         lastIncomingAtMs = 0;

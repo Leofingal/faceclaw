@@ -28,6 +28,16 @@ public class BleProtocol {
 
     public static final int PRELUDE_ACK_SID = 0x01;
     public static final int PRELUDE_ACK_MAGIC = 156;
+    /**
+     * DEVICE_SETTINGS security-auth channel. Firmware 2.2.9 enforces completing
+     * this exchange shortly after a GATT connection opens (a ~30 s deadline
+     * closes unauthenticated links) and gates query responses on it; the
+     * message itself exists back to the 2.2.4 era, so sending it is safe on all
+     * stock versions. See ../notes/ble-connections-2.2.9.md.
+     */
+    public static final int SID_SECURITY_AUTH = 0x80;
+    public static final int FLAG_SECURITY_AUTH = 0x00;
+    private static final int SECURITY_AUTH_CMD = 4;
     public static final int SID_APP_LAUNCH = 0x01;
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
@@ -39,6 +49,14 @@ public class BleProtocol {
     // protobuf fields to stock implementations, so they are safely ignored.
     public static final int FACECLAW_WAKE_CONTROL_FIELD = 101;
     public static final int FACECLAW_WAKE_EVENT_FIELD = 102;
+    /**
+     * CFW mic_control (EVENCFW/16, caps tokens micctl/micmc/micraw): host
+     * writes an ['M','C',ver,op,...] record as settings field 103; each temple
+     * reports a 21-byte ['M','C',ver,...] status as field 104, both appended
+     * to settings read responses and as standalone commandId=3 pushes.
+     */
+    public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
+    public static final int FACECLAW_MIC_STATUS_FIELD = 104;
     public static final int FACECLAW_WAKE_OP_ACQUIRE = 1;
     public static final int FACECLAW_WAKE_OP_RELEASE = 2;
     public static final int FACECLAW_WAKE_OP_CLAIM = 3;
@@ -323,6 +341,48 @@ public class BleProtocol {
         ));
     }
 
+    /**
+     * The application authentication request: DEVICE_SETTINGS/AUTHENTICATION(4)
+     * on sid 0x80, flag 0x00. Carries no key material — it arms the firmware's
+     * "security auth" flag; the firmware sends the success notification once
+     * the flag is set AND the BLE link is encrypted (SMP pairing/bond
+     * restoration, handled by the OS below GATT, possibly after a pairing
+     * prompt). Protobuf: f1=4 (command), f2=magic, f3={f1=1, f2=4}.
+     */
+    public static byte[] buildAuthenticationRequest(int magic) {
+        byte[] auth = concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, SECURITY_AUTH_CMD)
+        ));
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, SECURITY_AUTH_CMD),
+            encodeVarintField(2, magic),
+            encodeMessageField(3, auth)
+        ));
+    }
+
+    /**
+     * True when `pb` (trailing CRC still attached) is the success notification
+     * for the authentication request sent with `magic`: command 4, the same
+     * magic, and an EMPTY field-3 result message (`1a 00` — the omitted result
+     * code defaults to zero). A GATT write completing is NOT success; only this
+     * notification is.
+     */
+    public static boolean isAuthenticationSuccess(byte[] pb, int magic) {
+        if (pb == null) {
+            return false;
+        }
+        byte[] root = stripTrailingCrc(pb);
+        if (readVarintFieldValue(root, 1, -1) != SECURITY_AUTH_CMD) {
+            return false;
+        }
+        if (readVarintFieldValue(root, 2, -1) != magic) {
+            return false;
+        }
+        byte[] result = readFieldBytes(root, 3);
+        return result != null && result.length == 0;
+    }
+
     public static byte[] buildSettingsQuery(int magic) {
         byte[] request = encodeVarintField(1, 1);
         return concat(CollectionUtils.listOf(
@@ -351,6 +411,40 @@ public class BleProtocol {
             encodeVarintField(2, 0),
             encodeBytesField(FACECLAW_WAKE_CONTROL_FIELD, control)
         ));
+    }
+
+    /**
+     * Wrap an already-encoded ['M','C',ver,op,...] mic-control record as a
+     * settings write carrying CFW field 103. Magic zero makes it
+     * fire-and-forget like the wake lease: the firmware consumes the field
+     * before its stock nanopb decoder discards the unknown tag, and the
+     * "ack" is the field-104 status notify that follows.
+     */
+    public static byte[] buildFaceclawMicControl(byte[] record) {
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, 0),
+            encodeBytesField(FACECLAW_MIC_CONTROL_FIELD, record)
+        ));
+    }
+
+    /**
+     * Extract the CFW mic status record (field 104) from a settings frame, or
+     * null when absent. The 21-byte body layout is decoded on the TS side;
+     * here we only validate the 'M','C',version prelude.
+     */
+    public static byte[] parseFaceclawMicStatus(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_MIC_STATUS_FIELD);
+        if (body == null
+                || body.length < 3
+                || body[0] != 'M'
+                || body[1] != 'C') {
+            return null;
+        }
+        return body;
     }
 
     /**
@@ -551,6 +645,35 @@ public class BleProtocol {
         return new byte[] {(byte) (crc & 0xff), (byte) ((crc >>> 8) & 0xff)};
     }
 
+
+    /**
+     * Split one notification value into individual `aa21`/`aa12` envelope
+     * frames. A value normally holds exactly one frame, but the firmware can
+     * pack several (each self-describing via the length byte at offset 3), and
+     * a frame that only reads the first would silently drop the rest. A value
+     * that does not start with an envelope, or a trailing partial frame
+     * (truncated by the stack — observed on a Samsung tablet for values over
+     * 64 bytes), is returned as-is so the caller can log it.
+     */
+    public static List<byte[]> splitFrames(byte[] value) {
+        List<byte[]> out = new ArrayList<>();
+        if (value == null || value.length == 0) {
+            return out;
+        }
+        int offset = 0;
+        while (offset + 8 <= value.length
+                && value[offset] == (byte) 0xaa
+                && (value[offset + 1] == 0x21 || value[offset + 1] == 0x12)) {
+            int len = value[offset + 3] & 0xff;
+            int end = Math.min(value.length, offset + 8 + len);
+            out.add(Arrays.copyOfRange(value, offset, end));
+            offset = end;
+        }
+        if (offset < value.length) {
+            out.add(Arrays.copyOfRange(value, offset, value.length));
+        }
+        return out;
+    }
 
     public static ParsedFrame parseFrame(byte[] buf) {
         if (buf == null || buf.length < 10 || buf[0] != (byte) 0xaa || (buf[1] != 0x21 && buf[1] != 0x12)) {

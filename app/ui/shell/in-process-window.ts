@@ -168,6 +168,9 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     title: options.title,
     surfaceId: `window:${options.windowId}`,
     closeable: options.closeable,
+    // The window's own LayerStack decides per layer whether a swipe is
+    // directional or falls back to click / double-click.
+    acceptsDirectional: true,
     heightMode,
     close: () => {
       closed = true;
@@ -195,6 +198,16 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       await render(frameId);
     },
     requestRender,
+    relayout: () => {
+      stack.setBaseSize(appViewportSize(heightMode));
+      options.reconfigureSurface?.(heightMode);
+      requestRender();
+    },
+    hitTest: async (x, y) => {
+      const handled = await stack.hitTest(x, y);
+      if (handled) requestRender();
+      return handled;
+    },
     receiveTextInput: options.receiveTextInput,
     setForeground: (foreground) => {
       options.setSurfaceVisible(foreground);
@@ -221,6 +234,15 @@ export class YieldAtRootLayer implements Layer {
 
   get paintOverBase(): boolean | undefined {
     return this.inner.paintOverBase;
+  }
+
+  /** Directional swipes reach the inner layer only if it understands them. */
+  get acceptsDirectional(): boolean | undefined {
+    return this.inner.acceptsDirectional;
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> | boolean {
+    return this.inner.hitTest ? this.inner.hitTest(x, y, ctx) : false;
   }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {

@@ -1,30 +1,20 @@
 package com.faceclaw.app;
 
 import android.content.Context;
-import android.content.res.AssetManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
 import com.k2fsa.sherpa.onnx.FeatureConfig;
-import com.k2fsa.sherpa.onnx.KeywordSpotter;
-import com.k2fsa.sherpa.onnx.KeywordSpotterConfig;
-import com.k2fsa.sherpa.onnx.KeywordSpotterResult;
 import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OfflineStream;
-import com.k2fsa.sherpa.onnx.OnlineModelConfig;
-import com.k2fsa.sherpa.onnx.OnlineStream;
-import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -57,17 +47,15 @@ public class FaceclawVoiceController {
     private static final float TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f;
     private static final float TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f;
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
-    private static final String ASSET_ROOT = "faceclaw-voice";
-    private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
-    private static final String ASR_ASSET_ROOT = "faceclaw-voice-asr";
+    // Model directory shared with the TS-side download flow (asr-model.ts),
+    // which fetches the Moonshine files here on demand; they are no longer
+    // bundled in the APK.
+    private static final String ASR_ROOT = "faceclaw-voice-asr";
     private static final String ASR_MODEL_DIR = "sherpa-onnx-moonshine-base-en-quantized-2026-02-27";
-    private static final String[] MODEL_FILES = {
-            "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
-            "tokens.txt",
-            "screen-on-keywords.txt"
-    };
+    // Model files for the retired on-phone wake-word spotter, copied to
+    // filesDir by earlier releases; deleted on sight to reclaim the space.
+    // (The wakeword is now detected by the glasses firmware itself.)
+    private static final String LEGACY_KWS_ROOT = "faceclaw-voice";
     private static final String[] ASR_MODEL_FILES = {
             "encoder_model.ort",
             "decoder_model_merged.ort",
@@ -75,7 +63,6 @@ public class FaceclawVoiceController {
     };
 
     private enum VoiceInputMode {
-        WAKEWORD, // on-phone keyword spotting (kept for later; not currently wired)
         ONBOARD,  // on-phone Moonshine transcription
         CLOUD     // decode locally, emit PCM for a cloud recognizer on the TS side
     }
@@ -89,10 +76,11 @@ public class FaceclawVoiceController {
     private volatile FaceclawBleCommunicator communicator;
     private Thread workerThread;
     private volatile boolean started;
-    private VoiceInputMode mode = VoiceInputMode.WAKEWORD;
-    private KeywordSpotter keywordSpotter;
+    // Set once the worker has the glasses mic enabled for this session.
+    // Read and written under `lock`, so it flips with `started` atomically.
+    private boolean audioStarted;
+    private VoiceInputMode mode = VoiceInputMode.CLOUD;
     private OfflineRecognizer recognizer;
-    private OnlineStream stream;
     private FaceclawLc3Decoder lc3Decoder;
     private final float[] transcriptSamples = new float[TRANSCRIPT_SEGMENT_MAX_SAMPLES];
     private int transcriptSampleCount;
@@ -105,6 +93,26 @@ public class FaceclawVoiceController {
     private volatile boolean endpointing;
     private final EndpointDetector endpointDetector = new EndpointDetector();
     private java.io.ByteArrayOutputStream recordingPcm;
+    // Speaker verification against the enrolled wearer voice-print ("my voice
+    // only" command gating). Configured before start(); the utterance PCM is
+    // buffered (capped) and verified once at session end.
+    private static final int VERIFY_MAX_SAMPLES = SAMPLE_RATE * 10;
+    private static final int VERIFY_MIN_SAMPLES = SAMPLE_RATE;
+    private volatile String verifySpeakerModelPath;
+    private volatile float[] verifyWearerEmbedding;
+    private volatile float verifyThreshold = 0.8f;
+    private short[] verifyBuffer;
+    private int verifyCount;
+    // Global mic processing (Microphones app config): spectral noise
+    // suppression and firmware-DoA beam gating, applied to every capture
+    // session that opts in (assistant push-to-talk, Transcribe, hands-free).
+    // The raw tap opts out — raw means raw, and the Microphones session does
+    // its own beam-compensated processing on that path.
+    private volatile boolean suppressionEnabled;
+    private volatile boolean beamFilterEnabled;
+    private volatile int beamCenterDeg;
+    private volatile int beamHalfWidthDeg = 180;
+    private FaceclawNoiseSuppressor suppressor;
     private long queuedPackets;
     private long queueDroppedPackets;
     private long decodedSamples;
@@ -140,8 +148,66 @@ public class FaceclawVoiceController {
         this.endpointing = endpointing;
     }
 
-    public void start() {
-        start("wakeword");
+    /**
+     * Verify this session's speaker against the enrolled wearer voice-print
+     * and report the result via onSpeakerVerified just before the final
+     * transcript. Must be set before {@link #start}; pass a null model path
+     * to disable.
+     */
+    public void setSpeakerVerification(String speakerModelPath, float[] wearerEmbedding, float threshold) {
+        this.verifySpeakerModelPath = speakerModelPath;
+        this.verifyWearerEmbedding = wearerEmbedding;
+        this.verifyThreshold = threshold > 0 ? threshold : 0.8f;
+    }
+
+    public void clearSpeakerVerification() {
+        this.verifySpeakerModelPath = null;
+        this.verifyWearerEmbedding = null;
+    }
+
+    /** Spectral noise suppression on the decoded stream. Safe to flip mid-run. */
+    public void setNoiseSuppression(boolean enabled) {
+        this.suppressionEnabled = enabled;
+    }
+
+    /**
+     * Direction gating from the Sonic Radar beam: packets whose firmware
+     * direction-of-arrival falls outside centerDeg ± halfWidthDeg (device
+     * frame, 0 = straight ahead, positive right) are dropped before any
+     * consumer sees them. Safe to update mid-run.
+     */
+    public void setBeamFilter(boolean enabled, int centerDeg, int halfWidthDeg) {
+        this.beamFilterEnabled = enabled;
+        this.beamCenterDeg = centerDeg;
+        this.beamHalfWidthDeg = Math.max(5, Math.min(180, halfWidthDeg));
+    }
+
+    private boolean withinBeam(int angleDegrees) {
+        int delta = angleDegrees - beamCenterDeg;
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        return Math.abs(delta) <= beamHalfWidthDeg;
+    }
+
+    private void applySuppression(short[] pcm, int count) {
+        try {
+            if (suppressor == null) {
+                suppressor = new FaceclawNoiseSuppressor(SAMPLE_RATE);
+            }
+            byte[] le = new byte[count * 2];
+            for (int i = 0; i < count; i++) {
+                le[i * 2] = (byte) (pcm[i] & 0xff);
+                le[i * 2 + 1] = (byte) ((pcm[i] >> 8) & 0xff);
+            }
+            byte[] cleaned = suppressor.process(le);
+            int cleanedCount = Math.min(count, cleaned.length / 2);
+            for (int i = 0; i < cleanedCount; i++) {
+                pcm[i] = (short) ((cleaned[i * 2] & 0xff) | (cleaned[i * 2 + 1] << 8));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "noise suppression failed; passing audio through", t);
+            suppressionEnabled = false;
+        }
     }
 
     public void start(String requestedMode) {
@@ -156,9 +222,34 @@ public class FaceclawVoiceController {
             }
             mode = parseMode(requestedMode);
             started = true;
+            audioStarted = false;
             workerThread = new Thread(this::runLoop, "FaceclawVoiceController");
             workerThread.start();
         }
+    }
+
+    /**
+     * Whether mic audio is actually flowing. {@link #start} only records
+     * intent: the enable lives in the glasses' EvenHub session, so a transport
+     * drop or a session suspend can leave this controller started with a
+     * worker that will never see another packet. Anything deciding whether to
+     * (re)start capture must ask this rather than assume its own bookkeeping.
+     */
+    public boolean isCapturing() {
+        boolean audioUp;
+        synchronized (lock) {
+            if (!started) {
+                return false;
+            }
+            audioUp = audioStarted;
+        }
+        if (!audioUp) {
+            // The worker is still bringing the mic up; report it as running so
+            // a concurrent request shares it instead of restarting it.
+            return true;
+        }
+        FaceclawBleCommunicator currentCommunicator = communicator;
+        return currentCommunicator != null && currentCommunicator.isAudioCaptureActive();
     }
 
     public void stop() {
@@ -194,41 +285,49 @@ public class FaceclawVoiceController {
         if ("cloud".equals(requestedMode)) {
             return VoiceInputMode.CLOUD;
         }
-        if ("onboard".equals(requestedMode) || "full".equals(requestedMode)) {
-            return VoiceInputMode.ONBOARD;
-        }
-        return VoiceInputMode.WAKEWORD;
+        return VoiceInputMode.ONBOARD;
     }
 
     private void runLoop() {
         try {
+            deleteLegacyKwsFiles();
             VoiceInputMode currentMode = mode;
             if (currentMode == VoiceInputMode.ONBOARD) {
+                File modelDir = findAsrModelDir();
+                if (modelDir == null) {
+                    emitStatus("Voice model not downloaded (see Settings > Voice).");
+                    return;
+                }
                 emitStatus("Loading transcription model...");
-                File modelDir = installAsrModelFiles();
                 recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir));
                 resetTranscriptState();
                 lastTranscript = "";
-            } else if (currentMode == VoiceInputMode.WAKEWORD) {
-                emitStatus("Loading wake-word model...");
-                File modelDir = installModelFiles();
-                keywordSpotter = new KeywordSpotter(buildConfig(modelDir));
-                stream = keywordSpotter.createStream();
             }
             lc3Decoder = new FaceclawLc3Decoder();
             endpointDetector.reset();
+            if (suppressor != null) {
+                suppressor.reset();
+            }
             recordingPcm = saveRecordings ? new java.io.ByteArrayOutputStream(SAMPLE_RATE * 2 * 4) : null;
+            boolean verifying = verifySpeakerModelPath != null && verifyWearerEmbedding != null;
+            verifyBuffer = verifying ? new short[VERIFY_MAX_SAMPLES] : null;
+            verifyCount = 0;
             if (!startG2Audio()) {
                 emitStatus("Could not start G2 microphone input.");
                 return;
             }
+            synchronized (lock) {
+                audioStarted = true;
+            }
 
             emitStatus(currentMode == VoiceInputMode.CLOUD
                     ? "Listening (cloud)..."
-                    : currentMode == VoiceInputMode.ONBOARD
-                        ? "Listening..."
-                        : "Listening for \"screen on\"...");
+                    : "Listening...");
             processG2Audio();
+            // Verification result must precede the final transcript so the
+            // TS bridge can suppress a non-wearer command before it is acted
+            // on (the callbacks are posted in order to the main handler).
+            runSpeakerVerification();
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
             if (currentMode == VoiceInputMode.ONBOARD) {
@@ -244,6 +343,7 @@ public class FaceclawVoiceController {
             releaseLc3();
             synchronized (lock) {
                 started = false;
+                audioStarted = false;
                 workerThread = null;
             }
         }
@@ -312,29 +412,6 @@ public class FaceclawVoiceController {
         return b.array();
     }
 
-    private KeywordSpotterConfig buildConfig(File modelDir) {
-        return KeywordSpotterConfig.builder()
-                .setFeatureConfig(FeatureConfig.builder()
-                        .setSampleRate(SAMPLE_RATE)
-                        .setFeatureDim(FEATURE_DIM)
-                        .build())
-                .setOnlineModelConfig(OnlineModelConfig.builder()
-                        .setTransducer(OnlineTransducerModelConfig.builder()
-                                .setEncoder(new File(modelDir, "encoder-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .setDecoder(new File(modelDir, "decoder-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .setJoiner(new File(modelDir, "joiner-epoch-12-avg-2-chunk-16-left-64.onnx").getAbsolutePath())
-                                .build())
-                        .setTokens(new File(modelDir, "tokens.txt").getAbsolutePath())
-                        .setModelType("zipformer2")
-                        .setModelingUnit("")
-                        .setNumThreads(1)
-                        .build())
-                .setKeywordsFile(new File(modelDir, "screen-on-keywords.txt").getAbsolutePath())
-                .setKeywordsScore(1.5f)
-                .setKeywordsThreshold(0.35f)
-                .build();
-    }
-
     private OfflineRecognizerConfig buildRecognizerConfig(File modelDir) {
         return OfflineRecognizerConfig.builder()
                 .setFeatureConfig(FeatureConfig.builder()
@@ -352,50 +429,42 @@ public class FaceclawVoiceController {
                 .build();
     }
 
-    private File installModelFiles() throws IOException {
-        File modelDir = new File(appContext.getFilesDir(), ASSET_ROOT + File.separator + MODEL_DIR);
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            throw new IOException("Could not create " + modelDir.getAbsolutePath());
-        }
-        AssetManager assets = appContext.getAssets();
-        for (String fileName : MODEL_FILES) {
-            copyAssetIfNeeded(
-                    assets,
-                    ASSET_ROOT + "/" + MODEL_DIR + "/" + fileName,
-                    new File(modelDir, fileName)
-            );
-        }
-        return modelDir;
-    }
-
-    private File installAsrModelFiles() throws IOException {
-        File modelDir = new File(appContext.getFilesDir(), ASR_ASSET_ROOT + File.separator + ASR_MODEL_DIR);
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            throw new IOException("Could not create " + modelDir.getAbsolutePath());
-        }
-        AssetManager assets = appContext.getAssets();
+    /**
+     * The Moonshine model directory, populated by the download flow in
+     * asr-model.ts (releases before 0.5.0 copied the same files out of the
+     * APK, so upgraded installs are already complete). Null when any file is
+     * missing, i.e. the model still needs to be downloaded.
+     */
+    private File findAsrModelDir() {
+        File modelDir = new File(appContext.getFilesDir(), ASR_ROOT + File.separator + ASR_MODEL_DIR);
         for (String fileName : ASR_MODEL_FILES) {
-            copyAssetIfNeeded(
-                    assets,
-                    ASR_ASSET_ROOT + "/" + ASR_MODEL_DIR + "/" + fileName,
-                    new File(modelDir, fileName)
-            );
-        }
-        return modelDir;
-    }
-
-    private void copyAssetIfNeeded(AssetManager assets, String assetPath, File destination) throws IOException {
-        if (destination.exists() && destination.length() > 0) {
-            return;
-        }
-        try (InputStream input = assets.open(assetPath);
-             FileOutputStream output = new FileOutputStream(destination)) {
-            byte[] buffer = new byte[64 * 1024];
-            int read;
-            while ((read = input.read(buffer)) >= 0) {
-                output.write(buffer, 0, read);
+            File file = new File(modelDir, fileName);
+            if (!file.exists() || file.length() == 0) {
+                return null;
             }
         }
+        return modelDir;
+    }
+
+    private void deleteLegacyKwsFiles() {
+        try {
+            deleteRecursively(new File(appContext.getFilesDir(), LEGACY_KWS_ROOT));
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to delete legacy wake-word files", t);
+        }
+    }
+
+    private static void deleteRecursively(File file) {
+        if (!file.exists()) {
+            return;
+        }
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
     }
 
     private boolean startG2Audio() {
@@ -413,9 +482,8 @@ public class FaceclawVoiceController {
     private void processG2Audio() {
         short[] pcm = new short[FaceclawLc3Decoder.SAMPLES_PER_PACKET];
         while (started && !Thread.currentThread().isInterrupted()) {
-            OnlineStream currentStream = stream;
             FaceclawLc3Decoder currentDecoder = lc3Decoder;
-            if (currentDecoder == null || (mode == VoiceInputMode.WAKEWORD && currentStream == null)) {
+            if (currentDecoder == null) {
                 return;
             }
 
@@ -430,45 +498,45 @@ public class FaceclawVoiceController {
                 continue;
             }
             decodedSamples += count;
+            // Global mic processing from the Microphones app config: the
+            // beam filter drops packets whose firmware direction-of-arrival
+            // falls outside the listening wedge (isolating the aimed talker
+            // for every consumer, recognition included), and the spectral
+            // noise suppressor cleans what remains before it reaches the
+            // recognizer, cloud PCM, endpointing, or speaker verification.
+            int angleDegrees = currentDecoder.getLastAngleDegrees();
+            int ssr = currentDecoder.getLastSsr();
+            if (beamFilterEnabled && ssr > 0 && !withinBeam(angleDegrees)) {
+                emitFrameMeta(angleDegrees, ssr);
+                maybeEmitAudioStats(false);
+                continue;
+            }
+            if (suppressionEnabled) {
+                applySuppression(pcm, count);
+            }
             if (recordingPcm != null) {
                 appendRecording(pcm, count);
+            }
+            if (verifyBuffer != null && verifyCount < VERIFY_MAX_SAMPLES) {
+                int copied = Math.min(count, VERIFY_MAX_SAMPLES - verifyCount);
+                System.arraycopy(pcm, 0, verifyBuffer, verifyCount, copied);
+                verifyCount += copied;
             }
             if (endpointing && endpointDetector.accept(pcm, count)) {
                 emitSpeechEnd();
             }
-            if (mode == VoiceInputMode.CLOUD) {
-                emitPcm(pcm, count);
-            } else if (mode == VoiceInputMode.ONBOARD) {
+            // PCM and frame metadata flow in every mode so levels, recording,
+            // and the Microphones radar keep working alongside onboard ASR.
+            emitPcm(pcm, count);
+            emitFrameMeta(angleDegrees, ssr);
+            if (mode != VoiceInputMode.CLOUD) {
                 float[] samples = new float[count];
                 for (int i = 0; i < count; i++) {
                     samples[i] = pcm[i] / 32768.0f;
                 }
                 processRecognizer(samples);
-            } else {
-                float[] samples = new float[count];
-                for (int i = 0; i < count; i++) {
-                    samples[i] = pcm[i] / 32768.0f;
-                }
-                currentStream.acceptWaveform(samples, SAMPLE_RATE);
-                processKeywordSpotter(currentStream);
             }
             maybeEmitAudioStats(false);
-        }
-    }
-
-    private void processKeywordSpotter(OnlineStream currentStream) {
-        KeywordSpotter currentSpotter = keywordSpotter;
-        if (currentSpotter == null) {
-            return;
-        }
-        while (currentSpotter.isReady(currentStream)) {
-            currentSpotter.decode(currentStream);
-            KeywordSpotterResult result = currentSpotter.getResult(currentStream);
-            String keyword = result == null ? "" : result.getKeyword();
-            if (keyword != null && keyword.trim().length() > 0) {
-                currentSpotter.reset(currentStream);
-                emitWakeWord(keyword);
-            }
         }
     }
 
@@ -661,6 +729,83 @@ public class FaceclawVoiceController {
         mainHandler.post(() -> currentListener.onPcm(le));
     }
 
+    /**
+     * Embed the session's buffered utterance and compare it to the enrolled
+     * wearer voice-print. Fails open: a session too short to verify, or a
+     * model that will not load, counts as the wearer rather than silencing
+     * every command.
+     */
+    private void runSpeakerVerification() {
+        short[] buffer = verifyBuffer;
+        float[] wearer = verifyWearerEmbedding;
+        String modelPath = verifySpeakerModelPath;
+        verifyBuffer = null;
+        if (buffer == null || wearer == null || modelPath == null) {
+            return;
+        }
+        if (verifyCount < VERIFY_MIN_SAMPLES) {
+            emitSpeakerVerified(true, 0f);
+            return;
+        }
+        FaceclawSpeakerId speakerId = cachedSpeakerId(modelPath);
+        try {
+            byte[] le = new byte[verifyCount * 2];
+            for (int i = 0; i < verifyCount; i++) {
+                short s = buffer[i];
+                le[i * 2] = (byte) (s & 0xff);
+                le[i * 2 + 1] = (byte) ((s >> 8) & 0xff);
+            }
+            float[] embedding = speakerId.embed(le, SAMPLE_RATE);
+            if (embedding == null || embedding.length != wearer.length) {
+                emitSpeakerVerified(true, 0f);
+                return;
+            }
+            double dot = 0;
+            for (int i = 0; i < embedding.length; i++) {
+                dot += (double) embedding[i] * wearer[i];
+            }
+            boolean isWearer = dot >= verifyThreshold;
+            Log.i(TAG, "speaker verification similarity=" + String.format(java.util.Locale.US, "%.3f", dot)
+                    + " threshold=" + verifyThreshold + " isWearer=" + isWearer);
+            emitSpeakerVerified(isWearer, (float) dot);
+        } catch (Throwable t) {
+            Log.w(TAG, "speaker verification failed", t);
+            emitSpeakerVerified(true, 0f);
+        }
+    }
+
+    // The 28 MB embedding model takes seconds to load; keep one instance
+    // across capture sessions so verification adds only the embed time.
+    private static FaceclawSpeakerId sharedSpeakerId;
+    private static String sharedSpeakerIdPath;
+
+    private static synchronized FaceclawSpeakerId cachedSpeakerId(String modelPath) {
+        if (sharedSpeakerId == null || !modelPath.equals(sharedSpeakerIdPath)) {
+            if (sharedSpeakerId != null) {
+                sharedSpeakerId.close();
+            }
+            sharedSpeakerId = new FaceclawSpeakerId(modelPath);
+            sharedSpeakerIdPath = modelPath;
+        }
+        return sharedSpeakerId;
+    }
+
+    private void emitSpeakerVerified(boolean isWearer, float similarity) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        mainHandler.post(() -> currentListener.onSpeakerVerified(isWearer, similarity));
+    }
+
+    private void emitFrameMeta(int angleDegrees, int ssr) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        mainHandler.post(() -> currentListener.onFrameMeta(angleDegrees, ssr));
+    }
+
     private void emitSpeechEnd() {
         FaceclawVoiceControllerListener currentListener = listener;
         if (currentListener == null) {
@@ -783,14 +928,6 @@ public class FaceclawVoiceController {
     }
 
     private void releaseSherpa() {
-        if (stream != null) {
-            stream.release();
-            stream = null;
-        }
-        if (keywordSpotter != null) {
-            keywordSpotter.release();
-            keywordSpotter = null;
-        }
         if (recognizer != null) {
             recognizer.release();
             recognizer = null;
@@ -891,14 +1028,6 @@ public class FaceclawVoiceController {
             return;
         }
         mainHandler.post(() -> currentListener.onStatus(status));
-    }
-
-    private void emitWakeWord(String keyword) {
-        FaceclawVoiceControllerListener currentListener = listener;
-        if (currentListener == null) {
-            return;
-        }
-        mainHandler.post(() -> currentListener.onWakeWord(keyword));
     }
 
     private void emitTranscript(String text, boolean isFinal) {
