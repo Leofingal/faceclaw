@@ -1,5 +1,6 @@
 import { type AppDefinition } from "./app-definition";
 import launcherApp from "./launcher";
+import exocortexApp from "./exocortex";
 import timerApp from "./timer";
 import calculatorApp from "./calculator";
 import terminalApp from "./terminal";
@@ -29,6 +30,7 @@ import settingsApp from "./settings";
  */
 export const ALL_APPS: readonly AppDefinition[] = [
   launcherApp,
+  exocortexApp,
   timerApp,
   calculatorApp,
   terminalApp,
