@@ -25,7 +25,6 @@ import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -34,6 +33,7 @@ import {
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
@@ -349,7 +349,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -467,7 +467,7 @@ function windowMenu(window: PinballWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
@@ -484,7 +484,7 @@ function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId:
   }
 }
 
-function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: number): void {
   const ready = window.ballState === "ready";
   switch (event.type) {
     case "scroll-up":
@@ -530,7 +530,7 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
 }
 
 /** Input while paused or game over. */
-function handleIdleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
+function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);

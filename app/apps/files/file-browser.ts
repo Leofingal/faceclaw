@@ -15,7 +15,8 @@ import {
   statPath,
   type DirectoryEntry,
 } from "../../native/file-access";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 const LIST_X = 20;
 
@@ -231,7 +232,7 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (filesViewModeSetting.get() === "list") {
       await this.handleListInput(event, ctx);
     } else {
@@ -239,7 +240,7 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  private async handleListInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleListInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     switch (event.type) {
       case "scroll-up":
@@ -261,7 +262,7 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  private async handleIconsInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleIconsInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     const iconRows = buildIconRows(rows);
     this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));

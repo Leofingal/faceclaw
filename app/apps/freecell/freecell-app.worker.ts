@@ -18,12 +18,11 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS } from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
 declare const com: any;
@@ -168,7 +167,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -256,7 +255,7 @@ function windowMenu(window: FreecellWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
@@ -273,7 +272,7 @@ function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId
   }
 }
 
-function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
       window.cursor = (window.cursor + LOC_COUNT - 1) % LOC_COUNT;
@@ -312,7 +311,7 @@ function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, 
   renderAndSubmit(window, frameId);
 }
 
-function handleWonInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
+function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
       newGame(window, false);

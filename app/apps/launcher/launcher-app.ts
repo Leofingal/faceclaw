@@ -5,7 +5,8 @@ import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
-import { DashboardInputEvent, isWatchInput, Layer, LayerActions, LayerContext } from "../../ui/layers";
+import { InputEvent, isWatchInput } from "../../ui/gestures";
+import { Layer, LayerActions, LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { iconGridMinRowHeight } from "../../ui/metrics";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
@@ -313,7 +314,7 @@ class LauncherGridLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (isWatchInput(event)) {
       await this.handleWatchInput(event, ctx);
       return;
@@ -378,7 +379,7 @@ class LauncherGridLayer implements Layer {
    * Row mode is restored on the way out so a ring user finds the grid as
    * they left it.
    */
-  private async handleWatchInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleWatchInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const entries = this.entries();
     const rows = this.rowCount(entries.length);
     if (this.mode === "row") {

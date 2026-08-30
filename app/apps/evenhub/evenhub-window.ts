@@ -5,7 +5,8 @@
  */
 import { GrayImage } from "../../graphics/image";
 import { EVENHUB_SCREEN_WIDTH } from "./compositor";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import {
   createInProcessWindow,
   type InProcessAppOptions,
@@ -33,7 +34,7 @@ class EvenHubAppLayer implements Layer {
     return this.session.paint(size, ctx.stack.isFocused());
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     // Everything goes to the app; long-press never reaches here (the window
     // menu intercepts it), which is the guaranteed way out since EvenHub
     // apps own double-click.

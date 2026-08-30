@@ -2,30 +2,12 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
-import {
-  drawListScrollbar,
-  drawSelectionHighlight,
-  scrollToKeepSelectionVisible,
-  type MenuItem,
-} from "../../ui/menu";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { shell } from "../../ui/shell/shell";
-import {
-  evenHubApi,
-  EvenHubAuthenticationError,
-  isEvenHubStoreConfigured,
-  type EvenHubStoreApp,
-} from "./even-api";
-import {
-  clearEvenHubLoginForm,
-  clearEvenHubSession,
-  clearTransientEvenHubSession,
-  evenHubLoginEmailSetting,
-  evenHubLoginPasswordSetting,
-  evenHubRememberMeSetting,
-  resetEvenHubLoginForm,
-} from "./credentials";
+import { evenHubApi, EvenHubAuthenticationError, isEvenHubStoreConfigured, type EvenHubStoreApp } from "./even-api";
+import { clearEvenHubLoginForm, clearEvenHubSession, clearTransientEvenHubSession, evenHubLoginEmailSetting, evenHubLoginPasswordSetting, evenHubRememberMeSetting, resetEvenHubLoginForm } from "./credentials";
 import { EvenHubStoreDetailLayer } from "./store-detail-layer";
 import { lineStep } from "../../ui/metrics";
 
@@ -122,7 +104,7 @@ export class EvenHubStoreLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.showingLogin) {
       if (event.type === "click" && !this.loading) {
         this.openCredentialEditor(ctx);

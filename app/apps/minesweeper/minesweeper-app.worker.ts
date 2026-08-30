@@ -18,7 +18,6 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -27,6 +26,7 @@ import {
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
@@ -178,7 +178,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -282,7 +282,7 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
@@ -299,7 +299,7 @@ function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, fram
   }
 }
 
-function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
   const rowMode = window.selectMode === "row";
   switch (event.type) {
     case "scroll-up":
@@ -347,7 +347,7 @@ function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEven
 }
 
 /** Input while paused, won, or lost. */
-function handleIdleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
+function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
       if (window.phase === "paused") {

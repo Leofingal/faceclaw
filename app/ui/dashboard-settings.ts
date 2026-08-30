@@ -1,4 +1,4 @@
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -17,7 +17,7 @@ import {
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
-import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
+import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
 export type NightscoutSettings = {
@@ -878,7 +878,7 @@ export class EditTextSettingLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       void ctx.actions.endTextSettingEdit();
       ctx.stack.pop();

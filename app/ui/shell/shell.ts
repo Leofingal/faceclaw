@@ -4,16 +4,14 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
-  DashboardInputEvent,
   directionalFallback,
+  InputEvent,
+  type InputEventPayload,
   type InputSource,
   isDirectionalInput,
-  Layer,
-  LayerActions,
-  LayerContext,
-  LayerStack,
-  noopLayerActions,
-} from "../layers";
+  makeInputEvent,
+} from "../gestures";
+import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { voiceActivity } from "./voice-activity";
@@ -92,7 +90,7 @@ export type ShellWindow = {
    * tracking) passes to the window: it must eventually reach a frame submit
    * or a finishFrame call.
    */
-  handleInput: (event: DashboardInputEvent, frameId: number) => Promise<void> | void;
+  handleInput: (event: InputEvent, frameId: number) => Promise<void> | void;
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
   /**
@@ -213,7 +211,7 @@ class ShellAlertLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     if (event.type === "click" || event.type === "double-click") {
       this.clearTimer();
       this.onDismiss();
@@ -548,7 +546,7 @@ class Shell {
     return this.stack.paint();
   }
 
-  async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
+  async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
     // The stock lifecycle has already interpreted the physical double tap as
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
@@ -698,7 +696,7 @@ class Shell {
     return this.screenOn && this.foregroundWindow()?.windowId === windowId;
   }
 
-  private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
+  private handleSidebarInput(event: InputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":
         // A double-tap at the root (the app switcher selected) turns the
@@ -1147,7 +1145,11 @@ function formatAssistantTime(date: Date): string {
   return `${day}, ${hours}:${minutes} ${meridiem}`;
 }
 
-export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
+export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
+  return makeInputEvent(rawInputEventToPayload(event));
+}
+
+function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   if (event.kind === "sys-event") {
     if (event.eventType === OsEventTypeList.CLICK_EVENT) {
       return {
@@ -1210,7 +1212,7 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
 }
 
 /** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
-function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): DashboardInputEvent {
+function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
   return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
 }
 
@@ -1227,7 +1229,7 @@ function eventSourceToString(eventSource: number): InputSource {
   return "ring";
 }
 
-export function inputEventToString(event: DashboardInputEvent): string {
+export function inputEventToString(event: InputEvent): string {
   switch (event.type) {
     case "click":
       return `Click from ${event.source}`;

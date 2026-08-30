@@ -2,7 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerContext, PaintBelow } from "../layers";
 import { drawSelectionHighlight, isMenuItemDisabled, MenuItem, MenuLayer, openModalMenu } from "../menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../metrics";
 import { shell } from "../shell/shell";
@@ -184,7 +185,7 @@ export class SettingsPanelLayer implements Layer {
     }
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.focus === "left") {
       switch (event.type) {
         case "scroll-up":
@@ -263,7 +264,7 @@ export class SettingsDescriptionOverlayLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     return this.panel.handleInput(event, ctx);
   }
 }

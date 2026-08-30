@@ -12,12 +12,11 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
 import type { MenuItem } from "../../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
-import { GESTURE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { DocumentView } from "../../ui/document/document-view";
 import { docNodePageLink, type DocNode } from "../../ui/document/document-model";
 import {
@@ -173,7 +172,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     case "text-input":
       // Voice input / typed text becomes a new todo on the shown page.
@@ -342,7 +341,7 @@ function menuItems(win: RoamWindow): MenuItem[] {
   return [...items, ...defaultWindowMenuItems(win.windowId, post)];
 }
 
-function handleInput(win: RoamWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void {
   if (win.menu?.isOpen()) {
     win.menu
       .handleInput(event)

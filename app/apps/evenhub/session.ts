@@ -20,7 +20,8 @@
 import { ApplicationSettings } from "@nativescript/core";
 import { GrayImage } from "../../graphics/image";
 import { EvenHubFont } from "../../graphics/evenhub-font";
-import { type DashboardInputEvent, type InputSource, type Layer } from "../../ui/layers";
+import { type InputEvent, type InputSource } from "../../ui/gestures";
+import { type Layer } from "../../ui/layers";
 import {
   anthropicApiKeySetting,
   elevenLabsApiKeySetting,
@@ -425,7 +426,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * fields elided the way protobuf JSON elides them; list selection moves
    * locally with events only for clicks and boundary scrolls.
    */
-  handleGesture(event: DashboardInputEvent): void {
+  handleGesture(event: InputEvent): void {
     if (!this.page) return;
     const capture = this.page ? eventCaptureContainer(this.page) : undefined;
     switch (event.type) {

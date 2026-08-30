@@ -2,7 +2,8 @@ import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import * as frameTimings from "../../native/frame-timings";
 import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
-import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
 import { type MenuItem } from "../menu";
 import { WindowMenuLayer } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
@@ -249,7 +250,7 @@ export class YieldAtRootLayer implements Layer {
     return this.inner.paint(ctx, paintBelow);
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
       shell.yieldFocusToSidebar();
       return;

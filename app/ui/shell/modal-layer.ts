@@ -1,6 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanes } from "../../graphics/plane";
-import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
 import { appViewportRect, appViewportSize, SHELL_OPAQUE_BLACK } from "./geometry";
 
 // The modal covers most of the min-height app viewport, leaving a little of
@@ -59,7 +60,7 @@ export class ShellModalLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, _ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
     await this.stack.handleInput(event);
   }
 }

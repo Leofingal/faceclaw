@@ -38,38 +38,14 @@ import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fo
 import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import {
-  G2MirrorClient,
-  type G2MirrorClientOptions,
-  type G2MirrorSession,
-  type G2MirrorState,
-} from "../../native/g2mirror-client";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { clamp } from "../../util/numeric-util";
-import {
-  terminalAutoReconnectSetting,
-  terminalLaunchPresetsSetting,
-  terminalNewConnectionSetting,
-  terminalWakeOnBellSetting,
-} from "../../ui/dashboard-settings";
-import {
-  connectionDisplayName,
-  loadConnections,
-  parseConnectionString,
-  saveConnections,
-  TERMINAL_CONNECTIONS_KEY,
-  updateConnection,
-  type TerminalConnection,
-} from "./connections";
+import { terminalAutoReconnectSetting, terminalLaunchPresetsSetting, terminalNewConnectionSetting, terminalWakeOnBellSetting } from "../../ui/dashboard-settings";
+import { connectionDisplayName, loadConnections, parseConnectionString, saveConnections, TERMINAL_CONNECTIONS_KEY, updateConnection, type TerminalConnection } from "./connections";
 import { TerminalEmulator } from "./terminal-emulator";
-import type { DashboardInputEvent } from "../../ui/layers";
-import {
-  drawListScrollbar,
-  drawSelectionHighlight,
-  scrollToKeepSelectionVisible,
-  type MenuItem,
-} from "../../ui/menu";
+import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { lineStep, listRowHeight } from "../../ui/metrics";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
@@ -324,7 +300,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "text-input": {
@@ -925,7 +901,7 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
   return items;
 }
 
-function handleInput(window: TerminalWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: TerminalWindow, event: InputEvent, frameId: number): void {
   if (window.kind === "view") activeViewId = window.windowId;
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
@@ -1281,7 +1257,7 @@ function clampHubSelection(window: HubWindow, items: HubItem[]): void {
   window.selectedIndex = index;
 }
 
-function handleHubInput(window: HubWindow, event: DashboardInputEvent, frameId: number): void {
+function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): void {
   if (window.mode === "add") {
     if (event.type === "click") {
       saveAddConnection(window);
