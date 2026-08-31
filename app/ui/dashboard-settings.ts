@@ -390,6 +390,15 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
 });
 
+export const useMicControlSetting = new ConfigSettingBoolean({
+  id: "use-mic-control",
+  label: "Use microphone control",
+  storageKey: "developer.useMicControl",
+  defaultValue: true,
+  description:
+    "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
+});
+
 export type RingConnectionMode = "glasses" | "direct";
 
 export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({

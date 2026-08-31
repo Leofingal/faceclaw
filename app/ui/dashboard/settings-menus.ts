@@ -54,6 +54,7 @@ import {
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
+  useMicControlSetting,
   verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
@@ -174,6 +175,7 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
+        toggleSettingMenuItem(useMicControlSetting),
       ],
     },
     {
