@@ -1,7 +1,12 @@
 import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
-import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
+import {
+  ensureBlePermissions,
+  ensureVoicePermissions,
+  hasMicrophonePermission,
+  requestMicrophonePermission,
+} from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
@@ -317,6 +322,7 @@ class DashboardController {
       },
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
+      prepareVoiceCapture: () => this.prepareVoiceCapture(),
       onWindowsChanged: () => {
         this.persistOpenApps();
         // The foreground title is mirrored on both remote-control faces.
@@ -1732,10 +1738,15 @@ class DashboardController {
     voiceControlBridge.stopContinuousCapture();
   }
 
-  /** Provider and key settings for a capture on the given connection. */
-  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge) {
+  /**
+   * Provider and key settings for a capture on the given connection; a null
+   * communicator means preview-only mode, where the phone's own microphone
+   * stands in for the G2 mic.
+   */
+  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge | null) {
     return {
-      communicator: communicator.getNativeCommunicator(),
+      communicator: communicator?.getNativeCommunicator() ?? null,
+      usePhoneMic: communicator === null,
       provider: voiceProviderSetting.get(),
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
@@ -1763,14 +1774,39 @@ class DashboardController {
     voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
   }
 
+  /**
+   * Gate for opening the voice dialog (the shell asks before pushing the
+   * layer). Connected sessions always proceed — the mic permission prompt,
+   * if needed, appears over the open dialog as it always has. Preview mode
+   * captures from the phone mic, so a missing permission turns the tap into
+   * the system permission prompt instead of a dialog that would listen to
+   * nothing; a grant lets the dialog open right away.
+   */
+  private async prepareVoiceCapture(): Promise<boolean> {
+    if (!this.isPreviewDisplayActive()) return true;
+    if (hasMicrophonePermission()) return true;
+    const granted = await requestMicrophonePermission();
+    if (!granted) {
+      this.appendLog("voice input blocked: microphone permission denied");
+    }
+    return granted;
+  }
+
   private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
-    if (this.phase !== "connected" || !this.communicator) {
+    // Preview mode captures from the phone mic (voiceCaptureOptions with a
+    // null communicator); otherwise a live glasses session must be the source.
+    const previewCapture = this.isPreviewDisplayActive();
+    if (!previewCapture && (this.phase !== "connected" || !this.communicator)) {
       return;
     }
     const communicator = this.communicator;
     void ensureVoicePermissions()
       .then(() => {
-        if (this.phase !== "connected" || this.communicator !== communicator) return;
+        if (previewCapture) {
+          if (!this.isPreviewDisplayActive()) return;
+        } else if (this.phase !== "connected" || this.communicator !== communicator) {
+          return;
+        }
         const options = { ...this.voiceCaptureOptions(communicator), endpointing };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);

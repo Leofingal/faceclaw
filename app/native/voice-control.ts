@@ -24,7 +24,14 @@ export type VoiceTranscriptEvent = {
 };
 
 export type PushToTalkOptions = {
+  /** Native G2 communicator, or null in preview-only mode (see usePhoneMic). */
   communicator: any;
+  /**
+   * Capture from the phone's own microphone instead of the G2 over BLE.
+   * Preview-only mode, where no glasses are connected; everything downstream
+   * (providers, endpointing, verification) works the same on either source.
+   */
+  usePhoneMic?: boolean;
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
   openAiApiKey: string;
@@ -172,6 +179,9 @@ export class FaceclawVoiceControlBridge {
     this.suspendedRaw = false;
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
+    // The raw tap is strictly the G2 stream; clear any phone-mic flag a
+    // preview-mode capture may have left on the shared controller.
+    this.controller?.setUsePhoneMic(false);
     this.controller?.setSaveRecordings(false);
     this.controller?.setEndpointing(false);
     // Raw means raw: the Microphones session (and EvenHub apps) get the
@@ -218,6 +228,7 @@ export class FaceclawVoiceControlBridge {
     if (this.started) this.teardownCapture();
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
+    this.controller?.setUsePhoneMic(Boolean(options.usePhoneMic));
     this.controller?.setSaveRecordings(options.saveRecording);
     this.controller?.setEndpointing(Boolean(options.endpointing));
     this.captureEndpointing = Boolean(options.endpointing);

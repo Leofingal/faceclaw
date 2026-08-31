@@ -129,6 +129,12 @@ export type ShellConfig = {
   actions: LayerActions;
   getScreenTimeoutMs: () => number | null;
   requestShellRender: () => void;
+  /**
+   * Asked before the voice dialog opens; resolving false swallows the open.
+   * Preview-only mode uses it to turn the tap into a mic-permission prompt
+   * when RECORD_AUDIO isn't granted yet (the phone mic is the source there).
+   */
+  prepareVoiceCapture?: () => Promise<boolean>;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
@@ -795,7 +801,35 @@ class Shell {
     this.config.onWindowsChanged?.();
   }
 
+  // True while a voice-dialog open waits on prepareVoiceCapture (e.g. the
+  // preview-mode permission prompt); a second tap must not queue another open.
+  private voiceDialogPending = false;
+
   private openVoiceDialog(options: {
+    finishOnClick?: boolean;
+    handsFree?: boolean;
+    defaultTarget: "assistant" | "app";
+  }): void {
+    if (this.voiceDialogPending) return;
+    this.voiceDialogPending = true;
+    void (async () => {
+      let ready = true;
+      try {
+        ready = (await this.config.prepareVoiceCapture?.()) ?? true;
+      } catch {
+        ready = false;
+      } finally {
+        this.voiceDialogPending = false;
+      }
+      // Re-checked after the await: another path may have opened a dialog
+      // (or torn down the base state) while a permission prompt was up.
+      if (!ready || this.activeVoiceLayer) return;
+      this.openVoiceDialogNow(options);
+      this.config.requestShellRender();
+    })();
+  }
+
+  private openVoiceDialogNow(options: {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
