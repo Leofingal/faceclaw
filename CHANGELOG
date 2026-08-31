@@ -1,6 +1,9 @@
 # Chagelog
 
-## 0.6.1 - Future
+## 0.6.2 - Future
+* Preview Only mode works
+
+## 0.6.1 - 2026-08-30
 * Settings import/export scripts work on release builds
 * Fixed an issue where the onboarding flow failed to detect the existing glasses firmware version
 * Update launcher, files, and game UIs to work better with watch input

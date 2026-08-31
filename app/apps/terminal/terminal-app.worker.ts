@@ -38,6 +38,7 @@ import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fo
 import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
+import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
@@ -1595,9 +1596,9 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: terminal content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

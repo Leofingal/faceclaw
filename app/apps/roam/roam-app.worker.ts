@@ -14,6 +14,7 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import * as frameTimings from "../../native/frame-timings";
+import { getActiveDisplay } from "../../native/active-display";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import type { MenuItem } from "../../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
@@ -664,9 +665,9 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: roam content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

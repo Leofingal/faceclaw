@@ -4,6 +4,8 @@ export type GlassesDisplayState = {
   screenOn: boolean;
   battery: number | null;
   foregroundTitle: string | null;
+  /** The headless preview display is standing in for a connection (preview-only mode). */
+  previewMode: boolean;
 };
 
 /** Compact status shown where the foreground-window title normally lives. */
@@ -13,7 +15,9 @@ export function glassesDisplayLabel(state: GlassesDisplayState): string {
   if (state.phase === "charging") {
     return chargingDisplayLabel(state.battery);
   }
-  if (state.phase !== "connected") {
+  // Preview mode has a live (simulated) screen despite the disconnected
+  // phase, so fall through to the screen-state/foreground labels.
+  if (state.phase !== "connected" && !state.previewMode) {
     return "Glasses disconnected";
   }
   if (state.silentMode) {

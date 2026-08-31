@@ -62,6 +62,7 @@ export class MainViewModel extends Observable {
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
   private _warningsModalVisible = false;
+  private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   // A new view model is built on every navigation to the main page; these
@@ -84,6 +85,7 @@ export class MainViewModel extends Observable {
     if (this.unsubscribers.length > 0) return;
     this.unsubscribers.push(dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
+      this.previewMode = snapshot.previewMode;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
@@ -148,7 +150,22 @@ export class MainViewModel extends Observable {
         // phase still "connecting"; keep that distinction visible.
         return this._status.startsWith("Reconnecting") ? "Reconnecting" : "Connecting";
       default:
-        return this._status.startsWith("Failed") ? "Failed" : "Disconnected";
+        if (this._status.startsWith("Failed")) return "Failed";
+        // The headless preview display is live; "Disconnected" would suggest
+        // the interactive mirror below it is broken.
+        return this._previewMode ? "Preview" : "Disconnected";
+    }
+  }
+
+  get previewMode(): boolean {
+    return this._previewMode;
+  }
+
+  set previewMode(value: boolean) {
+    if (this._previewMode !== value) {
+      this._previewMode = value;
+      this.notifyPropertyChange("previewMode", value);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
   }
 
@@ -667,6 +684,10 @@ export class MainViewModel extends Observable {
    */
   async autoConnect(): Promise<void> {
     if (this.phase !== "disconnected") return;
+    // Preview-only users get the headless preview display instead of a
+    // connection; a no-op in every other state (including while suppressed:
+    // suppression is about not re-dialing glasses, and there are none).
+    await dashboardController.ensurePreviewDisplay();
     if (isAutoReconnectSuppressed()) return;
     const addresses = loadDeviceAddresses();
     if (!isValidMacAddress(addresses.right) || !isValidMacAddress(addresses.left)) return;
