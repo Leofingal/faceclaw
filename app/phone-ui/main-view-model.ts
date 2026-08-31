@@ -60,6 +60,7 @@ export class MainViewModel extends Observable {
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
+  private _fontsMissingWarningVisible = false;
   private _warningsModalVisible = false;
   private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
@@ -106,6 +107,7 @@ export class MainViewModel extends Observable {
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
+      this.fontsMissingWarningVisible = snapshot.fontsMissingWarningVisible;
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
@@ -570,6 +572,43 @@ export class MainViewModel extends Observable {
     return this._batteryOptimizationWarningVisible ? "visible" : "collapse";
   }
 
+  get fontsMissingWarningVisible(): boolean {
+    return this._fontsMissingWarningVisible;
+  }
+
+  set fontsMissingWarningVisible(value: boolean) {
+    if (this._fontsMissingWarningVisible !== value) {
+      this._fontsMissingWarningVisible = value;
+      this.notifyPropertyChange("fontsMissingWarningVisible", value);
+      this.notifyPropertyChange("fontsMissingWarningVisibility", this.fontsMissingWarningVisibility);
+      this.refreshWarningIndicator();
+    }
+  }
+
+  get fontsMissingWarningVisibility(): "visible" | "collapse" {
+    return this._fontsMissingWarningVisible ? "visible" : "collapse";
+  }
+
+  /**
+   * Jump back into the onboarding firmware check, whose missing-fonts path
+   * downloads the stock firmware and extracts the G2 fonts without reflashing.
+   * The check probes the glasses itself, so drop the main connection first;
+   * like pairing, this is a detour rather than a Disconnect, so lift the
+   * auto-reconnect suppression right away.
+   */
+  async onPrepareFontsTap(): Promise<void> {
+    this.setWarningsModalVisible(false);
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the firmware check reports its own connection trouble
+      }
+      resumeAutoReconnect();
+    }
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
+  }
+
   onAllowBackgroundUsageTap(): void {
     this.setWarningsModalVisible(false);
     dashboardController.requestBatteryOptimizationExemption();
@@ -581,7 +620,8 @@ export class MainViewModel extends Observable {
     return (
       this._evenAppConflictWarningVisible ||
       this._firmwareWarningVisible ||
-      this._batteryOptimizationWarningVisible
+      this._batteryOptimizationWarningVisible ||
+      this._fontsMissingWarningVisible
     );
   }
 

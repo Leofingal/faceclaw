@@ -1,6 +1,6 @@
 import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
-import { loadDeviceAddresses } from "./device-addresses";
+import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
 import {
   ensureBlePermissions,
   ensureVoicePermissions,
@@ -16,6 +16,7 @@ import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
 
@@ -107,6 +108,7 @@ export type DashboardSnapshot = {
   firmwareWarningVisible: boolean;
   screenRecordingActive: boolean;
   batteryOptimizationWarningVisible: boolean;
+  fontsMissingWarningVisible: boolean;
   /**
    * True while the headless preview display is standing in for a glasses
    * connection (preview-only mode): the mirror is live and interactive, but
@@ -207,6 +209,10 @@ class DashboardController {
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
   private batteryOptimizationWarningVisible = false;
+  private fontsMissingWarningVisible = false;
+  // Sticky positive: the extracted-font file doesn't vanish mid-session, so a
+  // successful check spares later refreshes the file read and JSON parse.
+  private extractedFontsConfirmed = false;
   private screenRecordingActive = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private silentMode = false;
@@ -905,6 +911,7 @@ class DashboardController {
       firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
       screenRecordingActive: this.screenRecordingActive,
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
+      fontsMissingWarningVisible: this.fontsMissingWarningVisible,
       previewMode: this.isPreviewDisplayActive(),
     };
   }
@@ -977,8 +984,28 @@ class DashboardController {
     }, 5_000);
   }
 
+  /**
+   * Warn when glasses are paired but the phone-side G2 fonts were never
+   * extracted (the onboarding flash flow normally extracts them, but a dev
+   * install or an imported config can arrive paired without them). Preview-only
+   * users have no addresses configured and are never warned.
+   */
+  refreshEvenHubFontStatus(): void {
+    const addresses = loadDeviceAddresses();
+    const paired = isValidMacAddress(addresses.right) && isValidMacAddress(addresses.left);
+    if (paired && !this.extractedFontsConfirmed) {
+      this.extractedFontsConfirmed = hasExtractedEvenHubFonts();
+    }
+    const warningVisible = paired && !this.extractedFontsConfirmed;
+    if (warningVisible !== this.fontsMissingWarningVisible) {
+      this.fontsMissingWarningVisible = warningVisible;
+      this.emit();
+    }
+  }
+
   refreshEvenAppStatus(): void {
     this.refreshBatteryOptimizationStatus();
+    this.refreshEvenHubFontStatus();
     const state = readEvenAppNotificationState();
     const wasActive = this.evenNotificationActive;
     this.evenNotificationActive = state.evenNotificationActive;
