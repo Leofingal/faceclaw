@@ -2,8 +2,9 @@
   The phone's controller for the glasses, as a three-tab area below the mirror:
   Settings (screen size + brightness), Watch (the simulated watch face: same
   scheme as the watch pad - tap = select, double-tap or two fingers = back,
-  hold = menu, swipes navigate), and Ring (simulated R1 inputs on the ring's
-  own scheme). The narrow mic button at the tab bar's right edge fires the
+  hold = menu, swipes navigate), and Ring (a touchpad on the ring's own
+  scheme: vertical swipes scroll, tap/double-tap/hold = click/double-click/
+  long-press). The narrow mic button at the tab bar's right edge fires the
   wakeword without changing the selected tab. Used by main-page.xml in both
   orientations; binds to the page's MainViewModel, which collapses the whole
   area while a text setting is being edited (keyboard-input mode).
@@ -61,12 +62,15 @@
     </GridLayout>
   </StackLayout>
 
-  <!-- Ring tab -->
-  <GridLayout row="1" rows="auto,auto" columns="*,*,*" visibility="{{ ringTabVisibility }}" class="ring-grid">
-    <Button row="0" col="0" text="▲ Up" tap="{{ onSyntheticUpTap }}" class="ring-pad-button" />
-    <Button row="0" col="1" text="▼ Down" tap="{{ onSyntheticDownTap }}" class="ring-pad-button" />
-    <Button row="0" col="2" text="● Click" tap="{{ onSyntheticRightTap }}" class="ring-pad-button" />
-    <Button row="1" col="0" text="●● Double" tap="{{ onSyntheticLeftTap }}" class="ring-pad-button" />
-    <Button row="1" col="1" text="‒ Hold" tap="{{ onSyntheticLongPressTap }}" class="ring-pad-button" />
+  <!-- Ring tab: a touchpad on the ring's own scheme. Vertical swipes only
+       (the ring has no horizontal axis) and no focus/status line; portrait
+       like the ring's pad itself, so the legend sits in the middle where the
+       watch pad keeps its focus line. -->
+  <GridLayout row="1" visibility="{{ ringTabVisibility }}" class="touchpad ring-touchpad"
+      horizontalAlignment="center" verticalAlignment="center"
+      tap="{{ onRingPadTap }}" doubleTap="{{ onRingPadDoubleTap }}"
+      longPress="{{ onRingPadLongPress }}" swipe="{{ onRingPadSwipe }}">
+    <Button text="▲" tap="{{ onSyntheticUpTap }}" class="pad-dpad-button" horizontalAlignment="center" verticalAlignment="top" />
+    <Button text="▼" tap="{{ onSyntheticDownTap }}" class="pad-dpad-button" horizontalAlignment="center" verticalAlignment="bottom" />
   </GridLayout>
 </GridLayout>

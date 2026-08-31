@@ -12,7 +12,6 @@ import {
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
-import { shell } from "../ui/shell/shell";
 import {
   brightnessSetting,
   DISPLAY_MODE_VALUES,
@@ -815,16 +814,25 @@ export class MainViewModel extends Observable {
     await dashboardController.injectSyntheticRingInput("scroll-down");
   }
 
-  async onSyntheticLeftTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click");
-  }
-
-  async onSyntheticRightTap(): Promise<void> {
+  async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
-  async onSyntheticLongPressTap(): Promise<void> {
+  async onRingPadDoubleTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("double-click");
+  }
+
+  async onRingPadLongPress(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("long-press");
+  }
+
+  /** The ring pad only has a vertical axis, so left/right swipes are ignored. */
+  async onRingPadSwipe(args: SwipeGestureEventData): Promise<void> {
+    if (args.direction === SwipeDirection.up) {
+      await dashboardController.injectSyntheticRingInput("scroll-up");
+    } else if (args.direction === SwipeDirection.down) {
+      await dashboardController.injectSyntheticRingInput("scroll-down");
+    }
   }
 
   async onSyntheticMicTap(): Promise<void> {

@@ -264,12 +264,10 @@ Button.-primary {
   margin: 2;
   font-size: 14;
 }
-/* Ring tab: simulated R1 inputs. */
-.ring-pad-button {
-  margin: 3;
-  padding: 0;
-  height: 52;
-  font-size: 14;
+/* Ring tab: the same touchpad, but portrait like the ring's own pad. */
+.ring-touchpad {
+  width: 150;
+  height: 250;
 }
 /*
  * Pairing scan list (phone-ui/pairing-page). Rows are Repeater items: product
