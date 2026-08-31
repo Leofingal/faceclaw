@@ -3,7 +3,8 @@
 ## 0.6.2 - Future
 * Preview Only mode works
 * Voice input uses phone mic in preview mode
-* Ring input on phone screen is swipe-style rather than separate buttons
+* Simulated ring input on phone screen is swipe-style rather than separate buttons
+* Simulated watch input on phone screen is more minimalist
 * Fix an issue where you could be missing the EvenHub font after skipping onboarding
 * Terminal app has an activity indicator based on last-output-at tracking
 

@@ -846,14 +846,6 @@ export class MainViewModel extends Observable {
     dashboardController.openEvenAppSettings();
   }
 
-  async onSyntheticUpTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-up");
-  }
-
-  async onSyntheticDownTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-down");
-  }
-
   async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
@@ -937,41 +929,6 @@ export class MainViewModel extends Observable {
         }
       }
     }
-  }
-
-  async onDpadUp(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-up", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadDown(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-down", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadLeft(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-left", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadRight(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-right", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadSelect(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("click", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onBackTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onMenuTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press", "watch");
-    this.refreshPadFocusLine();
   }
 
   // ---- touching the mirror itself ----
