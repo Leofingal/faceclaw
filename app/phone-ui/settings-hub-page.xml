@@ -1,0 +1,211 @@
+<!--
+  SETTINGS — and, underneath the label, faceclaw's own hub.
+
+  This is main-page's old body, moved wholesale. Round 3 swapped what the two
+  destinations land on, because the ordering was backwards in use: the phone
+  opened on faceclaw's device hub and the purpose-built Exocortex app list was
+  three levels down inside it (main-page -> Settings -> Apps). Chris, using the
+  real build: "Exocortex" should land on the app list, and this content —
+  connection, glasses display, faceclaw's device and permission management —
+  "isn't wrong, it's just mislabeled as the *default* view when it should be
+  one tap away under Settings."
+
+  So the app list is main-page's body now, and everything here is one tap from
+  it, via the gear at the right-hand end of phone-ui/exocortex-header.
+
+  WHAT MOVED WITHIN THE PAGE. "Review" (Conversations / Ask AI / Speakers, and
+  the recent-conversation glance that belongs with them) is deliberately
+  deprioritized — Chris: it "must be associated with an app we haven't been
+  using... not yet a priority." Kept reachable, moved below the connection,
+  settings and device rows rather than sitting second on the page.
+
+  THE ACTION BAR IS THE ONE main-page USED TO CARRY, title corrected. Every
+  overflow item came with it, including the three that exist nowhere else
+  (Take screenshot, Record screen, Uninstall custom firmware) — this is
+  faceclaw's device-management surface, so this is where they belong. The
+  warning triangle did NOT come along: it moved to exocortex-header, which is
+  on the screen you actually boot to, and the "Attention needed" modal it
+  opens stays on main-page with it.
+
+  Binds MainViewModel, the same one main-page and glasses-mirror-page bind, so
+  every row here behaves exactly as it did; see hub-page.ts for the shared
+  lifecycle. That is also why the glasses' keyboard-input editor is repeated at
+  the bottom: the glasses can ask for text while any of the three is on screen.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd"
+    navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+    <ActionBar>
+        <GridLayout columns="auto,*,auto" width="100%" verticalAlignment="center">
+            <Label col="0" text="Settings" class="action-bar-title" />
+            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
+        </GridLayout>
+        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
+        <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
+        <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
+        <ActionItem text="Exocortex settings" tap="{{ onExocortexSettingsTap }}" android.position="popup" />
+        <ActionItem text="Glasses mirror" tap="{{ onGlassesMirrorTap }}" android.position="popup" />
+        <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
+        <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
+        <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+    </ActionBar>
+
+    <GridLayout>
+        <ScrollView>
+            <StackLayout class="home-body">
+
+                <!-- Connection. Connect/Disconnect was overflow-only before;
+                     on a landing screen it is the one control worth a thumb. -->
+                <GridLayout rows="auto,auto" columns="*,auto" class="home-card">
+                    <Label row="0" col="0" text="{{ connectionStatusLabel }}" class="home-card-title" verticalAlignment="center" />
+                    <Label row="1" col="0" text="{{ status }}" class="home-card-meta" textWrap="true" />
+                    <Button row="0" rowSpan="2" col="1" text="{{ buttonLabel }}" tap="{{ onTap }}"
+                        isEnabled="{{ connectItemEnabled }}" class="-primary home-card-button" verticalAlignment="center" />
+                </GridLayout>
+
+                <!-- Screen recording is started from this page's overflow menu,
+                     so its stop button has to be reachable from the page you
+                     are left on. The mirror page and main-page carry the same
+                     button for the same reason. -->
+                <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+
+                <!-- Exocortex's own settings — the categorized Display /
+                     Glasses / Notifications / Apps / Interface page. Promoted
+                     to the top of this page in round 3: it is the settings
+                     surface that belongs to Exocortex rather than to
+                     faceclaw's device management below it. -->
+                <Label text="Exocortex" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onExocortexSettingsTap }}">
+                    <Label text="Settings" class="home-row-title" />
+                    <Label text="{{ exocortexSettingsMeta }}" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+                <!-- The two genuinely phone-native glasses settings. They are
+                     still on the mirror page's Settings tab as well; both read
+                     and write the same setting objects, so they stay in step. -->
+                <Label text="Glasses display" class="home-section-title" />
+                <GridLayout rows="auto" columns="auto,*" class="settings-row">
+                    <Label col="0" text="Screen size" class="settings-row-label" verticalAlignment="center" />
+                    <Button col="1" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" horizontalAlignment="left" />
+                </GridLayout>
+                <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
+                    <Label col="0" text="&#x2600;" class="brightness-icon" verticalAlignment="center" />
+                    <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}"
+                        valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
+                    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
+                        <Label text="Auto" verticalAlignment="center" />
+                        <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
+                    </StackLayout>
+                </GridLayout>
+
+                <Label text="Devices" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onPairGlassesTap }}">
+                    <Label text="Pair glasses" class="home-row-title" />
+                    <Label text="Scan for a nearby G2 pair and check both arms match" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onConfigureTap }}">
+                    <Label text="Configure devices" class="home-row-title" />
+                    <Label text="Arm and ring addresses, entered by hand" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onPermissionsTap }}">
+                    <Label text="Permissions" class="home-row-title" />
+                    <Label text="What Android has granted, and what is still missing" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+                <!-- DEPRIORITIZED, NOT DELETED (Chris, 2026-09-01). This whole
+                     block used to sit near the top of the phone's landing
+                     screen; the recent-conversation glance moved down with the
+                     rows it belongs to rather than being stranded above them. -->
+                <Label text="Review" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onConversationsTap }}">
+                    <Label text="Conversations" class="home-row-title" />
+                    <Label text="Search and read back everything the glasses have captioned" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onAskTap }}">
+                    <Label text="Ask AI" class="home-row-title" />
+                    <Label text="Put a question to your saved conversations" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onSpeakersTap }}">
+                    <Label text="Speakers" class="home-row-title" />
+                    <Label text="Name, merge and re-assign the voices we have heard" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+                <!-- Three rows: enough to recognise "the one from this
+                     morning" without turning the page into the list. -->
+                <GridLayout columns="*,auto" class="home-section-head">
+                    <Label col="0" text="Recent conversations" class="home-section-title" verticalAlignment="center" />
+                    <Label col="1" text="See all" class="home-section-link" tap="{{ onConversationsTap }}" verticalAlignment="center" />
+                </GridLayout>
+                <Label text="{{ recentConversationsMessage }}" class="conversation-empty" textWrap="true"
+                    visibility="{{ recentConversationsMessageVisibility }}" />
+                <Repeater items="{{ recentConversations }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <StackLayout class="conversation-row" tap="{{ onRowTap }}">
+                            <GridLayout columns="*,auto">
+                                <Label col="0" text="{{ title }}" class="conversation-title" textWrap="true" />
+                                <Label col="1" text="" width="12" height="12" borderRadius="6"
+                                    backgroundColor="{{ sentimentColor }}" verticalAlignment="center" />
+                            </GridLayout>
+                            <Label text="{{ meta }}" class="conversation-meta" />
+                        </StackLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <Label text="Diagnostics" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onGlassesMirrorTap }}">
+                    <Label text="Glasses mirror" class="home-row-title" />
+                    <Label text="Live view of the lens display, with simulated ring and watch input. For debugging — the screens above are the phone's job." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout class="home-row" tap="{{ onAboutTap }}">
+                    <Label text="About" class="home-row-title" />
+                    <Label text="License and privacy policy" class="home-row-meta" textWrap="true" />
+                </StackLayout>
+
+            </StackLayout>
+        </ScrollView>
+
+        <!-- Keyboard-input mode: the glasses navigated into a text setting and
+             the phone is the keyboard. Anchored to the bottom of the (keyboard-
+             shrunk) page. main-page and the mirror page carry identical copies,
+             because the glasses can ask for text while any of the three is on
+             screen — and this is the page the wearer is most likely to be on
+             while driving the glasses' own settings. -->
+        <StackLayout
+            class="system-name-modal"
+            visibility="{{ textSettingEditorVisibility }}"
+            horizontalAlignment="stretch"
+            verticalAlignment="bottom">
+            <Label text="{{ activeTextEditorTitle }}" class="h2" />
+            <!-- Per-field labels only matter with two fields; a single-field
+                 edit's field title is the same string as the editor title. -->
+            <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
+            <TextField
+                id="settingsTextField"
+                text="{{ activeTextSettingValue }}"
+                textChange="{{ onTextSettingTextChange }}"
+                returnPress="{{ onPrimaryTextSettingReturnPress }}"
+                autocorrect="false"
+                autocapitalizationType="none"
+                keyboardType="{{ activeTextSettingKeyboardType }}"
+                secure="{{ activeTextSettingSecure }}"
+                returnKeyType="{{ primaryTextSettingReturnKeyType }}" />
+            <StackLayout visibility="{{ secondaryTextSettingVisibility }}">
+                <Label text="{{ secondaryTextSettingTitle }}" />
+                <TextField
+                    id="secondarySettingsTextField"
+                    text="{{ secondaryTextSettingValue }}"
+                    textChange="{{ onSecondaryTextSettingTextChange }}"
+                    returnPress="{{ onSecondaryTextSettingReturnPress }}"
+                    autocorrect="false"
+                    autocapitalizationType="none"
+                    keyboardType="{{ secondaryTextSettingKeyboardType }}"
+                    secure="{{ secondaryTextSettingSecure }}"
+                    returnKeyType="done" />
+            </StackLayout>
+        </StackLayout>
+    </GridLayout>
+</Page>

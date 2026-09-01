@@ -1,197 +1,105 @@
 <!--
-  The phone's home hub, and the app's landing page (everything that finishes an
-  onboarding/pairing/flash flow navigates back here with clearHistory).
+  The app's landing page (everything that finishes an onboarding/pairing/flash
+  flow navigates back here with clearHistory), and the host for all three
+  bodies the phone can show without the user navigating anywhere.
 
-  What the phone is good at gets the screen: the conversations it has recorded,
-  the questions you can put to them, the speakers it has learned, and the
-  settings that are easier to change with a thumb than through the ring. The
-  live lens mirror and the simulated ring/watch pads used to open here; they
-  are a debugging view now and live one tap away on phone-ui/glasses-mirror-page.
+  ROUND 3 SWAPPED WHAT THIS LANDS ON. It used to open on faceclaw's own device
+  hub — connection card, recent conversations, glasses display controls, a
+  "Review" section — with the purpose-built Exocortex app list buried three
+  levels inside it (here -> Settings -> Apps). Chris, using the real build:
+  "Exocortex" should land on the app list; the hub content "isn't wrong, it's
+  just mislabeled as the *default* view." So the app list is the home body now
+  and the hub moved to phone-ui/settings-hub-page, one tap away via the gear in
+  the header.
 
-  The action bar keeps everything it had, so nothing that used to be one menu
-  away has moved further; the rows below are the discoverable version of it.
+  THE PAGE STAYS THE LANDING PAGE. The swap is in what the bodies show, not in
+  where boot points: this page is the only thing that hosts the cover glance,
+  the per-app companions, the "Attention needed" modal and the glasses-driven
+  text editor, and it is the clearHistory target of six flows. Pointing boot at
+  a different module would have taken all of that off the phone's resting
+  screen to move one list.
 
-  THREE BODIES, ONE PAGE. The hub is one of three things this page can show,
-  and neither switch is a navigation the user performs:
+  THREE BODIES, ONE PAGE. Neither switch is a navigation the user performs:
 
     cover-glance      the Fold is shut. One screenful: connection, what is on
                       the lens, nothing to scroll. Unfolding is the navigation.
-    ghost-companion   the Fold is open and Ghost is the foreground app ON THE
-                      GLASSES. The phone becomes that session's second view.
-    the hub           everything else.
+    a companion       the Fold is open and an app with a companion view is the
+                      foreground app ON THE GLASSES. Ghost is the only one
+                      built. The phone becomes that session's second view.
+    the app list      everything else — and the body "Exocortex" returns to.
 
   They share the page's grid cell rather than being separate pages: a page swap
   would leave a back-stack entry behind a screen nobody asked to leave, and the
   warnings modal and the glasses' keyboard-input editor have to float over all
   three regardless. MainViewModel owns the choice; see its "Which body the page
   is showing" section.
+
+  NO ACTION BAR. Round 2 hid faceclaw's ActionBar while a companion was up but
+  kept it over the hub, because the hub needed its overflow menu. The hub is
+  not here any more — every body this page can show is an Exocortex screen, so
+  phone-ui/exocortex-header is the whole of this page's chrome and the stale
+  hardcoded "Faceclaw" title went with the bar. The overflow menu moved intact
+  to settings-hub-page, which is the surface those items were always about.
 -->
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:ui="phone-ui"
     navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
-    <ActionBar>
-        <!-- Custom titleView: app title on the left; connection status and the
-             warning-triangle indicator right-aligned beside the overflow menu. -->
-        <GridLayout columns="auto,*,auto,auto" width="100%" verticalAlignment="center">
-            <Label col="0" text="Faceclaw" class="action-bar-title" />
-            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
-            <Label col="3" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
-        </GridLayout>
-        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
-        <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
-        <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
-        <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
-        <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
-        <ActionItem text="Settings" tap="{{ onExocortexSettingsTap }}" android.position="popup" />
-        <ActionItem text="Glasses mirror" tap="{{ onGlassesMirrorTap }}" android.position="popup" />
-        <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
-        <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
-        <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
-    </ActionBar>
 
     <GridLayout>
-        <!-- Fold SHUT: the cover screen gets a glance, not the app. -->
+        <!-- Fold SHUT: the cover screen gets a glance, not the app. It is
+             deliberately bare — one screenful by design, and it already names
+             the connection and the foreground app that the header would
+             otherwise repeat. -->
         <ui:cover-glance visibility="{{ coverGlanceVisibility }}" />
 
-        <!-- Fold OPEN and an app with a companion is foreground ON THE
-             GLASSES: the phone becomes that app's second view.
+        <!-- Fold OPEN. ONE HEADER, THEN A BODY. exocortex-header is the single
+             row of chrome every Exocortex screen on this page shares
+             (Exocortex — app — connection — warnings — settings), and round 3
+             extended it from the companion to the home body as well, because
+             once the ActionBar was gone it was the only chrome left.
 
-             ONE HEADER, THEN THE APP'S OWN BODY. exocortex-header is the
-             single row of chrome every companion view shares (Exocortex —
-             app — connection, with "Exocortex" the way back to the hub); it
-             replaced the app-switch bar AND the companion's own two-row
-             wordmark/status header, per Chris's 80-85%-content target.
+             The inner cell holds the bodies. Per-app companions come first;
+             the app list is the fallback, which is what makes it the thing you
+             land on. The generalized "which view per app" mechanism is still
+             its own queued design job; this is only the frame it hangs in.
 
-             The inner cell is where per-app companions go. Ghost is the only
-             one built, so today its visibility is the outer one — but the
-             seam is here rather than in a future refactor, and the header
-             above it is already app-agnostic. The generalized "which view
-             per app" mechanism is still its own queued design job; this is
-             only the frame it will hang in.
-
-             The header binds to MainViewModel (inherited); each companion
-             body overrides bindingContext with its own view model. -->
-        <GridLayout id="companionChrome" rows="auto,*" visibility="{{ companionBodyVisibility }}">
+             The header binds to MainViewModel (inherited); each companion body
+             overrides bindingContext with its own view model. -->
+        <GridLayout id="exocortexChrome" rows="auto,*" visibility="{{ exocortexChromeVisibility }}">
             <ui:exocortex-header row="0" />
             <GridLayout row="1">
                 <ui:ghost-companion visibility="{{ ghostCompanionVisibility }}"
                     bindingContext="{{ ghostCompanion }}" />
+
+                <!-- THE HOME BODY: the app list, checkbox + reorder +
+                     tap-to-launch. Same component the standalone
+                     exocortex-apps-page shows, bound to MainViewModel's own
+                     ExocortexAppsViewModel. The two rows above it are pinned
+                     rather than scrolled: both are transient states you want
+                     to act on immediately, not list content. -->
+                <GridLayout rows="auto,auto,*" visibility="{{ homeBodyVisibility }}">
+                    <!-- Only while looking at the app list with Ghost still
+                         focused over there; the way back to the companion. -->
+                    <StackLayout row="0" class="home-row" tap="{{ onShowGhostTap }}" visibility="{{ ghostReturnRowVisibility }}">
+                        <Label text="Ghost" class="home-row-title" />
+                        <Label text="Back to the companion for the session on the glasses" class="home-row-meta" textWrap="true" />
+                    </StackLayout>
+
+                    <!-- Screen recording is started from settings-hub-page's
+                         overflow menu, but it keeps running once you come back
+                         here, so the stop button has to be on this screen too.
+                         Collapsed unless a recording is actually running. -->
+                    <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+
+                    <ui:exocortex-apps-body row="2" bindingContext="{{ appList }}" />
+                </GridLayout>
             </GridLayout>
         </GridLayout>
 
-        <ScrollView visibility="{{ hubBodyVisibility }}">
-            <StackLayout class="home-body">
-
-                <!-- Only while peeking at the hub with Ghost still focused
-                     over there; the way back to the companion. -->
-                <StackLayout class="home-row" tap="{{ onShowGhostTap }}" visibility="{{ ghostReturnRowVisibility }}">
-                    <Label text="Ghost" class="home-row-title" />
-                    <Label text="Back to the companion for the session on the glasses" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-
-                <!-- Connection. Connect/Disconnect was overflow-only before;
-                     on a home screen it is the one control worth a thumb. -->
-                <GridLayout rows="auto,auto" columns="*,auto" class="home-card">
-                    <Label row="0" col="0" text="{{ connectionStatusLabel }}" class="home-card-title" verticalAlignment="center" />
-                    <Label row="1" col="0" text="{{ status }}" class="home-card-meta" textWrap="true" />
-                    <Button row="0" rowSpan="2" col="1" text="{{ buttonLabel }}" tap="{{ onTap }}"
-                        isEnabled="{{ connectItemEnabled }}" class="-primary home-card-button" verticalAlignment="center" />
-                </GridLayout>
-
-                <!-- Screen recording is started from the overflow menu, so its
-                     stop button has to be reachable from the page you are left
-                     on. The mirror page carries the same button. -->
-                <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-
-                <!-- Recent conversations, straight through to the transcript.
-                     Three rows: enough to recognise "the one from this
-                     morning" without turning the home screen into the list. -->
-                <GridLayout columns="*,auto" class="home-section-head">
-                    <Label col="0" text="Recent conversations" class="home-section-title" verticalAlignment="center" />
-                    <Label col="1" text="See all" class="home-section-link" tap="{{ onConversationsTap }}" verticalAlignment="center" />
-                </GridLayout>
-                <Label text="{{ recentConversationsMessage }}" class="conversation-empty" textWrap="true"
-                    visibility="{{ recentConversationsMessageVisibility }}" />
-                <Repeater items="{{ recentConversations }}">
-                    <Repeater.itemsLayout>
-                        <StackLayout />
-                    </Repeater.itemsLayout>
-                    <Repeater.itemTemplate>
-                        <StackLayout class="conversation-row" tap="{{ onRowTap }}">
-                            <GridLayout columns="*,auto">
-                                <Label col="0" text="{{ title }}" class="conversation-title" textWrap="true" />
-                                <Label col="1" text="" width="12" height="12" borderRadius="6"
-                                    backgroundColor="{{ sentimentColor }}" verticalAlignment="center" />
-                            </GridLayout>
-                            <Label text="{{ meta }}" class="conversation-meta" />
-                        </StackLayout>
-                    </Repeater.itemTemplate>
-                </Repeater>
-
-                <!-- The two genuinely phone-native glasses settings. They are
-                     still on the mirror page's Settings tab as well; both read
-                     and write the same setting objects, so they stay in step. -->
-                <Label text="Glasses display" class="home-section-title" />
-                <GridLayout rows="auto" columns="auto,*" class="settings-row">
-                    <Label col="0" text="Screen size" class="settings-row-label" verticalAlignment="center" />
-                    <Button col="1" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" horizontalAlignment="left" />
-                </GridLayout>
-                <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
-                    <Label col="0" text="&#x2600;" class="brightness-icon" verticalAlignment="center" />
-                    <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}"
-                        valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
-                    <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
-                        <Label text="Auto" verticalAlignment="center" />
-                        <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
-                    </StackLayout>
-                </GridLayout>
-
-                <Label text="Exocortex" class="home-section-title" />
-                <StackLayout class="home-row" tap="{{ onExocortexSettingsTap }}">
-                    <Label text="Settings" class="home-row-title" />
-                    <Label text="{{ exocortexSettingsMeta }}" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-
-                <Label text="Review" class="home-section-title" />
-                <StackLayout class="home-row" tap="{{ onConversationsTap }}">
-                    <Label text="Conversations" class="home-row-title" />
-                    <Label text="Search and read back everything the glasses have captioned" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <StackLayout class="home-row" tap="{{ onAskTap }}">
-                    <Label text="Ask AI" class="home-row-title" />
-                    <Label text="Put a question to your saved conversations" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <StackLayout class="home-row" tap="{{ onSpeakersTap }}">
-                    <Label text="Speakers" class="home-row-title" />
-                    <Label text="Name, merge and re-assign the voices we have heard" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-
-                <Label text="Devices" class="home-section-title" />
-                <StackLayout class="home-row" tap="{{ onPairGlassesTap }}">
-                    <Label text="Pair glasses" class="home-row-title" />
-                    <Label text="Scan for a nearby G2 pair and check both arms match" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <StackLayout class="home-row" tap="{{ onConfigureTap }}">
-                    <Label text="Configure devices" class="home-row-title" />
-                    <Label text="Arm and ring addresses, entered by hand" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <StackLayout class="home-row" tap="{{ onPermissionsTap }}">
-                    <Label text="Permissions" class="home-row-title" />
-                    <Label text="What Android has granted, and what is still missing" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-
-                <Label text="Diagnostics" class="home-section-title" />
-                <StackLayout class="home-row" tap="{{ onGlassesMirrorTap }}">
-                    <Label text="Glasses mirror" class="home-row-title" />
-                    <Label text="Live view of the lens display, with simulated ring and watch input. For debugging — the screens above are the phone's job." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <StackLayout class="home-row" tap="{{ onAboutTap }}">
-                    <Label text="About" class="home-row-title" />
-                    <Label text="License and privacy policy" class="home-row-meta" textWrap="true" />
-                </StackLayout>
-
-            </StackLayout>
-        </ScrollView>
-
+        <!-- "Attention needed". Opened by the warning triangle, which lives in
+             exocortex-header now that this page has no ActionBar to carry it.
+             It stays on this page alone (settings-hub-page and the mirror page
+             deliberately do not repeat it) because it is an app-level concern
+             and this is the screen the phone rests on. -->
         <ScrollView
             class="warnings-modal"
             visibility="{{ warningsModalVisibility }}"
@@ -217,8 +125,9 @@
         </ScrollView>
         <!-- Keyboard-input mode: the glasses navigated into a text setting and
              the phone is the keyboard. Anchored to the bottom of the (keyboard-
-             shrunk) page. The mirror page carries an identical copy, because
-             the glasses can ask for text while either page is on screen. -->
+             shrunk) page. The mirror page and settings-hub-page carry identical
+             copies, because the glasses can ask for text while any of the three
+             is on screen. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ textSettingEditorVisibility }}"

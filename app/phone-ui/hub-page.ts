@@ -3,11 +3,12 @@ import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
 /**
- * Page lifecycle shared by the two pages that bind a MainViewModel: the home
- * hub (main-page) and the glasses mirror (glasses-mirror-page). Both host the
- * glasses-driven text-setting editor, both want the connection/warning state,
- * and both need the orientation metrics, so the wiring is identical and lives
- * here rather than being copied into two code-behinds.
+ * Page lifecycle shared by the three pages that bind a MainViewModel: the
+ * landing page (main-page), Settings — faceclaw's old hub (settings-hub-page)
+ * — and the glasses mirror (glasses-mirror-page). All three host the
+ * glasses-driven text-setting editor, all three want the connection/warning
+ * state, and all three need the orientation metrics, so the wiring is
+ * identical and lives here rather than being copied into three code-behinds.
  */
 
 const SETTINGS_TEXT_COLOR = new Color('#222222')
@@ -17,6 +18,10 @@ const SETTINGS_PLACEHOLDER_COLOR = new Color('#666666')
 export function hubPageNavigatingTo(args: EventData) {
   const page = <Page>args.object
   page.bindingContext = new MainViewModel()
+  // Before the page is on screen, not after: main-page has no ActionBar and
+  // must never paint a frame of the default one. `loaded` repeats it as a
+  // backstop, and this is a straight assignment either way.
+  syncActionBar(page)
 }
 
 type HubPageState = {
@@ -78,27 +83,30 @@ function dismissTextEditorKeyboard(page: Page): void {
 }
 
 /**
- * Hide faceclaw's ActionBar while an app's companion is showing, so
- * phone-ui/exocortex-header is the only chrome above the app's own content
- * (see MainViewModel.companionActionBarHidden for why, and for the cost).
+ * True only for main-page, which round 3 left as the one page here with no
+ * ActionBar of its own — phone-ui/exocortex-header is its whole chrome, over
+ * every body it can show. `exocortexChrome` is that header-plus-body wrapper,
+ * and getViewById finds it whether or not it is currently collapsed.
  *
- * GUARDED BY THE PAGE, not just by the model. Both pages here bind the same
- * MainViewModel, and `companionActionBarHidden` is true whenever Ghost is
- * foreground ON THE GLASSES — which can perfectly well be the case while the
- * wearer is looking at the glasses-mirror page. Only the page that actually
- * contains the companion body may act on it; the mirror page keeps its bar.
- * `companionChrome` is main-page.xml's companion wrapper, and getViewById
- * finds it whether or not it is currently collapsed.
- *
- * Always assigns, never toggles: the value is derived from which body is
- * showing, so there is no way for a missed event to strand the hub without
- * its ActionBar.
+ * The other two pages have real ActionBars they must keep: Settings carries
+ * the whole overflow menu, and the mirror page carries the screenshot/record
+ * items. So this is a page test, not a model test — all three bind the same
+ * MainViewModel and could not tell each other apart from its state.
  */
-function syncCompanionActionBar(page: Page, model: MainViewModel): void {
-  if (!page.getViewById('companionChrome')) {
-    return
+function isExocortexChromePage(page: Page): boolean {
+  return Boolean(page.getViewById('exocortexChrome'))
+}
+
+/**
+ * main-page declares no <ActionBar>, but NativeScript will still put a default
+ * one up unless the page is told not to, and that empty bar is exactly the
+ * ~56dp of faceclaw chrome round 2 spent effort removing. Assign rather than
+ * toggle, on every load, so no path can leave it showing.
+ */
+function syncActionBar(page: Page): void {
+  if (isExocortexChromePage(page)) {
+    page.actionBarHidden = true
   }
-  page.actionBarHidden = model.companionActionBarHidden
 }
 
 function focusTextEditor(page: Page): void {
@@ -137,8 +145,14 @@ export function hubPageLoaded(args: EventData) {
   // Activity has not changed.
   model?.refreshFoldMetrics()
   // Cheap (three rows, newest-first) and re-run on every back-navigation, so
-  // the home hub's recent list reflects deletions and renames made elsewhere.
+  // Settings' recent list reflects deletions and renames made elsewhere.
   model?.refreshRecentConversations()
+  // The app list is main-page's body, and its two controls are shared state
+  // with the glasses — so rebuild it on every arrival rather than trusting
+  // whatever the last visit left, and only on the page that shows it.
+  if (model && isExocortexChromePage(page)) {
+    model.appList.reload()
+  }
   if (settingsTextField) {
     applySettingsTextFieldContrast(settingsTextField)
   }
@@ -161,20 +175,16 @@ export function hubPageLoaded(args: EventData) {
           dismissTextEditorKeyboard(page)
         }
       }
-      // The body swap is driven by the glasses (which app is foreground), not
-      // by a navigation, so the ActionBar has to follow it from here.
-      if (propertyArgs.propertyName === 'companionActionBarHidden') {
-        syncCompanionActionBar(page, model)
-      }
     },
   }
 
   model.on(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.on(Application.orientationChangedEvent, state.orientationHandler)
   setPageState(page, state)
-  // The fold/foreground state is already settled by the time we get here, so
-  // set the bar to match rather than waiting for the next change event.
-  syncCompanionActionBar(page, model)
+  // Round 2 had to re-run this on every body change, because the bar came and
+  // went with the companion. It does not any more — main-page never has one —
+  // so once per load is the whole of it.
+  syncActionBar(page)
   if (model.isTextSettingEditorActive) {
     focusTextEditor(page)
   }
