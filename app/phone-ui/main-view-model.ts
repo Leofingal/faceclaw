@@ -45,6 +45,7 @@ import {
   type CompanionDisplayClass,
 } from "../native/fold-state";
 import { GhostCompanionViewModel } from "./ghost-companion-view-model";
+import { ExocortexAppsViewModel } from "./exocortex-apps-view-model";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
@@ -71,32 +72,21 @@ export type HomeConversationRow = {
 let lastControlsTab: ControlsTab = "watch";
 
 /**
- * ONE-LINE REVERSAL for the ActionBar half of the header rebalance.
+ * Backs the three pages that sit at the top of the app: the landing page
+ * (main-page), Settings — faceclaw's old hub (settings-hub-page) — and the
+ * glasses mirror (glasses-mirror-page). They share one model because they
+ * share one job: holding the live connection state, the app-level warnings and
+ * the glasses-driven text editor, only ever one of them on screen at a time.
+ * main-page binds the body choice, the header and the app list; Settings binds
+ * the navigation and recent-conversation members plus the two display
+ * settings; the mirror page binds the preview, the tabbed controllers and the
+ * same display settings.
  *
- * True: while an app's companion is on screen, faceclaw's ActionBar is hidden
- * and phone-ui/exocortex-header is the only chrome above the app's content —
- * which is what makes Chris's 80-85%-content target reachable, since the bar
- * costs ~56dp to repeat the connection status the new header already carries.
- *
- * False: the ActionBar stays everywhere and the header row sits under it. The
- * companion loses roughly a header's worth of content height and shows the
- * connection twice, but every overflow item stays reachable without going via
- * the hub first. Nothing else in the app reads this.
- *
- * Documented in place, in the same style as the app-switcher removal's own
- * APP_SWITCHER_REMOVED, because it is a taste call made without ever seeing
- * the screen render.
- */
-const HIDE_ACTION_BAR_ON_COMPANION = true;
-
-/**
- * Backs both pages that sit at the top of the app: the home hub (main-page)
- * and the glasses mirror (glasses-mirror-page). They share one model because
- * they share one job — holding the live connection state, the app-level
- * warnings and the glasses-driven text editor — and only ever one of them is
- * on screen at a time. The home hub binds the navigation and recent-
- * conversation members plus the two display settings; the mirror page binds
- * the preview, the tabbed controllers and the same display settings.
+ * ROUND 3 NOTE. Round 2 carried a HIDE_ACTION_BAR_ON_COMPANION constant here,
+ * a one-line lever to put faceclaw's ActionBar back over a companion. It is
+ * gone, because the bar it toggled is gone: main-page has no ActionBar at all
+ * now, and the overflow menu the lever existed to protect is permanently on
+ * settings-hub-page, one tap from every screen via the header's gear.
  */
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
@@ -123,13 +113,13 @@ export class MainViewModel extends Observable {
 
   // ── What the phone shows, and why ────────────────────────────────────────
   //
-  // The home hub is one of three bodies this page can be, chosen by two live
+  // The app list is one of three bodies main-page can be, chosen by two live
   // signals rather than by navigation:
   //
   //   the FOLD    cover screen -> the glance; inner screen -> the full app.
   //   the GLASSES whichever app has the foreground window over there decides
   //               what the phone's full app shows. Ghost focused -> Ghost's
-  //               companion. Anything else -> the hub.
+  //               companion. Anything else -> the app list.
   //
   // Neither is a phone-side mode the user sets, which is the whole point: the
   // companion follows the wearer instead of being a menu he has to drive.
@@ -137,14 +127,24 @@ export class MainViewModel extends Observable {
   private _foregroundAppId: string | null = null;
   private _foregroundAppTitle: string | null = null;
   /**
-   * "Show me the hub anyway", from the button on the Ghost companion. Cleared
+   * "Show me the app list anyway", from "Exocortex" in the header. Cleared
    * whenever the glasses change app, so it is a peek and not a mode — the next
    * thing that happens over there puts the phone back in step.
    */
-  private _hubOverride = false;
+  private _homeOverride = false;
 
   /** Ghost's companion screen. Built once; it owns its own feed subscription. */
   readonly ghostCompanion = new GhostCompanionViewModel();
+
+  /**
+   * The app list — main-page's home body since round 3, and the same view
+   * model class the standalone exocortex-apps-page builds for itself. Plain
+   * Observable state over the shared app-list settings: no subscriptions, no
+   * platform calls in its constructor, so nothing to dispose and nothing to
+   * pay for on the two pages that never show it. Populated by reload(), which
+   * the page lifecycle calls; it rebuilds itself after every toggle or move.
+   */
+  readonly appList = new ExocortexAppsViewModel();
 
   // A new view model is built on every navigation to the main page; these
   // module-level subscriptions must die with it (see dispose) or each
@@ -357,10 +357,14 @@ export class MainViewModel extends Observable {
   // Which body the page is showing
   //
   // Three, chosen by the fold and by the glasses (see the field comments):
-  // the cover glance, Ghost's companion, and the home hub. Exactly one is
+  // the cover glance, Ghost's companion, and the app list. Exactly one is
   // visible; they share the page's grid cell rather than being separate pages,
   // because neither signal is a navigation the user performed — a page swap
   // would put a back-stack entry behind a screen he never asked to leave.
+  //
+  // Round 3 swapped the third one. It used to be faceclaw's device hub, which
+  // put the Exocortex app list three levels down; the hub is now Settings
+  // (settings-hub-page) and the app list is what the phone lands on.
 
   /**
    * Re-point fold tracking at the Activity on screen and re-read the posture.
@@ -380,9 +384,9 @@ export class MainViewModel extends Observable {
 
   private setForegroundApp(appId: string | null, title: string | null): void {
     if (this._foregroundAppId === appId && this._foregroundAppTitle === title) return;
-    // Changing app over there ends any "show me the hub anyway" peek: the
+    // Changing app over there ends any "show me the app list anyway" peek: the
     // override exists to look away from Ghost, not to pin the phone.
-    if (this._foregroundAppId !== appId) this._hubOverride = false;
+    if (this._foregroundAppId !== appId) this._homeOverride = false;
     this._foregroundAppId = appId;
     this._foregroundAppTitle = title;
     this.notifyPropertyChange("glassesForegroundLabel", this.glassesForegroundLabel);
@@ -393,8 +397,8 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("coverGlanceVisibility", this.coverGlanceVisibility);
     this.notifyPropertyChange("ghostCompanionVisibility", this.ghostCompanionVisibility);
     this.notifyPropertyChange("companionBodyVisibility", this.companionBodyVisibility);
-    this.notifyPropertyChange("companionActionBarHidden", this.companionActionBarHidden);
-    this.notifyPropertyChange("hubBodyVisibility", this.hubBodyVisibility);
+    this.notifyPropertyChange("exocortexChromeVisibility", this.exocortexChromeVisibility);
+    this.notifyPropertyChange("homeBodyVisibility", this.homeBodyVisibility);
     this.notifyPropertyChange("ghostReturnRowVisibility", this.ghostReturnRowVisibility);
     this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
   }
@@ -408,7 +412,7 @@ export class MainViewModel extends Observable {
   }
 
   get ghostCompanionVisibility(): "visible" | "collapse" {
-    return this._displayClass === "expanded" && this.isGhostForeground && !this._hubOverride
+    return this._displayClass === "expanded" && this.isGhostForeground && !this._homeOverride
       ? "visible"
       : "collapse";
   }
@@ -428,47 +432,47 @@ export class MainViewModel extends Observable {
   }
 
   /**
-   * Hide faceclaw's ActionBar while a companion is up.
-   *
-   * Chris asked for connection status IN the new unified header row. The
-   * ActionBar was already showing it beside the word "Faceclaw" — so leaving
-   * both would have printed the same fact twice and spent ~56dp doing it,
-   * which is the opposite of the 80-85%-content target the header exists to
-   * hit. It is also the most visible remaining piece of the "still feeling
-   * like a 3/4 faceclaw 1/4 exocortex" complaint.
-   *
-   * WHAT THIS COSTS: the ActionBar's overflow menu (Pair glasses,
-   * Permissions, Conversations, Settings, Glasses mirror, screenshot, record,
-   * uninstall firmware) is not reachable while the companion is showing. It
-   * is one tap away — "Exocortex" in the header returns to the hub, where the
-   * ActionBar is back — and the hub's own rows already cover the same ground.
-   *
-   * Strictly derived from the body choice and re-notified on every body
-   * change, so there is no path where it stays true while the hub is showing.
-   * Set HIDE_ACTION_BAR_ON_COMPANION to false to put the bar back everywhere.
+   * The header-plus-body wrapper: everything on main-page that is NOT the
+   * cover glance. It exists as its own member because main-page has no
+   * ActionBar any more, so exocortex-header is the page's whole chrome and has
+   * to be drawn above whichever inner body is up — but not over the cover
+   * glance, which is one screenful by design and already names the connection
+   * and the foreground app the header would repeat.
    */
-  get companionActionBarHidden(): boolean {
-    return HIDE_ACTION_BAR_ON_COMPANION && this.companionBodyVisibility === "visible";
+  get exocortexChromeVisibility(): "visible" | "collapse" {
+    return this.coverGlanceVisibility === "collapse" ? "visible" : "collapse";
   }
 
-  get hubBodyVisibility(): "visible" | "collapse" {
+  /**
+   * The app list — what the phone lands on, and the fallback whenever no
+   * companion applies. Round 3: this used to be faceclaw's device hub, which
+   * is now Settings, a tap away behind the header's gear.
+   */
+  get homeBodyVisibility(): "visible" | "collapse" {
     return this.coverGlanceVisibility === "collapse" && this.ghostCompanionVisibility === "collapse"
       ? "visible"
       : "collapse";
   }
 
-  /** The way back to Ghost's companion after peeking at the hub. */
+  /** The way back to Ghost's companion after peeking at the app list. */
   get ghostReturnRowVisibility(): "visible" | "collapse" {
-    return this._hubOverride && this.isGhostForeground ? "visible" : "collapse";
+    return this._homeOverride && this.isGhostForeground ? "visible" : "collapse";
   }
 
-  onShowHubTap(): void {
-    this._hubOverride = true;
+  /**
+   * "Exocortex" in the header. From a companion it is the way out to the app
+   * list; on the app list it is already where you are, so it is a harmless
+   * re-assert. Either way the list is rebuilt, because the glasses can have
+   * changed the shared order or visibility while the phone was elsewhere.
+   */
+  onShowHomeTap(): void {
+    this._homeOverride = true;
+    this.appList.reload();
     this.notifyBodyChange();
   }
 
   onShowGhostTap(): void {
-    this._hubOverride = false;
+    this._homeOverride = false;
     this.notifyBodyChange();
   }
 
@@ -896,15 +900,30 @@ export class MainViewModel extends Observable {
   }
 
   /**
+   * SETTINGS — the gear at the right-hand end of the header, and the only way
+   * off main-page now that it has no ActionBar.
+   *
+   * Lands on faceclaw's old hub: the connection card, the glasses display
+   * controls, device and permission management, the deprioritized Review
+   * rows, and the overflow menu that used to sit above the phone's landing
+   * screen. Chris, 2026-09-01: that content "isn't wrong, it's just mislabeled
+   * as the *default* view when it should be one tap away under Settings."
+   */
+  onSettingsHubTap(): void {
+    Frame.topmost()?.navigate("phone-ui/settings-hub-page");
+  }
+
+  /**
    * Exocortex's own settings: brightness/timeout/text size, the notification
-   * ignore list, and which apps the glasses' home screen lists. Separate from
-   * faceclaw's glasses-side Settings app, which is unchanged and still there.
+   * ignore list, and which apps the glasses' home screen lists. One level
+   * below Settings, reached from its "Exocortex" row. Separate from faceclaw's
+   * glasses-side Settings app, which is unchanged and still there.
    */
   onExocortexSettingsTap(): void {
     Frame.topmost()?.navigate("phone-ui/exocortex-settings-page");
   }
 
-  /** Subtitle for the hub's Settings row — names what is actually behind it. */
+  /** Subtitle for the Settings page's Exocortex row — names what is behind it. */
   get exocortexSettingsMeta(): string {
     const muted = mutedNotificationSourceCount();
     const notifications = muted

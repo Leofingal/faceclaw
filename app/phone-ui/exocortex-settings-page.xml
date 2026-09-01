@@ -10,7 +10,11 @@
   of a phone before it ships.
 -->
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
-    <ActionBar title="Settings" />
+    <!-- "Exocortex settings", not "Settings": round 3 made Settings itself a
+         page (phone-ui/settings-hub-page, faceclaw's old hub), and this one
+         sits inside it. Two screens both titled Settings, one nested in the
+         other, is the kind of small lie that costs an hour later. -->
+    <ActionBar title="Exocortex settings" />
 
     <ScrollView>
         <StackLayout class="home-body">

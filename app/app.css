@@ -15,8 +15,10 @@ ActionItem {
   color: #ffffff;
 }
 
-/* The main page's custom titleView: title left, connection status and the
- * warning triangle right-aligned beside the overflow menu. */
+/* The custom titleView on the two pages that still have an ActionBar —
+ * Settings (settings-hub-page) and the glasses mirror: title left, connection
+ * status right-aligned beside the overflow menu. main-page dropped its bar in
+ * round 3; its warning triangle moved to .exocortex-header-warning. */
 .action-bar-title {
   color: #ffffff;
   font-size: 18;
@@ -28,13 +30,6 @@ ActionItem {
   color: #ffffff;
   font-size: 14;
   margin-right: 12;
-  vertical-align: center;
-}
-
-/* The emoji brings its own yellow; the padding widens the tap target. */
-.action-bar-warning {
-  font-size: 18;
-  padding: 4 6;
   vertical-align: center;
 }
 
@@ -864,6 +859,28 @@ Button.permissions-primary-dimmed {
   color: #666666;
 }
 
+/* The two segments that came down from the ActionBar when main-page lost it
+ * (round 3). Both are collapsed-width by default in the grid, so they cost
+ * nothing horizontally until they are drawn — and nothing vertically ever,
+ * since the row was already there. The padding is the tap target: these are
+ * Labels, so without it the hit box is the glyph. */
+
+/* The emoji brings its own yellow. Collapsed unless a warning is live. */
+.exocortex-header-warning {
+  font-size: 14;
+  padding: 2 4;
+  margin-left: 6;
+}
+
+/* Coloured like the link it is, matching the "Exocortex" tap target at the
+ * other end of the row. */
+.exocortex-header-settings {
+  font-size: 15;
+  color: #3b6fd6;
+  padding: 2 4;
+  margin-left: 8;
+}
+
 .ghost-tab-bar {
   padding: 2 8 3 8;
 }
@@ -1071,7 +1088,8 @@ Button.permissions-primary-dimmed {
   color: #cfcfcf;
 }
 
-.ns-dark .exocortex-header-home {
+.ns-dark .exocortex-header-home,
+.ns-dark .exocortex-header-settings {
   color: #8ab0ff;
 }
 

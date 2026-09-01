@@ -1,7 +1,7 @@
 <!--
-  THE ONE HEADER EVERY COMPANION VIEW USES.
+  THE ONE HEADER EVERY EXOCORTEX SCREEN ON main-page USES.
 
-    Exocortex — <the app open on the glasses> — <connection>
+    Exocortex — <the app open on the glasses> — <connection>  [⚠] [⚙]
 
   Chris, using the real build (2026-08-31), gave this a number: 80-85% of the
   companion screen should be the app's own content. What he was actually
@@ -14,12 +14,22 @@
     4  the companion's status row    "20 in the feed - session ghost-..."
     5  the pane tab bar              [Terminal][Rich][Doc][Settings]
 
-  Bands 2, 3 and 4 collapse into this single row, and band 1 is hidden while a
-  companion is showing (see MainViewModel.companionActionBarHidden — the
-  connection status Chris asked for in THIS row is the same status the
-  ActionBar was already carrying, so keeping both would have added chrome
-  while claiming to remove it). Band 5 stays; it is navigation, and it was
-  shrunk rather than dropped.
+  Bands 2, 3 and 4 collapsed into this single row, and band 1 was hidden while
+  a companion showed. ROUND 3 finished that: main-page has no ActionBar at all
+  now, so this row is the whole of its chrome, on the home body as well as on a
+  companion — which is why the two right-hand segments exist. Both were the
+  ActionBar's, and neither costs a pixel of height in a row that was already
+  drawn.
+
+    ⚠  the warning triangle, collapsed unless there is an actual warning.
+       Opens the same "Attention needed" modal, which still lives in
+       main-page.xml. It is now visible on the companion too, where the
+       hidden ActionBar had taken it away.
+    ⚙  Settings — phone-ui/settings-hub-page, which is faceclaw's old hub and
+       carries the whole overflow menu the ActionBar used to. This is the one
+       new affordance round 3 needed: with the bar gone there was no route off
+       the home body, and a "Settings" ROW in the app list would have collided
+       with the glasses' own Settings app, which is a row in that same list.
 
   DELIBERATELY NOT GHOST-SPECIFIC. Nothing here names Ghost: the app segment
   is whatever the glasses report as foreground. This is the chrome half of the
@@ -33,14 +43,20 @@
   model underneath it. Everything in this row is about the app/phone/glasses
   relationship, which no single app's companion owns.
 
-  "Exocortex" is the tap target back to the hub, which is what replaced the
-  app-switch bar's [Hub] button. The status segment keeps the ActionBar's own
-  tap-for-the-full-string behaviour, so hiding the ActionBar loses nothing.
+  "Exocortex" is the tap target back to the home body — the app list. From a
+  companion it is the way out; on the home body it is already where you are,
+  and tapping it is a no-op that re-asserts the same state.
+
+  NOT ON THE COVER GLANCE, deliberately: that screen is one screenful by
+  design and already carries the connection and the foreground app itself.
+  The cost, stated rather than buried: with main-page's ActionBar gone, the
+  warning triangle is not reachable while the Fold is shut. Unfolding is one
+  motion, and every action behind that modal wants the inner screen anyway.
 -->
 <GridLayout xmlns="http://schemas.nativescript.org/tns.xsd"
-  rows="auto" columns="auto,auto,*,auto,auto" class="exocortex-header">
+  rows="auto" columns="auto,auto,*,auto,auto,auto,auto" class="exocortex-header">
 
-  <Label col="0" text="Exocortex" tap="{{ onShowHubTap }}"
+  <Label col="0" text="Exocortex" tap="{{ onShowHomeTap }}"
     class="exocortex-header-home" verticalAlignment="center" />
 
   <Label col="1" text="&#x2014;" class="exocortex-header-sep" verticalAlignment="center" />
@@ -55,5 +71,12 @@
 
   <Label col="4" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}"
     class="exocortex-header-status" verticalAlignment="center" />
+
+  <Label col="5" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}"
+    visibility="{{ warningIconVisibility }}"
+    class="exocortex-header-warning" verticalAlignment="center" />
+
+  <Label col="6" text="&#x2699;" tap="{{ onSettingsHubTap }}"
+    class="exocortex-header-settings" verticalAlignment="center" />
 
 </GridLayout>
