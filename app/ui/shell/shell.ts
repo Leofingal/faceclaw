@@ -61,7 +61,8 @@ import {
  * the sidebar it focuses the window first); by convention apps answer it with
  * a window menu that ends in Voice input / Close window. Holding the press
  * past the escape threshold opens the shell's own escape menu, so the shell
- * keeps working when a window's handler hangs.
+ * keeps working when a window's handler hangs. The 2.2.9 tap-then-hold gesture
+ * opens that shell menu immediately.
  */
 
 export type ShellWindow = {
@@ -631,6 +632,16 @@ class Shell {
       return { shell: false, window: false };
     }
 
+    // The 2.2.9 tap-then-hold gesture is a direct, shell-owned escape hatch.
+    // Unlike an ordinary long-press it never reaches the app or starts the
+    // fallback timer: it opens the same system menu that an extended hold
+    // would eventually open. Its later generic release is consumed while the
+    // shell overlay is active and therefore cannot leak into the app.
+    if (event.type === "short-then-long-press") {
+      this.openEscapeMenu();
+      return { shell: true, window: false };
+    }
+
     // Long-press goes to the foreground window (from the sidebar it focuses
     // the window first); apps conventionally answer it with their window
     // menu. The escape timer runs regardless of what the app does with it:
@@ -1141,9 +1152,10 @@ class Shell {
   }
 
   /**
-   * The held-long-press safeguard menu. Shell-owned and shell-drawn (never
-   * the app's), so an unresponsive app can always be closed. It opens over
-   * whatever the app did with the long-press, including its own menu.
+   * The system/escape menu. Shell-owned and shell-drawn (never the app's), so
+   * an unresponsive app can always be closed. It opens after an extended hold
+   * or immediately for tap-then-hold, over whatever the app did with an earlier
+   * ordinary long-press, including opening its own menu.
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
@@ -1254,6 +1266,8 @@ function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
       return { type: "long-press", source: eventSourceToString(event.eventSource) };
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
+    } else if (event.eventType === OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT) {
+      return { type: "short-then-long-press", source: eventSourceToString(event.eventSource) };
     }
   } else if (event.kind === "watch-gesture") {
     // Synthetic, from the Wear OS remote (app/g2/wear-remote.ts); the glasses
@@ -1325,6 +1339,8 @@ export function inputEventToString(event: InputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "short-then-long-press":
+      return `Short then long press from ${event.source}`;
     case "swipe-left":
       return `Swipe left from ${event.source}`;
     case "swipe-right":

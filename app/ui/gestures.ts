@@ -25,6 +25,8 @@ export type InputEventPayload =
   | { type: "scroll-down"; source?: InputSource }
   | { type: "long-press"; source: InputSource }
   | { type: "long-press-release"; source: InputSource }
+  /** G2 2.2.9 tap-then-hold gesture, reserved for the shell system menu. */
+  | { type: "short-then-long-press"; source: InputSource }
   /**
    * Spatial (four-way) input, which only a watch can produce: the ring's
    * scroll is a one-dimensional cursor, these are directions. Components with
