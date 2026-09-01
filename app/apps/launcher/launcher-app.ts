@@ -5,7 +5,8 @@ import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
-import { DashboardInputEvent, isWatchInput, Layer, LayerActions, LayerContext } from "../../ui/layers";
+import { InputEvent, isWatchInput } from "../../ui/gestures";
+import { Layer, LayerActions, LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, MenuLayer, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { iconGridMinRowHeight } from "../../ui/metrics";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
@@ -73,9 +74,9 @@ type LauncherGridEntry =
  */
 class LauncherGridLayer implements Layer {
   // Watch swipes are spatial: up/down move between rows, left/right between
-  // columns. From row mode, right goes into the row (left backs out, like
-  // double-click); from the first column, left returns to row mode, which
-  // keeps "left" pointing toward the sidebar all the way out.
+  // columns. From the leftmost column, left keeps going out: it leaves the
+  // open folder if there is one, else yields to the sidebar — "left" points
+  // toward the sidebar all the way out.
   readonly acceptsDirectional = true;
   private mode: LauncherMode = "row";
   private selectedRow = 0;
@@ -85,6 +86,21 @@ class LauncherGridLayer implements Layer {
   private currentFolder: string | null = null;
 
   constructor(private readonly options: LauncherOptions) {}
+
+  /**
+   * Focus arriving from the watch goes straight to item selection: the watch
+   * has left/right swipes, so it never needs row mode (see handleWatchInput),
+   * and starting there would paint a row band its scheme can't produce. Any
+   * other source keeps the two-level scheme and enters in row mode.
+   */
+  onFocus(lastInput: InputEvent | null): void {
+    if (lastInput && isWatchInput(lastInput)) {
+      this.mode = "item";
+      this.selectedCol = clamp(this.selectedCol, 0, this.itemsInRow(this.entries().length, this.selectedRow) - 1);
+    } else {
+      this.mode = "row";
+    }
+  }
 
   /**
    * The cells to show, computed fresh from the folder state. Self-heals
@@ -149,6 +165,7 @@ class LauncherGridLayer implements Layer {
     this.mode = "row";
     const index = this.entries().findIndex((entry) => entry.kind === "folder" && entry.name === folder);
     this.selectedRow = index >= 0 ? Math.floor(index / COLS) : 0;
+    this.selectedCol = index >= 0 ? index % COLS : 0;
   }
 
   /**
@@ -269,12 +286,17 @@ class LauncherGridLayer implements Layer {
 
     const rowY = (row: number) => gridTop + (row - this.scrollRow) * rowH;
 
-    // Selection highlight (row band, or a single cell in item mode).
+    // Selection highlight: a row band, or a single cell in item mode. While
+    // defocused with the watch as the last-used source, the cell outline is
+    // shown even in row mode: watch focus enters item mode directly (see
+    // onFocus), so the outline previews the cell a click would land on
+    // rather than a row band the watch scheme never shows.
+    const cellHighlight = this.mode === "item" || (!focused && shell.lastInputWasWatch());
     const selY = rowY(this.selectedRow);
-    if (this.mode === "row") {
-      drawSelectionHighlight(image, 4, selY + 2, width - 8, rowH - 4, focused, 6);
-    } else {
+    if (cellHighlight) {
       drawSelectionHighlight(image, this.selectedCol * colW + 6, selY + 2, colW - 12, rowH - 4, focused, 6);
+    } else {
+      drawSelectionHighlight(image, 4, selY + 2, width - 8, rowH - 4, focused, 6);
     }
 
     for (let index = 0; index < entries.length; index++) {
@@ -313,7 +335,7 @@ class LauncherGridLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (isWatchInput(event)) {
       await this.handleWatchInput(event, ctx);
       return;
@@ -378,7 +400,7 @@ class LauncherGridLayer implements Layer {
    * Row mode is restored on the way out so a ring user finds the grid as
    * they left it.
    */
-  private async handleWatchInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleWatchInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const entries = this.entries();
     const rows = this.rowCount(entries.length);
     if (this.mode === "row") {
@@ -414,7 +436,7 @@ class LauncherGridLayer implements Layer {
         }
         return;
       case "click":
-        await this.openSelected(entries);
+        await this.openSelected(entries, true);
         return;
       case "double-click":
         if (this.currentFolder !== null) {
@@ -454,14 +476,19 @@ class LauncherGridLayer implements Layer {
     return true;
   }
 
-  /** Open the selected cell: enter a folder, or launch the app. */
-  private async openSelected(entries: readonly LauncherGridEntry[]): Promise<void> {
+  /**
+   * Open the selected cell: enter a folder, or launch the app. A folder
+   * entered by watch input stays in single-item selection (the watch scheme
+   * has no row mode), starting at the folder's first cell.
+   */
+  private async openSelected(entries: readonly LauncherGridEntry[], watch = false): Promise<void> {
     const entry = entries[this.selectedRow * COLS + this.selectedCol];
     if (!entry) return;
     if (entry.kind === "folder") {
       this.currentFolder = entry.name;
-      this.mode = "row";
+      this.mode = watch ? "item" : "row";
       this.selectedRow = 0;
+      this.selectedCol = watch ? 0 : this.selectedCol;
       this.scrollRow = 0;
     } else {
       // Return to the top grid before launching, so the launcher never
@@ -494,6 +521,7 @@ export function createLauncherWindow(options: LauncherOptions): InProcessWindow 
     closeable: false,
     menuItems: () => gridLayer.menuItems(),
     actions: options.actions,
+    onFocus: (lastInput) => gridLayer.onFocus(lastInput),
     // Not wrapped in YieldAtRootLayer: the grid handles double-click itself to
     // back out of item selection before yielding to the sidebar.
     baseLayer: gridLayer,

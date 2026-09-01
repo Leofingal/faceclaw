@@ -120,6 +120,10 @@
                     <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
                     <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
                 </StackLayout>
+                <StackLayout visibility="{{ fontsMissingWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="The G2 fonts have not been extracted, so EvenHub apps will render with fallback fonts. Preparing them downloads the official firmware to extract its fonts; your glasses are not reflashed." textWrap="true" />
+                    <Button text="Prepare G2 fonts" tap="{{ onPrepareFontsTap }}" class="-primary" />
+                </StackLayout>
                 <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
             </StackLayout>
         </ScrollView>
@@ -160,6 +164,16 @@
                     secure="{{ secondaryTextSettingSecure }}"
                     returnKeyType="done" />
             </StackLayout>
+            <GridLayout
+                columns="*,auto"
+                visibility="{{ activeTextEditorToggleVisibility }}"
+                class="m-t-8">
+                <Label col="0" text="{{ activeTextEditorToggleLabel }}" verticalAlignment="center" />
+                <Switch
+                    col="1"
+                    checked="{{ activeTextEditorToggleValue }}"
+                    checkedChange="{{ onTextSettingToggleChange }}" />
+            </GridLayout>
         </StackLayout>
     </GridLayout>
 </Page>

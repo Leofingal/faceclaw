@@ -1,7 +1,12 @@
 import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
-import { loadDeviceAddresses } from "./device-addresses";
-import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
+import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
+import {
+  ensureBlePermissions,
+  ensureVoicePermissions,
+  hasMicrophonePermission,
+  requestMicrophonePermission,
+} from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
@@ -12,6 +17,7 @@ import { isNotificationSourceEnabled } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
 
@@ -58,7 +64,7 @@ import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEdi
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
-import { type LayerActions } from "../ui/layers";
+import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
@@ -70,6 +76,8 @@ import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/man
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
 import { glassesDisplayLabel } from "./glasses-display-state";
+import { PreviewDisplayTarget, type DisplayTarget } from "../native/preview-display";
+import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
@@ -92,6 +100,9 @@ export type DashboardSnapshot = {
   secondaryTextSettingTitle: string;
   secondaryTextSettingValue: string;
   secondaryTextSettingInputKind: "text" | "email" | "password";
+  activeTextEditorToggleLabel: string;
+  activeTextEditorToggleValue: boolean;
+  activeTextEditorToggleVisible: boolean;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -109,6 +120,13 @@ export type DashboardSnapshot = {
    */
   foregroundAppId: string | null;
   foregroundAppTitle: string | null;
+  fontsMissingWarningVisible: boolean;
+  /**
+   * True while the headless preview display is standing in for a glasses
+   * connection (preview-only mode): the mirror is live and interactive, but
+   * nothing is paired, so "Disconnected" would be the wrong label.
+   */
+  previewMode: boolean;
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -202,10 +220,15 @@ class DashboardController {
   private activeTextSettings: ConfigSettingString[] = [];
   private activeTextEditorTitle = "";
   private activeTextEditorOnFinish: (() => void) | null = null;
+  private activeTextEditorToggle: TextSettingsEditToggle | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
   private batteryOptimizationWarningVisible = false;
+  private fontsMissingWarningVisible = false;
+  // Sticky positive: the extracted-font file doesn't vanish mid-session, so a
+  // successful check spares later refreshes the file read and JSON parse.
+  private extractedFontsConfirmed = false;
   private screenRecordingActive = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private silentMode = false;
@@ -220,6 +243,9 @@ class DashboardController {
   private welcomeSoundArmed = false;
 
   private communicator: FaceclawCommunicatorBridge | null = null;
+  // Headless stand-in for the compositor when no glasses are paired
+  // (preview-only mode); a real connection always outranks it. See `display`.
+  private previewTarget: PreviewDisplayTarget | null = null;
   private shellRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private previewTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
@@ -285,7 +311,8 @@ class DashboardController {
         settings: readonly ConfigSettingString[],
         title: string,
         onFinish?: () => void,
-      ) => this.startTextSettingsEdit(settings, title, onFinish),
+        toggle?: TextSettingsEditToggle,
+      ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
@@ -318,6 +345,7 @@ class DashboardController {
       },
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
+      prepareVoiceCapture: () => this.prepareVoiceCapture(),
       onWindowsChanged: () => {
         this.persistOpenApps();
         // The foreground title is mirrored on both remote-control faces.
@@ -497,16 +525,28 @@ class DashboardController {
     }
 
     const communicator = this.communicator;
-    if (!communicator) return;
-    // Blanking is a compositor-level flag so worker-window surfaces go dark
-    // too; retained state survives while the EvenHub page is absent.
-    void (async () => {
-      await communicator.setScreenBlanked(true);
-      await communicator.setG2ScreenOn(false);
-    })().catch((error) => {
-      this.appendLog(`screen sleep failed: ${this.formatError(error)}`);
-    });
-    this.scheduleEvenHubSuspend();
+    if (communicator) {
+      // Blanking is a compositor-level flag so worker-window surfaces go dark
+      // too; retained state survives while the EvenHub page is absent.
+      void (async () => {
+        await communicator.setScreenBlanked(true);
+        await communicator.setG2ScreenOn(false);
+      })().catch((error) => {
+        this.appendLog(`screen sleep failed: ${this.formatError(error)}`);
+      });
+      this.scheduleEvenHubSuspend();
+      return;
+    }
+    const preview = this.previewTarget;
+    if (!preview) return;
+    // Preview mode: the mirror goes dark like the lens would; retained
+    // surfaces survive for the next wake.
+    void preview
+      .setScreenBlanked(true)
+      .then(() => this.schedulePreviewUpdate())
+      .catch((error) => {
+        this.appendLog(`preview screen sleep failed: ${this.formatError(error)}`);
+      });
   }
 
   private syncLockScreenSettingIfChanged(): void {
@@ -613,7 +653,17 @@ class DashboardController {
   private ensureEvenHubSessionActive(frameId = 0): Promise<boolean> {
     if (this.evenHubResumePromise) return this.evenHubResumePromise;
     const communicator = this.communicator;
-    if (!communicator || this.phase === "charging" || this.phase === "disconnected") {
+    if (!communicator) {
+      // Preview mode has no plugin session to restore; waking is just
+      // unblanking the headless compositor so the mirror lights back up.
+      const preview = this.previewTarget;
+      if (!preview) return Promise.resolve(false);
+      return preview.setScreenBlanked(false).then(() => {
+        this.schedulePreviewUpdate();
+        return true;
+      });
+    }
+    if (this.phase === "charging" || this.phase === "disconnected") {
       return Promise.resolve(false);
     }
 
@@ -806,8 +856,8 @@ class DashboardController {
 
   /** Save the occupied part of the composited screen as a 4-bit grayscale PNG. */
   saveScreenshot(): string {
-    const path = this.communicator?.saveScreenshot(shell.screenshotCropRect()) ?? "";
-    this.appendLog(path ? `screenshot saved: ${path}` : "screenshot skipped: not connected");
+    const path = this.display?.saveScreenshot(shell.screenshotCropRect()) ?? "";
+    this.appendLog(path ? `screenshot saved: ${path}` : "screenshot skipped: no display");
     return path;
   }
 
@@ -818,15 +868,15 @@ class DashboardController {
    */
   startScreenRecording(): void {
     if (this.screenRecordingActive) return;
-    const communicator = this.communicator;
-    if (!communicator) {
-      this.appendLog("screen recording skipped: not connected");
+    const display = this.display;
+    if (!display) {
+      this.appendLog("screen recording skipped: no display");
       return;
     }
-    communicator.startScreenRecording();
+    display.startScreenRecording();
     // Capture the starting frame immediately rather than waiting for the
     // next preview flush.
-    communicator.recordScreenFrame();
+    display.recordScreenFrame();
     this.screenRecordingActive = true;
     this.appendLog("screen recording started");
     this.emit();
@@ -838,7 +888,7 @@ class DashboardController {
     this.screenRecordingActive = false;
     let path = "";
     try {
-      path = this.communicator?.stopScreenRecording() ?? "";
+      path = this.display?.stopScreenRecording() ?? "";
     } finally {
       this.emit();
     }
@@ -872,6 +922,9 @@ class DashboardController {
       secondaryTextSettingTitle: secondaryTextSetting?.editorTitle ?? "",
       secondaryTextSettingValue: secondaryTextSetting?.get() ?? "",
       secondaryTextSettingInputKind: secondaryTextSetting?.inputKind ?? "text",
+      activeTextEditorToggleLabel: this.activeTextEditorToggle?.label ?? "",
+      activeTextEditorToggleValue: this.activeTextEditorToggle?.setting.get() ?? false,
+      activeTextEditorToggleVisible: this.activeTextEditorToggle !== null,
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -880,6 +933,8 @@ class DashboardController {
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
       foregroundAppId: foregroundApp?.appId ?? null,
       foregroundAppTitle: foregroundApp?.title ?? null,
+      fontsMissingWarningVisible: this.fontsMissingWarningVisible,
+      previewMode: this.isPreviewDisplayActive(),
     };
   }
 
@@ -896,6 +951,11 @@ class DashboardController {
     }
     if (this.silentMode && this.phase === "connected") {
       return "Connected (Silent mode enabled)";
+    }
+    // The preview compositor keeps the mirror live (including as a black
+    // frame while the simulated screen is off), so never cover it.
+    if (this.isPreviewDisplayActive()) {
+      return "";
     }
     const connectionFailing = this.phase === "disconnected" || this.phase === "connecting";
     if (
@@ -916,6 +976,7 @@ class DashboardController {
       screenOn: shell.isScreenOn(),
       battery: this.lastHeadsetBattery,
       foregroundTitle: shell.getForegroundApp()?.title ?? null,
+      previewMode: this.isPreviewDisplayActive(),
     });
   }
 
@@ -945,8 +1006,28 @@ class DashboardController {
     }, 5_000);
   }
 
+  /**
+   * Warn when glasses are paired but the phone-side G2 fonts were never
+   * extracted (the onboarding flash flow normally extracts them, but a dev
+   * install or an imported config can arrive paired without them). Preview-only
+   * users have no addresses configured and are never warned.
+   */
+  refreshEvenHubFontStatus(): void {
+    const addresses = loadDeviceAddresses();
+    const paired = isValidMacAddress(addresses.right) && isValidMacAddress(addresses.left);
+    if (paired && !this.extractedFontsConfirmed) {
+      this.extractedFontsConfirmed = hasExtractedEvenHubFonts();
+    }
+    const warningVisible = paired && !this.extractedFontsConfirmed;
+    if (warningVisible !== this.fontsMissingWarningVisible) {
+      this.fontsMissingWarningVisible = warningVisible;
+      this.emit();
+    }
+  }
+
   refreshEvenAppStatus(): void {
     this.refreshBatteryOptimizationStatus();
+    this.refreshEvenHubFontStatus();
     const state = readEvenAppNotificationState();
     const wasActive = this.evenNotificationActive;
     this.evenNotificationActive = state.evenNotificationActive;
@@ -982,6 +1063,101 @@ class DashboardController {
     this.previewOrRenderAfterTextSettingChange();
   }
 
+  setActiveTextEditorToggleValue(value: boolean): void {
+    if (!this.activeTextEditorToggle || this.activeTextEditorToggle.setting.get() === value) return;
+    this.activeTextEditorToggle.setting.set(value);
+    this.emit();
+  }
+
+  /**
+   * Where composited frames go and where the phone mirror, screenshots, and
+   * recordings come from: the live glasses connection when there is one,
+   * otherwise the headless preview compositor (preview-only mode), otherwise
+   * nothing (frames are discarded).
+   */
+  private get display(): DisplayTarget | null {
+    return this.communicator ?? this.previewTarget;
+  }
+
+  private isPreviewDisplayActive(): boolean {
+    return this.communicator === null && this.previewTarget !== null;
+  }
+
+  /**
+   * Bring up the headless preview display for preview-only mode (onboarding's
+   * "Preview Only" path): the same shell/app/compositor pipeline as a live
+   * session minus the BLE transport, so the phone mirror and its touch/watch
+   * controls work with no glasses paired. Idempotent; called from the main
+   * page alongside autoConnect. A real connection outranks it — connect()
+   * tears it down before creating the communicator.
+   */
+  async ensurePreviewDisplay(): Promise<void> {
+    if (!isPreviewOnlyMode()) return;
+    if (this.communicator || this.previewTarget || this.connectRunning) return;
+    const target = new PreviewDisplayTarget();
+    // Published before the awaits below so a second call (or connect()) sees
+    // it; the target's calls all complete in microtasks, so the screen size
+    // is in place before any real render can reach the compositor.
+    this.previewTarget = target;
+    try {
+      await target.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      await target.configureSurface(SHELL_SURFACE_ID, {
+        x: 0,
+        y: 0,
+        width: G2_LENS_WIDTH,
+        height: G2_LENS_HEIGHT,
+        zOrder: 1,
+        transparency: "color-key",
+      });
+      const foregroundWindowId = shell.foregroundWindow()?.windowId;
+      for (const window of shell.getWindows()) {
+        await this.configureWindowSurface(
+          window.surfaceId,
+          window.windowId === foregroundWindowId,
+          window.heightMode,
+          target,
+        );
+      }
+    } catch (error) {
+      if (this.previewTarget === target) this.previewTarget = null;
+      this.appendLog(`preview display setup failed: ${this.formatError(error)}`);
+      return;
+    }
+    // Workers find the compositor through its Java static; the per-frame
+    // callback keeps the mirror current (the connected path gets the same
+    // from Java's frame metrics).
+    target.activate(() => this.schedulePreviewUpdate());
+    this.setStatus("Preview mode (no glasses paired).");
+    this.appendLog("Preview-only display active; frames render to the phone mirror only.");
+    shell.foregroundWindow()?.requestRender();
+    this.requestShellRender();
+    // The same recurring upkeep a live session gets: top-bar clock refresh,
+    // the preview safety-net poll, and the screen timeout (a timed-out
+    // preview screen wakes on double-tap, like the glasses would).
+    this.shellRefreshTimer = setInterval(() => {
+      this.requestShellRender();
+      this.updateCompositePreview();
+    }, SHELL_REFRESH_INTERVAL_MS);
+    this.previewTimer = setInterval(() => this.updateCompositePreview(), PREVIEW_INTERVAL_MS);
+    this.screenTimeoutTimer = setInterval(() => {
+      if (!this.isPreviewDisplayActive()) return;
+      if (!shell.applyScreenTimeout()) return;
+      this.endTextSettingEdit();
+      this.requestShellRender();
+    }, SCREEN_TIMEOUT_CHECK_MS);
+    this.emit();
+  }
+
+  /** Drop the headless preview display (a real connection is taking over). */
+  private teardownPreviewDisplay(): void {
+    const target = this.previewTarget;
+    if (!target) return;
+    this.previewTarget = null;
+    target.release();
+    this.clearDashboardTimer();
+    this.appendLog("Preview-only display released.");
+  }
+
   async connect(): Promise<void> {
     if (this.phase !== "disconnected") return;
     // Connecting is the explicit way out of the manual-disconnected state.
@@ -995,6 +1171,9 @@ class DashboardController {
       this.appendLog(`error: ${message}`);
       throw new Error(message);
     }
+    // Glasses are configured, so the real pipeline owns the display from here
+    // (also frees the preview timers for connect() to replace).
+    this.teardownPreviewDisplay();
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
     this.welcomeSoundArmed = isWelcomeSoundPending();
@@ -1511,7 +1690,7 @@ class DashboardController {
    * Coordinates are fractions of the mirror (0..1).
    */
   async handleMirrorTouch(kind: MirrorTouchKind, nx: number, ny: number): Promise<void> {
-    if (this.phase !== "connected" && this.phase !== "charging") return;
+    if (this.phase !== "connected" && this.phase !== "charging" && !this.isPreviewDisplayActive()) return;
     if (this.glassesLocked) {
       // Same as the ring: only a double-tap reaches a locked display.
       if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
@@ -1578,10 +1757,12 @@ class DashboardController {
     settings: readonly ConfigSettingString[],
     title: string,
     onFinish?: () => void,
+    toggle?: TextSettingsEditToggle,
   ): void {
     this.activeTextSettings = Array.from(settings.slice(0, 2));
     this.activeTextEditorTitle = title;
     this.activeTextEditorOnFinish = onFinish ?? null;
+    this.activeTextEditorToggle = toggle ?? null;
     this.emit();
   }
 
@@ -1606,10 +1787,15 @@ class DashboardController {
     voiceControlBridge.stopContinuousCapture();
   }
 
-  /** Provider and key settings for a capture on the given connection. */
-  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge) {
+  /**
+   * Provider and key settings for a capture on the given connection; a null
+   * communicator means preview-only mode, where the phone's own microphone
+   * stands in for the G2 mic.
+   */
+  private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge | null) {
     return {
-      communicator: communicator.getNativeCommunicator(),
+      communicator: communicator?.getNativeCommunicator() ?? null,
+      usePhoneMic: communicator === null,
       provider: voiceProviderSetting.get(),
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
@@ -1637,14 +1823,39 @@ class DashboardController {
     voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
   }
 
+  /**
+   * Gate for opening the voice dialog (the shell asks before pushing the
+   * layer). Connected sessions always proceed — the mic permission prompt,
+   * if needed, appears over the open dialog as it always has. Preview mode
+   * captures from the phone mic, so a missing permission turns the tap into
+   * the system permission prompt instead of a dialog that would listen to
+   * nothing; a grant lets the dialog open right away.
+   */
+  private async prepareVoiceCapture(): Promise<boolean> {
+    if (!this.isPreviewDisplayActive()) return true;
+    if (hasMicrophonePermission()) return true;
+    const granted = await requestMicrophonePermission();
+    if (!granted) {
+      this.appendLog("voice input blocked: microphone permission denied");
+    }
+    return granted;
+  }
+
   private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
-    if (this.phase !== "connected" || !this.communicator) {
+    // Preview mode captures from the phone mic (voiceCaptureOptions with a
+    // null communicator); otherwise a live glasses session must be the source.
+    const previewCapture = this.isPreviewDisplayActive();
+    if (!previewCapture && (this.phase !== "connected" || !this.communicator)) {
       return;
     }
     const communicator = this.communicator;
     void ensureVoicePermissions()
       .then(() => {
-        if (this.phase !== "connected" || this.communicator !== communicator) return;
+        if (previewCapture) {
+          if (!this.isPreviewDisplayActive()) return;
+        } else if (this.phase !== "connected" || this.communicator !== communicator) {
+          return;
+        }
         const options = { ...this.voiceCaptureOptions(communicator), endpointing };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
@@ -1662,6 +1873,7 @@ class DashboardController {
     this.activeTextSettings = [];
     this.activeTextEditorTitle = "";
     this.activeTextEditorOnFinish = null;
+    this.activeTextEditorToggle = null;
     this.emit();
     if (finishedSettings.includes(nightscoutSiteUrlSetting) || finishedSettings.includes(nightscoutApiTokenSetting)) {
       void this.refreshNightscoutAfterSettingsChange();
@@ -2004,35 +2216,36 @@ class DashboardController {
     }
   }
 
-  /** Create/refresh a window surface on the compositor, if connected. */
+  /** Create/refresh a window surface on the compositor, if a display target exists. */
   private async configureWindowSurface(
     surfaceId: string,
     visible: boolean,
     heightMode: WindowHeightMode = "min",
+    // ensurePreviewDisplay passes its not-yet-published target explicitly.
+    target: DisplayTarget | null = this.display,
   ): Promise<void> {
-    const communicator = this.communicator;
-    if (!communicator) return;
-    await communicator.configureSurface(surfaceId, {
+    if (!target) return;
+    await target.configureSurface(surfaceId, {
       ...appViewportRect(heightMode),
       zOrder: 0,
       transparency: "opaque",
     });
-    await communicator.setSurfaceVisible(surfaceId, visible);
+    await target.setSurfaceVisible(surfaceId, visible);
   }
 
   private removeWindowSurface(surfaceId: string): void {
-    const communicator = this.communicator;
-    if (!communicator) return;
-    void communicator.removeSurface(surfaceId).catch((error) => {
+    const display = this.display;
+    if (!display) return;
+    void display.removeSurface(surfaceId).catch((error) => {
       this.appendLog(`surface removal failed: ${this.formatError(error)}`);
     });
   }
 
   /** Submit a painted frame for an in-process window (e.g. the launcher). */
   private async submitWindowFrame(surfaceId: string, planes: Plane[], paintMs: number, frameId: number): Promise<void> {
-    const communicator = this.communicator;
-    if (!communicator || this.phase === "charging") {
-      frameTimings.finishFrame(frameId, "discarded: window frame with no active connection");
+    const display = this.display;
+    if (!display || this.phase === "charging") {
+      frameTimings.finishFrame(frameId, "discarded: window frame with no display target");
       return;
     }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
@@ -2040,7 +2253,7 @@ class DashboardController {
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
     await frameTimings.spanAsync(frameId, "submit", () =>
-      communicator.submitSurfaceFrame(
+      display.submitSurfaceFrame(
         surfaceId,
         buffer,
         { x: 0, y: 0, width: image.width, height: image.height },
@@ -2054,9 +2267,9 @@ class DashboardController {
 
   /** Flip a window surface's compositor visibility; fire-and-forget. */
   private setWindowSurfaceVisible(surfaceId: string, visible: boolean): void {
-    const communicator = this.communicator;
-    if (!communicator) return;
-    void communicator.setSurfaceVisible(surfaceId, visible).catch((error) => {
+    const display = this.display;
+    if (!display) return;
+    void display.setSurfaceVisible(surfaceId, visible).catch((error) => {
       this.appendLog(`surface visibility change failed: ${this.formatError(error)}`);
     });
   }
@@ -2116,9 +2329,9 @@ class DashboardController {
       this.nextShellRenderWantsFreshData = true;
       this.requestShellRender(frameId);
     }
-    const communicator = this.communicator;
-    if (!communicator || this.phase === "charging") {
-      frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
+    const display = this.display;
+    if (!display || this.phase === "charging") {
+      frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
     }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
@@ -2129,7 +2342,7 @@ class DashboardController {
     // behind another surface's submission, which is otherwise an unexplained
     // jump between the paint spans and the composite.
     await frameTimings.spanAsync(frameId, "submit", () =>
-      communicator.submitSurfaceFrame(
+      display.submitSurfaceFrame(
         SHELL_SURFACE_ID,
         buffer,
         { x: 0, y: 0, width: image.width, height: image.height },
@@ -2142,8 +2355,9 @@ class DashboardController {
     // Backpressure: the next shell render waits for this one to reach the
     // glasses. Timing out here means the loop was blocked for the full timeout
     // and any input arriving meanwhile had its chrome repaint delayed, so say
-    // so in the frame rather than leaving a silent stall.
-    const outcome = await communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    // so in the frame rather than leaving a silent stall. (The preview target
+    // resolves immediately; nothing transmits.)
+    const outcome = await display.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
     if (outcome === null) {
       frameTimings.logFrame(
         frameId,
@@ -2289,7 +2503,8 @@ class DashboardController {
   }
 
   private updateCompositePreview(): void {
-    if (!this.communicator) return;
+    const display = this.display;
+    if (!display) return;
     // The floor comes first (and stamps even when backgrounded below): with
     // it after the background check, per-frame refresh requests from a
     // backgrounded app never advance the timestamp and every one of them
@@ -2313,9 +2528,9 @@ class DashboardController {
     }
     if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
       this.lastRecordCaptureAtMs = now;
-      this.communicator.recordScreenFrame();
+      display.recordScreenFrame();
     }
-    const preview = this.communicator.getCompositePreview(previewColorSetting.get() === "green");
+    const preview = display.getCompositePreview(previewColorSetting.get() === "green");
     if (preview) {
       this.setDisplayPreview(preview);
     }
@@ -2336,6 +2551,7 @@ class DashboardController {
       | "scroll-down"
       | "long-press"
       | "long-press-release"
+      | "short-then-long-press"
       | "wakeword"
       | "swipe-left"
       | "swipe-right"
@@ -2391,6 +2607,17 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT,
+          eventSource,
+          systemExitReasonCode: 0,
+          frameId,
+        };
+      case "short-then-long-press":
+        // Discrete, unlike a hold: the firmware's later generic release is a
+        // hardware artifact the shell ignores, so synthetic sources send none.
+        return {
+          kind: "sys-event",
+          containerName: "",
+          eventType: OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT,
           eventSource,
           systemExitReasonCode: 0,
           frameId,

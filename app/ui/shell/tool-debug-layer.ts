@@ -3,7 +3,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import type { ToolDebugEntry } from "../../assistant/tool-registry";
-import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerContext, PaintBelow } from "../layers";
 import { MenuLayer, drawListScrollbar, type MenuItem } from "../menu";
 import { MIN_WINDOW_HEIGHT, minWindowTop, sidebarWidth, TOP_BAR_HEIGHT } from "./geometry";
 import { lineStep } from "../metrics";
@@ -139,7 +140,7 @@ class ToolDetailLayer implements Layer {
     return lines;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         this.scrollRow = Math.max(0, this.scrollRow - 1);

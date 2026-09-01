@@ -104,6 +104,8 @@ public class BleProtocol {
     public static final int EVENT_IMU_DATA_REPORT = 8;
     public static final int EVENT_RING_LONG_PRESS = 9;
     public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
+    // CFW extension: G2 2.2.9 tap-then-hold gesture forwarded to the phone.
+    public static final int EVENT_SHORT_THEN_LONG_PRESS = 11;
 
     public static final int EVENT_SOURCE_GLASSES_R = 1;
     public static final int EVENT_SOURCE_RING = 2;

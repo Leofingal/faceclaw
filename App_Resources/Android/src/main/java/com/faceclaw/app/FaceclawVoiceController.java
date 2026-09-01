@@ -79,6 +79,12 @@ public class FaceclawVoiceController {
     // Set once the worker has the glasses mic enabled for this session.
     // Read and written under `lock`, so it flips with `started` atomically.
     private boolean audioStarted;
+    // Capture from the phone's own microphone instead of the G2 over BLE
+    // (preview-only mode, where no glasses are connected). Latched into
+    // activePhoneMic at start() (under `lock`) so a mid-session setter call
+    // can't switch pipelines underneath the worker.
+    private volatile boolean usePhoneMic;
+    private boolean activePhoneMic;
     private VoiceInputMode mode = VoiceInputMode.CLOUD;
     private OfflineRecognizer recognizer;
     private FaceclawLc3Decoder lc3Decoder;
@@ -132,6 +138,11 @@ public class FaceclawVoiceController {
 
     public void setCommunicator(FaceclawBleCommunicator communicator) {
         this.communicator = communicator;
+    }
+
+    /** Source the next capture from the phone microphone (no glasses paired). */
+    public void setUsePhoneMic(boolean usePhoneMic) {
+        this.usePhoneMic = usePhoneMic;
     }
 
     /** When true, the decoded mic PCM for each session is saved as a WAV. */
@@ -216,11 +227,12 @@ public class FaceclawVoiceController {
                 emitStatus("Voice control is already listening.");
                 return;
             }
-            if (communicator == null || !communicator.isSessionReady()) {
+            if (!usePhoneMic && (communicator == null || !communicator.isSessionReady())) {
                 emitStatus("Voice control needs an active G2 connection.");
                 return;
             }
             mode = parseMode(requestedMode);
+            activePhoneMic = usePhoneMic;
             started = true;
             audioStarted = false;
             workerThread = new Thread(this::runLoop, "FaceclawVoiceController");
@@ -237,15 +249,21 @@ public class FaceclawVoiceController {
      */
     public boolean isCapturing() {
         boolean audioUp;
+        boolean phoneMic;
         synchronized (lock) {
             if (!started) {
                 return false;
             }
             audioUp = audioStarted;
+            phoneMic = activePhoneMic;
         }
         if (!audioUp) {
             // The worker is still bringing the mic up; report it as running so
             // a concurrent request shares it instead of restarting it.
+            return true;
+        }
+        if (phoneMic) {
+            // AudioRecord has no session to lose the enable to; it runs until stop().
             return true;
         }
         FaceclawBleCommunicator currentCommunicator = communicator;
@@ -303,7 +321,6 @@ public class FaceclawVoiceController {
                 resetTranscriptState();
                 lastTranscript = "";
             }
-            lc3Decoder = new FaceclawLc3Decoder();
             endpointDetector.reset();
             if (suppressor != null) {
                 suppressor.reset();
@@ -312,18 +329,42 @@ public class FaceclawVoiceController {
             boolean verifying = verifySpeakerModelPath != null && verifyWearerEmbedding != null;
             verifyBuffer = verifying ? new short[VERIFY_MAX_SAMPLES] : null;
             verifyCount = 0;
-            if (!startG2Audio()) {
-                emitStatus("Could not start G2 microphone input.");
-                return;
+            if (activePhoneMic) {
+                android.media.AudioRecord record = openPhoneMic();
+                if (record == null) {
+                    emitStatus("Could not start the phone microphone.");
+                    return;
+                }
+                synchronized (lock) {
+                    audioStarted = true;
+                }
+                emitStatus(currentMode == VoiceInputMode.CLOUD
+                        ? "Listening (cloud)..."
+                        : "Listening...");
+                try {
+                    processPhoneAudio(record);
+                } finally {
+                    try {
+                        record.stop();
+                    } catch (Throwable ignored) {
+                        // Already stopped or never recording; release below either way.
+                    }
+                    record.release();
+                }
+            } else {
+                lc3Decoder = new FaceclawLc3Decoder();
+                if (!startG2Audio()) {
+                    emitStatus("Could not start G2 microphone input.");
+                    return;
+                }
+                synchronized (lock) {
+                    audioStarted = true;
+                }
+                emitStatus(currentMode == VoiceInputMode.CLOUD
+                        ? "Listening (cloud)..."
+                        : "Listening...");
+                processG2Audio();
             }
-            synchronized (lock) {
-                audioStarted = true;
-            }
-
-            emitStatus(currentMode == VoiceInputMode.CLOUD
-                    ? "Listening (cloud)..."
-                    : "Listening...");
-            processG2Audio();
             // Verification result must precede the final transcript so the
             // TS bridge can suppress a non-wearer command before it is acted
             // on (the callbacks are posted in order to the main handler).
@@ -511,32 +552,107 @@ public class FaceclawVoiceController {
                 maybeEmitAudioStats(false);
                 continue;
             }
-            if (suppressionEnabled) {
-                applySuppression(pcm, count);
-            }
-            if (recordingPcm != null) {
-                appendRecording(pcm, count);
-            }
-            if (verifyBuffer != null && verifyCount < VERIFY_MAX_SAMPLES) {
-                int copied = Math.min(count, VERIFY_MAX_SAMPLES - verifyCount);
-                System.arraycopy(pcm, 0, verifyBuffer, verifyCount, copied);
-                verifyCount += copied;
-            }
-            if (endpointing && endpointDetector.accept(pcm, count)) {
-                emitSpeechEnd();
-            }
-            // PCM and frame metadata flow in every mode so levels, recording,
-            // and the Microphones radar keep working alongside onboard ASR.
-            emitPcm(pcm, count);
-            emitFrameMeta(angleDegrees, ssr);
-            if (mode != VoiceInputMode.CLOUD) {
-                float[] samples = new float[count];
-                for (int i = 0; i < count; i++) {
-                    samples[i] = pcm[i] / 32768.0f;
-                }
-                processRecognizer(samples);
-            }
+            processPcmChunk(pcm, count, angleDegrees, ssr, true);
             maybeEmitAudioStats(false);
+        }
+    }
+
+    /**
+     * Per-chunk processing shared by the G2 and phone-mic paths, downstream of
+     * decode and the beam filter. hasFrameMeta is false for the phone mic,
+     * which has no firmware DSP metadata to report.
+     */
+    private void processPcmChunk(short[] pcm, int count, int angleDegrees, int ssr, boolean hasFrameMeta) {
+        if (suppressionEnabled) {
+            applySuppression(pcm, count);
+        }
+        if (recordingPcm != null) {
+            appendRecording(pcm, count);
+        }
+        if (verifyBuffer != null && verifyCount < VERIFY_MAX_SAMPLES) {
+            int copied = Math.min(count, VERIFY_MAX_SAMPLES - verifyCount);
+            System.arraycopy(pcm, 0, verifyBuffer, verifyCount, copied);
+            verifyCount += copied;
+        }
+        if (endpointing && endpointDetector.accept(pcm, count)) {
+            emitSpeechEnd();
+        }
+        // PCM and frame metadata flow in every mode so levels, recording,
+        // and the Microphones radar keep working alongside onboard ASR.
+        emitPcm(pcm, count);
+        if (hasFrameMeta) {
+            emitFrameMeta(angleDegrees, ssr);
+        }
+        if (mode != VoiceInputMode.CLOUD) {
+            float[] samples = new float[count];
+            for (int i = 0; i < count; i++) {
+                samples[i] = pcm[i] / 32768.0f;
+            }
+            processRecognizer(samples);
+        }
+    }
+
+    // 50 ms chunks match the G2 packet cadence the rest of the pipeline
+    // (endpointing, transcript pacing) is tuned for.
+    private static final int PHONE_MIC_CHUNK_SAMPLES = SAMPLE_RATE / 20;
+
+    /**
+     * Open the phone's own microphone at the pipeline's native format
+     * (16 kHz mono PCM16), or null when it cannot start — the permission is
+     * missing (SecurityException) or the device refuses the configuration.
+     */
+    private android.media.AudioRecord openPhoneMic() {
+        android.media.AudioRecord record = null;
+        try {
+            int minBytes = android.media.AudioRecord.getMinBufferSize(
+                    SAMPLE_RATE,
+                    android.media.AudioFormat.CHANNEL_IN_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT);
+            int bufferBytes = Math.max(minBytes, PHONE_MIC_CHUNK_SAMPLES * 2 * 4);
+            record = new android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    SAMPLE_RATE,
+                    android.media.AudioFormat.CHANNEL_IN_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT,
+                    bufferBytes);
+            if (record.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
+                record.release();
+                return null;
+            }
+            record.startRecording();
+            if (record.getRecordingState() != android.media.AudioRecord.RECORDSTATE_RECORDING) {
+                record.release();
+                return null;
+            }
+            return record;
+        } catch (Throwable t) {
+            Log.w(TAG, "phone mic open failed", t);
+            if (record != null) {
+                record.release();
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Phone-mic capture loop: no LC3 decode, no arm bookkeeping, no frame
+     * metadata — AudioRecord already delivers the pipeline's PCM format. The
+     * blocking read returns every chunk (50 ms), which bounds how long a
+     * stop() waits for the loop to notice `started` dropped.
+     */
+    private void processPhoneAudio(android.media.AudioRecord record) {
+        short[] pcm = new short[PHONE_MIC_CHUNK_SAMPLES];
+        while (started && !Thread.currentThread().isInterrupted()) {
+            int read = record.read(pcm, 0, pcm.length);
+            if (read < 0) {
+                Log.w(TAG, "phone mic read failed: " + read);
+                return;
+            }
+            if (read == 0) {
+                continue;
+            }
+            decodedSamples += read;
+            processPcmChunk(pcm, read, 0, 0, false);
         }
     }
 

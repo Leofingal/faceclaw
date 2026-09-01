@@ -1,4 +1,5 @@
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
+import { useMicControlSetting } from "../../ui/dashboard-settings";
 import { toJavaBytes } from "../../native/cloud-stt";
 import { toUint8Array } from "../../util/array-util";
 import {
@@ -38,7 +39,7 @@ function activeCommunicator(): any {
 }
 
 /** True when the connected glasses advertise the CFW mic_control feature. */
-export function micControlSupported(): boolean {
+export function micControlAdvertised(): boolean {
   const communicator = activeCommunicator();
   if (!communicator) return false;
   try {
@@ -47,6 +48,16 @@ export function micControlSupported(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * True when the connected glasses advertise the CFW mic_control feature AND
+ * the "Use microphone control" developer setting is on. With the setting off
+ * (the default), Faceclaw behaves exactly as it would on firmware without the
+ * micctl caps token.
+ */
+export function micControlSupported(): boolean {
+  return useMicControlSetting.get() && micControlAdvertised();
 }
 
 export function loadMicConfig(): MicConfig {
