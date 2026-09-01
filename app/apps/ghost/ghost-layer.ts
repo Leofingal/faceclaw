@@ -607,6 +607,21 @@ export class GhostLayer implements Layer {
       return;
     }
     if (!this.proseOpen) {
+      if (item.role === "user") {
+        // Chris, 2026-09-01: digging into one of his own messages hit
+        // "Could not load full reply, server said 404." Root cause: tier 2's
+        // body above IS already the complete text he typed - nothing was
+        // ever summarized, so there is no separate tier-3 prose to fetch.
+        // The server's own /api/glasses/:sessionId/prose/:uuid route 404s on
+        // a user turn on purpose (see its comment in server.js) - the bug
+        // was this client offering the same third tap on an item where it
+        // can never succeed. Cycle straight back to the headline instead.
+        this.expanded = false;
+        this.bodyScroll = 0;
+        stopGhostSpeech();
+        this.requestRender();
+        return;
+      }
       await this.openProse(item);
       return;
     }
