@@ -63,8 +63,11 @@ export class NotificationSourcesViewModel extends Observable {
       enabled: source.enabled,
       onCheckedChange: (args) => {
         const checked = Boolean(args?.object?.checked);
-        // The Switch fires on programmatic assignment too, so writing only on
-        // a real change keeps a reload from looking like a user toggle.
+        // The Switch fires on programmatic assignment too (a reload rebuilds
+        // every row), so this must be safe to call with the value it already
+        // has. setNotificationSourceEnabled is idempotent — it returns early
+        // when the source is already in the requested state — so a rebuild
+        // cannot write, and cannot re-broadcast a settings change.
         setNotificationSourceEnabled(source.packageName, checked);
       },
     }));
