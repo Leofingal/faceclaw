@@ -13,6 +13,8 @@ import kotlin.math.abs
 class TouchpadCallbacks(
     val onTap: (position: Offset) -> Unit,
     val onDoubleTap: (position: Offset) -> Unit,
+    /** A tap whose immediate second press was held: the G2 tap-then-hold gesture. */
+    val onShortThenLongPress: () -> Unit,
     val onTwoFingerTap: () -> Unit,
     /** Two fingers travelled past touch slop; dx/dy are the primary finger's displacement. */
     val onTwoFingerSwipe: (dx: Float, dy: Float) -> Unit,
@@ -25,9 +27,10 @@ class TouchpadCallbacks(
 /**
  * One detector for everything the pad does, so a gesture is reported exactly
  * once: tap, double-tap (a second tap inside the double-tap timeout), a hold
- * (reported at the long-press timeout and again on release), a swipe, and a
- * two-finger tap or swipe. Written as a single awaitEachGesture loop because the
- * stock detectors would each claim the same finger.
+ * (reported at the long-press timeout and again on release), tap-then-hold (a
+ * second tap held past the long-press timeout), a swipe, and a two-finger tap
+ * or swipe. Written as a single awaitEachGesture loop because the stock
+ * detectors would each claim the same finger.
  */
 suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallbacks) {
     val longPressTimeout = viewConfiguration.longPressTimeoutMillis
@@ -96,9 +99,32 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
                             callbacks.onTap(down.position)
                         } else {
                             second.consume()
-                            val up = waitForUpOrCancellation()
-                            if (up != null) up.consume()
-                            callbacks.onDoubleTap(down.position)
+                            // Released within the long-press timeout it's a
+                            // double-tap; held past it, the G2 tap-then-hold
+                            // gesture (reported once at the timeout, movement
+                            // tolerated, the rest of the hold swallowed).
+                            var held = false
+                            while (true) {
+                                val remaining2 = if (held) {
+                                    HOLD_POLL_MS
+                                } else {
+                                    longPressTimeout - (System.currentTimeMillis() - wallClockAt(second.uptimeMillis))
+                                }
+                                val event2 = withTimeoutOrNull(remaining2.coerceAtLeast(1L)) { awaitPointerEvent() }
+                                if (event2 == null) {
+                                    if (!held) {
+                                        held = true
+                                        callbacks.onShortThenLongPress()
+                                    }
+                                    continue
+                                }
+                                if (event2.changes.any { it.isConsumed }) break
+                                for (change in event2.changes) change.consume()
+                                if (event2.changes.none { it.pressed }) {
+                                    if (!held) callbacks.onDoubleTap(down.position)
+                                    break
+                                }
+                            }
                         }
                     }
                 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 - Future
+* Update custom firmware base version from 2.2.6 to 2.2.9
+* Add support for the short-then-long-press gesture
+
 ## 0.6.2 - 2026-08-30
 * Preview Only mode works
 * Voice input uses phone mic in preview mode

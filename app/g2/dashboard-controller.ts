@@ -2494,6 +2494,7 @@ class DashboardController {
       | "scroll-down"
       | "long-press"
       | "long-press-release"
+      | "short-then-long-press"
       | "wakeword"
       | "swipe-left"
       | "swipe-right"
@@ -2549,6 +2550,17 @@ class DashboardController {
           kind: "sys-event",
           containerName: "",
           eventType: OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT,
+          eventSource,
+          systemExitReasonCode: 0,
+          frameId,
+        };
+      case "short-then-long-press":
+        // Discrete, unlike a hold: the firmware's later generic release is a
+        // hardware artifact the shell ignores, so synthetic sources send none.
+        return {
+          kind: "sys-event",
+          containerName: "",
+          eventType: OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT,
           eventSource,
           systemExitReasonCode: 0,
           frameId,

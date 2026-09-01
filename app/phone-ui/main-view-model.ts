@@ -846,16 +846,36 @@ export class MainViewModel extends Observable {
     dashboardController.openEvenAppSettings();
   }
 
+  // Tap-then-hold on the simulated pads: NativeScript reports doubleTap on
+  // the second finger-down and still runs the long-press recognizer on that
+  // same press, so the sequence arrives as doubleTap followed by longPress.
+  // Each pad therefore defers its double-click until the finger-up (the touch
+  // handler) and converts the deferred pair into the G2 tap-then-hold gesture
+  // when a longPress lands first.
+
+  private ringPadDoubleTapPending = false;
+
   async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
   async onRingPadDoubleTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click");
+    this.ringPadDoubleTapPending = true;
   }
 
   async onRingPadLongPress(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press");
+    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.ringPadDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind);
+  }
+
+  async onRingPadTouch(args: TouchGestureEventData): Promise<void> {
+    if (args.action !== "up" && args.action !== "cancel") return;
+    const pending = this.ringPadDoubleTapPending;
+    this.ringPadDoubleTapPending = false;
+    if (args.action === "up" && pending) {
+      await dashboardController.injectSyntheticRingInput("double-click");
+    }
   }
 
   /** The ring pad only has a vertical axis, so left/right swipes are ignored. */
@@ -878,6 +898,9 @@ export class MainViewModel extends Observable {
   // above stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
+  // See the ring pad above: defers the double-click so a longPress can turn
+  // the pair into tap-then-hold.
+  private padDoubleTapPending = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
@@ -895,12 +918,13 @@ export class MainViewModel extends Observable {
   }
 
   async onPadDoubleTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click", "watch");
-    this.refreshPadFocusLine();
+    this.padDoubleTapPending = true;
   }
 
   async onPadLongPress(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.padDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind, "watch");
     this.refreshPadFocusLine();
   }
 
@@ -917,6 +941,8 @@ export class MainViewModel extends Observable {
       return;
     }
     if (args.action === "up" || args.action === "cancel") {
+      const pendingDouble = this.padDoubleTapPending;
+      this.padDoubleTapPending = false;
       const twoFinger = this.padTwoFingerDown;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.
@@ -927,6 +953,9 @@ export class MainViewModel extends Observable {
           await dashboardController.injectSyntheticRingInput("double-click", "watch");
           this.refreshPadFocusLine();
         }
+      } else if (args.action === "up" && pendingDouble) {
+        await dashboardController.injectSyntheticRingInput("double-click", "watch");
+        this.refreshPadFocusLine();
       }
     }
   }

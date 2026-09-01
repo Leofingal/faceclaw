@@ -4,7 +4,7 @@
   scheme as the watch pad - tap = select, double-tap or two fingers = back,
   hold = menu, swipes navigate), and Ring (a touchpad on the ring's own
   scheme: vertical swipes scroll, tap/double-tap/hold = click/double-click/
-  long-press). The narrow mic button at the tab bar's right edge fires the
+  long-press). Tap-then-hold on either pad is the G2 system-menu gesture. The narrow mic button at the tab bar's right edge fires the
   wakeword without changing the selected tab. Used by main-page.xml in both
   orientations; binds to the page's MainViewModel, which collapses the whole
   area while a text setting is being edited (keyboard-input mode).
@@ -63,7 +63,8 @@
       rows="*,auto,*,auto,*,auto,*,auto,*,auto,*,auto,*"
       horizontalAlignment="center" verticalAlignment="center"
       tap="{{ onRingPadTap }}" doubleTap="{{ onRingPadDoubleTap }}"
-      longPress="{{ onRingPadLongPress }}" swipe="{{ onRingPadSwipe }}">
+      longPress="{{ onRingPadLongPress }}" swipe="{{ onRingPadSwipe }}"
+      touch="{{ onRingPadTouch }}">
     <Label row="1" class="ring-pad-marking" isUserInteractionEnabled="false" />
     <Label row="3" class="ring-pad-marking" isUserInteractionEnabled="false" />
     <Label row="5" class="ring-pad-marking" isUserInteractionEnabled="false" />
