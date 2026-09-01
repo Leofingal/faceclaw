@@ -1001,14 +1001,26 @@ export class GhostLayer implements Layer {
     const grew =
       next.length > 0 &&
       (this.items.length === 0 || next[next.length - 1]!.uuid !== this.items[this.items.length - 1]?.uuid);
-    // Captured BEFORE the swap: micIndex() is derived from items.length.
+    // Captured BEFORE the swap: micIndex() is derived from items.length, and
+    // a wake below needs to tell a genuine arrival from a boot-time restore
+    // (an empty->populated jump for a window persisted open across a
+    // restart, where nothing is actually new).
     const parkedOnMic = this.onMic();
+    const hadItemsBefore = this.items.length > 0;
     this.items = next;
     if (!this.items.length) {
       this.status = "Ghost — no answers yet";
       this.requestRender();
       return;
     }
+
+    // Wake the glasses on any genuine new arrival, Chris's own request
+    // (2026-09-01): the display should turn on for a new message in either
+    // direction — his own or Ghost's — not just for the cases the speak
+    // logic below cares about (Ghost's turns only, never on mic, never
+    // Chris's own words read back). Runs regardless of follow/approval/mic
+    // state; shell.wake() is a no-op if the screen is already on.
+    if (grew && hadItemsBefore) shell.wake("window");
 
     if (this.inApproval) {
       // The prompt is modal; an arriving reply must not move the cursor under
