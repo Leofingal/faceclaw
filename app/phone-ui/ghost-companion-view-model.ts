@@ -112,20 +112,35 @@ export class GhostCompanionViewModel extends Observable {
     return PANES[this._paneIndex] ?? "rich";
   }
 
+  /**
+   * NOT BOUND BY ghost-companion.xml ANY MORE, and deliberately kept.
+   *
+   * Round 2 removed this companion's own header entirely: the one row of
+   * chrome now comes from phone-ui/exocortex-header.xml and is shared with
+   * every other app's companion view. The pane name was already redundant
+   * with the highlighted tab directly below it, which is why round 1 had
+   * already shrunk it to 14pt before Chris asked for the row itself to go.
+   *
+   * These two stay as public members because they are a correct, cheap
+   * description of the pane's state that a later pass (a per-pane subtitle,
+   * an accessibility label, a narrower phone layout) would otherwise have to
+   * rewrite from scratch. They cost nothing while nothing binds them.
+   */
   get paneName(): string {
     return PANE_NAMES[this.paneId];
   }
 
-  /**
-   * Collapses the status row when there is nothing to say, so the header
-   * costs one line instead of two. Part of the header/content rebalance —
-   * Chris's "the companion should show MORE than fits on the glasses".
-   */
+  /** See paneName: kept, not currently bound. */
   get paneStatusVisibility(): "visible" | "collapse" {
     return this.paneStatus ? "visible" : "collapse";
   }
 
-  /** The one line under the title: what this pane is showing, or why it isn't. */
+  /**
+   * What this pane is showing, or why it isn't. Chris named this row's Rich-
+   * view text ("20 in the feed - session id: ...") as one of the two lines to
+   * remove; the same two facts are the Terminal pane's first three lines, so
+   * they are still one tab away rather than gone.
+   */
   get paneStatus(): string {
     if (this._state.status) return this._state.status;
     switch (this.paneId) {

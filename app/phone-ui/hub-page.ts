@@ -77,6 +77,30 @@ function dismissTextEditorKeyboard(page: Page): void {
   page.getViewById<TextField>('secondarySettingsTextField')?.dismissSoftInput()
 }
 
+/**
+ * Hide faceclaw's ActionBar while an app's companion is showing, so
+ * phone-ui/exocortex-header is the only chrome above the app's own content
+ * (see MainViewModel.companionActionBarHidden for why, and for the cost).
+ *
+ * GUARDED BY THE PAGE, not just by the model. Both pages here bind the same
+ * MainViewModel, and `companionActionBarHidden` is true whenever Ghost is
+ * foreground ON THE GLASSES — which can perfectly well be the case while the
+ * wearer is looking at the glasses-mirror page. Only the page that actually
+ * contains the companion body may act on it; the mirror page keeps its bar.
+ * `companionChrome` is main-page.xml's companion wrapper, and getViewById
+ * finds it whether or not it is currently collapsed.
+ *
+ * Always assigns, never toggles: the value is derived from which body is
+ * showing, so there is no way for a missed event to strand the hub without
+ * its ActionBar.
+ */
+function syncCompanionActionBar(page: Page, model: MainViewModel): void {
+  if (!page.getViewById('companionChrome')) {
+    return
+  }
+  page.actionBarHidden = model.companionActionBarHidden
+}
+
 function focusTextEditor(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
@@ -137,12 +161,20 @@ export function hubPageLoaded(args: EventData) {
           dismissTextEditorKeyboard(page)
         }
       }
+      // The body swap is driven by the glasses (which app is foreground), not
+      // by a navigation, so the ActionBar has to follow it from here.
+      if (propertyArgs.propertyName === 'companionActionBarHidden') {
+        syncCompanionActionBar(page, model)
+      }
     },
   }
 
   model.on(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.on(Application.orientationChangedEvent, state.orientationHandler)
   setPageState(page, state)
+  // The fold/foreground state is already settled by the time we get here, so
+  // set the bar to match rather than waiting for the next change event.
+  syncCompanionActionBar(page, model)
   if (model.isTextSettingEditorActive) {
     focusTextEditor(page)
   }

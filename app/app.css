@@ -826,40 +826,56 @@ Button.permissions-primary-dimmed {
   background-color: #ffffff;
 }
 
-.ghost-header {
-  padding: 6 16 6 16;
+/* The one header row every companion view shares — phone-ui/exocortex-header
+ * .xml. One line, and it replaces BOTH the app-switch bar and the per-app
+ * wordmark/status header that used to stack above the content. */
+.exocortex-header {
+  padding: 5 14;
+  background-color: #f4f4f4;
   border-bottom-width: 1;
   border-bottom-color: #dddddd;
 }
 
-.ghost-wordmark {
+/* The tap target back to the hub, so it is coloured like the link it is. */
+.exocortex-header-home {
   font-family: monospace;
-  font-size: 11;
-  letter-spacing: 0.16;
+  font-size: 12;
+  letter-spacing: 0.12;
   color: #3b6fd6;
 }
 
-/* Small, beside the wordmark: the highlighted tab immediately below already
- * says which pane this is, so a 20pt second copy of it was pure header. */
-.ghost-pane-title {
-  font-size: 14;
-  font-weight: bold;
-  color: #222222;
-  margin-left: 10;
+.exocortex-header-sep {
+  font-size: 12;
+  color: #aaaaaa;
+  margin-left: 6;
+  margin-right: 6;
 }
 
-.ghost-pane-status {
+/* The star column: the app name takes the slack and truncates before it
+ * pushes the connection status off the row. */
+.exocortex-header-app {
+  font-size: 13;
+  font-weight: bold;
+  color: #222222;
+}
+
+.exocortex-header-status {
   font-size: 12;
   color: #666666;
 }
 
 .ghost-tab-bar {
-  padding: 2 8 4 8;
+  padding: 2 8 3 8;
 }
 
+/* SHORTER, still four real buttons (Chris, round 2: "shrink the four pane-nav
+ * buttons - still functional, just shorter"). An Android Button carries a
+ * 48dp minimum height from the platform theme, so the explicit height is what
+ * actually shrinks it; padding alone would not. */
 .ghost-tab {
-  font-size: 13;
-  padding: 8 0;
+  font-size: 12;
+  height: 30;
+  padding: 3 0;
   margin: 0 2;
   border-radius: 6;
   background-color: #e2e2e2;
@@ -1014,47 +1030,24 @@ Button.permissions-primary-dimmed {
   margin-top: 4;
 }
 
-/* The bar above the companion: the only way back to the hub that changes
- * nothing on the glasses. */
-.app-switch-bar {
-  padding: 4 12;
-  background-color: #f4f4f4;
-  border-bottom-width: 1;
-  border-bottom-color: #dddddd;
-}
-
-.app-switch-label {
-  font-size: 12;
-  color: #666666;
-}
-
-.app-switch-button {
-  font-size: 13;
-  padding: 6 14;
-  border-radius: 6;
-  background-color: #e2e2e2;
-  color: #333333;
-}
-
 .ns-dark .ghost-app {
   background-color: #1c1c1c;
 }
 
-.ns-dark .ghost-header,
+.ns-dark .exocortex-header,
 .ns-dark .ghost-doc-bar,
-.ns-dark .ghost-compose,
-.ns-dark .app-switch-bar {
+.ns-dark .ghost-compose {
   border-bottom-color: #4a4a4a;
   border-top-color: #4a4a4a;
 }
 
+.ns-dark .exocortex-header,
 .ns-dark .ghost-doc-bar,
-.ns-dark .ghost-compose,
-.ns-dark .app-switch-bar {
+.ns-dark .ghost-compose {
   background-color: #2e2e2e;
 }
 
-.ns-dark .ghost-pane-title,
+.ns-dark .exocortex-header-app,
 .ns-dark .ghost-turn-headline,
 .ns-dark .ghost-terminal,
 .ns-dark .ghost-doc-body,
@@ -1062,20 +1055,23 @@ Button.permissions-primary-dimmed {
   color: #f0f0f0;
 }
 
-.ns-dark .ghost-pane-status,
+.ns-dark .exocortex-header-status,
 .ns-dark .ghost-empty,
 .ns-dark .ghost-turn-who,
 .ns-dark .ghost-doc-path,
-.ns-dark .ghost-setting-desc,
-.ns-dark .app-switch-label {
+.ns-dark .ghost-setting-desc {
   color: #a0a0a0;
+}
+
+.ns-dark .exocortex-header-sep {
+  color: #6a6a6a;
 }
 
 .ns-dark .ghost-turn-body {
   color: #cfcfcf;
 }
 
-.ns-dark .ghost-wordmark {
+.ns-dark .exocortex-header-home {
   color: #8ab0ff;
 }
 
@@ -1103,11 +1099,6 @@ Button.permissions-primary-dimmed {
 .ns-dark .ghost-tab-active {
   background-color: #8ab0ff;
   color: #101010;
-}
-
-.ns-dark .app-switch-button {
-  background-color: #3a3a3a;
-  color: #e0e0e0;
 }
 
 .ns-dark .ghost-compose-status {

@@ -52,16 +52,30 @@
         <!-- Fold SHUT: the cover screen gets a glance, not the app. -->
         <ui:cover-glance visibility="{{ coverGlanceVisibility }}" />
 
-        <!-- Fold OPEN and Ghost is the foreground app ON THE GLASSES: the
-             phone becomes Ghost's companion. The bar above it is the only way
-             back to the hub without changing anything on the glasses; the
-             companion itself is bound to its own view model. -->
-        <GridLayout rows="auto,*" visibility="{{ ghostCompanionVisibility }}">
-            <GridLayout row="0" rows="auto" columns="*,auto" class="app-switch-bar">
-                <Label col="0" text="Ghost is open on the glasses" class="app-switch-label" verticalAlignment="center" />
-                <Button col="1" text="Hub" tap="{{ onShowHubTap }}" class="app-switch-button" />
+        <!-- Fold OPEN and an app with a companion is foreground ON THE
+             GLASSES: the phone becomes that app's second view.
+
+             ONE HEADER, THEN THE APP'S OWN BODY. exocortex-header is the
+             single row of chrome every companion view shares (Exocortex —
+             app — connection, with "Exocortex" the way back to the hub); it
+             replaced the app-switch bar AND the companion's own two-row
+             wordmark/status header, per Chris's 80-85%-content target.
+
+             The inner cell is where per-app companions go. Ghost is the only
+             one built, so today its visibility is the outer one — but the
+             seam is here rather than in a future refactor, and the header
+             above it is already app-agnostic. The generalized "which view
+             per app" mechanism is still its own queued design job; this is
+             only the frame it will hang in.
+
+             The header binds to MainViewModel (inherited); each companion
+             body overrides bindingContext with its own view model. -->
+        <GridLayout id="companionChrome" rows="auto,*" visibility="{{ companionBodyVisibility }}">
+            <ui:exocortex-header row="0" />
+            <GridLayout row="1">
+                <ui:ghost-companion visibility="{{ ghostCompanionVisibility }}"
+                    bindingContext="{{ ghostCompanion }}" />
             </GridLayout>
-            <ui:ghost-companion row="1" bindingContext="{{ ghostCompanion }}" />
         </GridLayout>
 
         <ScrollView visibility="{{ hubBodyVisibility }}">

@@ -71,6 +71,25 @@ export type HomeConversationRow = {
 let lastControlsTab: ControlsTab = "watch";
 
 /**
+ * ONE-LINE REVERSAL for the ActionBar half of the header rebalance.
+ *
+ * True: while an app's companion is on screen, faceclaw's ActionBar is hidden
+ * and phone-ui/exocortex-header is the only chrome above the app's content —
+ * which is what makes Chris's 80-85%-content target reachable, since the bar
+ * costs ~56dp to repeat the connection status the new header already carries.
+ *
+ * False: the ActionBar stays everywhere and the header row sits under it. The
+ * companion loses roughly a header's worth of content height and shows the
+ * connection twice, but every overflow item stays reachable without going via
+ * the hub first. Nothing else in the app reads this.
+ *
+ * Documented in place, in the same style as the app-switcher removal's own
+ * APP_SWITCHER_REMOVED, because it is a taste call made without ever seeing
+ * the screen render.
+ */
+const HIDE_ACTION_BAR_ON_COMPANION = true;
+
+/**
  * Backs both pages that sit at the top of the app: the home hub (main-page)
  * and the glasses mirror (glasses-mirror-page). They share one model because
  * they share one job — holding the live connection state, the app-level
@@ -373,6 +392,8 @@ export class MainViewModel extends Observable {
   private notifyBodyChange(): void {
     this.notifyPropertyChange("coverGlanceVisibility", this.coverGlanceVisibility);
     this.notifyPropertyChange("ghostCompanionVisibility", this.ghostCompanionVisibility);
+    this.notifyPropertyChange("companionBodyVisibility", this.companionBodyVisibility);
+    this.notifyPropertyChange("companionActionBarHidden", this.companionActionBarHidden);
     this.notifyPropertyChange("hubBodyVisibility", this.hubBodyVisibility);
     this.notifyPropertyChange("ghostReturnRowVisibility", this.ghostReturnRowVisibility);
     this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
@@ -390,6 +411,44 @@ export class MainViewModel extends Observable {
     return this._displayClass === "expanded" && this.isGhostForeground && !this._hubOverride
       ? "visible"
       : "collapse";
+  }
+
+  /**
+   * Whether the page is showing SOME app's companion — the cell the shared
+   * exocortex-header sits above.
+   *
+   * Ghost is the only app with a companion view today, so this is currently
+   * just its visibility. It exists as its own member anyway because the header
+   * is deliberately not Ghost's: when the generalized per-app companion
+   * mechanism lands, this becomes the OR across the per-app bodies and nothing
+   * about the header or the page structure has to change.
+   */
+  get companionBodyVisibility(): "visible" | "collapse" {
+    return this.ghostCompanionVisibility;
+  }
+
+  /**
+   * Hide faceclaw's ActionBar while a companion is up.
+   *
+   * Chris asked for connection status IN the new unified header row. The
+   * ActionBar was already showing it beside the word "Faceclaw" — so leaving
+   * both would have printed the same fact twice and spent ~56dp doing it,
+   * which is the opposite of the 80-85%-content target the header exists to
+   * hit. It is also the most visible remaining piece of the "still feeling
+   * like a 3/4 faceclaw 1/4 exocortex" complaint.
+   *
+   * WHAT THIS COSTS: the ActionBar's overflow menu (Pair glasses,
+   * Permissions, Conversations, Settings, Glasses mirror, screenshot, record,
+   * uninstall firmware) is not reachable while the companion is showing. It
+   * is one tap away — "Exocortex" in the header returns to the hub, where the
+   * ActionBar is back — and the hub's own rows already cover the same ground.
+   *
+   * Strictly derived from the body choice and re-notified on every body
+   * change, so there is no path where it stays true while the hub is showing.
+   * Set HIDE_ACTION_BAR_ON_COMPANION to false to put the bar back everywhere.
+   */
+  get companionActionBarHidden(): boolean {
+    return HIDE_ACTION_BAR_ON_COMPANION && this.companionBodyVisibility === "visible";
   }
 
   get hubBodyVisibility(): "visible" | "collapse" {
