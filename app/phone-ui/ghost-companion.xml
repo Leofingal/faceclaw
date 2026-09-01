@@ -13,29 +13,26 @@
   main-page.xml), not to MainViewModel: everything on this screen belongs to
   one app's session, and the hub's own members have no business here.
 -->
-<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,auto,*,auto" class="ghost-app">
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,*,auto" class="ghost-app">
 
   <!--
-    HEADER: ONE LINE, NOT THREE. Chris, using the real build 2026-08-31:
-    "3/4 header, 1/4 content — useless", and the principle behind it: the
-    companion should show MORE than fits on the glasses, not less. It was a
-    stacked wordmark + 20pt pane title + wrapping status line, and the tab bar
-    below it, and a fixed 88dp compose box under that — before a single line
-    of the session showed.
+    NO HEADER OF ITS OWN ANY MORE. Round 1 cut this from three stacked rows to
+    a wordmark row plus a collapsing status row; Chris, looking at that build,
+    still wanted the whole treatment gone, named the two rows specifically
+    ("Ghost is open on the glasses", and "Rich view / 20 in the feed - session
+    id: ...") and put a number on what should be left: 80-85% content.
 
-    Now: the wordmark and the pane name share one row, and the status text
-    only takes space when there IS something to say (the view model returns ""
-    when there is not, and this collapses on it). The pane name is also
-    redundant with the highlighted tab directly below, so it is set small.
+    Both rows now live — as one row, shared with every other companion view —
+    in phone-ui/exocortex-header.xml, which main-page.xml puts above this
+    component. Nothing was moved into this file, deliberately: a header that
+    is per-app is a header every future companion has to reinvent.
+
+    Nothing is actually lost with the status row. The pane name was already
+    redundant with the highlighted tab immediately below it, and the feed
+    count and session id are exactly what the Terminal pane's first three
+    lines print — a pane that now renders, which it did not before (see below).
   -->
-  <GridLayout row="0" rows="auto,auto" columns="auto,*" class="ghost-header">
-    <Label row="0" col="0" text="GHOST" class="ghost-wordmark" verticalAlignment="center" />
-    <Label row="0" col="1" text="{{ paneName }}" class="ghost-pane-title" verticalAlignment="center" />
-    <Label row="1" col="0" colSpan="2" text="{{ paneStatus }}" visibility="{{ paneStatusVisibility }}"
-      class="ghost-pane-status" textWrap="true" />
-  </GridLayout>
-
-  <GridLayout row="1" rows="auto" columns="*,*,*,*" class="ghost-tab-bar">
+  <GridLayout row="0" rows="auto" columns="*,*,*,*" class="ghost-tab-bar">
     <Button col="0" text="Terminal" tap="{{ onTerminalTabTap }}" class="{{ terminalTabClass }}" />
     <Button col="1" text="Rich" tap="{{ onRichTabTap }}" class="{{ richTabClass }}" />
     <Button col="2" text="Doc" tap="{{ onDocTabTap }}" class="{{ docTabClass }}" />
@@ -44,7 +41,7 @@
 
   <!-- The four panes share the star row; only one is visible at a time, so the
        compose bar below keeps the same position however deep a pane scrolls. -->
-  <GridLayout row="2" swipe="{{ onPaneSwipe }}">
+  <GridLayout row="1" swipe="{{ onPaneSwipe }}">
 
     <!-- Rich view: the feed the lens is paging through, its cursor marked.
          Tapping a row opens that turn in the Doc viewer. -->
@@ -68,12 +65,31 @@
       </StackLayout>
     </ScrollView>
 
-    <!-- Terminal: the same feed undigested. Not a live PTY — see the view
-         model's header for why the glasses client has no such stream. -->
+    <!--
+      Terminal: the same feed undigested. Not a live PTY — see the view
+      model's header for why the glasses client has no such stream.
+
+      textWrap IS LOAD-BEARING HERE, NOT COSMETIC. Chris, on the shipped
+      build: "Terminal view seems not to exist at all (just says host ... in a
+      single row)". That is not the undigested feed reading as sparse — it is
+      this Label printing line 1 of terminalText and dropping the rest.
+      NativeScript's Android Label calls setSingleLine(true) in
+      initNativeView(); `textWrap="true"` (whiteSpace: normal) is the only
+      thing that undoes it. Every other multi-line Label in this file already
+      set it; this one did not, so a multi-line string rendered as one
+      ellipsized row — and terminalText's first line is literally
+      `host    <address>`, which is exactly the symptom reported.
+
+      The horizontal ScrollView that used to wrap this Label is gone too. It
+      could not have helped (a single-line Label has nothing to scroll to) and
+      it cost something real: dynamic-companion-return.md flagged it as the
+      reason pane-to-pane SWIPE did not work on the Terminal pane, because a
+      horizontal ScrollView eats horizontal drags. Wrapping long lines instead
+      of scrolling them costs the monospace column alignment on the few lines
+      wide enough to wrap, and shows everything rather than nothing.
+    -->
     <ScrollView visibility="{{ terminalPaneVisibility }}" orientation="vertical">
-      <ScrollView orientation="horizontal">
-        <Label text="{{ terminalText }}" class="ghost-terminal" />
-      </ScrollView>
+      <Label text="{{ terminalText }}" textWrap="true" class="ghost-terminal" />
     </ScrollView>
 
     <!-- Doc viewer: one turn's full text, pinned or following the lens. -->
@@ -134,7 +150,7 @@
 
   <!-- The compose box: the one thing this screen does that the lens cannot,
        which is why it is docked rather than reached for. -->
-  <GridLayout row="3" rows="auto,auto" columns="*,auto" class="ghost-compose" visibility="{{ composeVisibility }}">
+  <GridLayout row="2" rows="auto,auto" columns="*,auto" class="ghost-compose" visibility="{{ composeVisibility }}">
     <!-- One line tall at rest, growing with what is typed (see .ghost-compose-
          input in app.css). A fixed 88dp box spent a tenth of the screen on
          emptiness on every pane. -->

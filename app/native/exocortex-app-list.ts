@@ -46,13 +46,13 @@ export const EXOCORTEX_APP_ORDER_KEY = "exocortex.appList.order";
  * Golf, Health Summary) onto what actually exists in this build, rather than
  * onto the names:
  *
+ *   exocortex     the home screen itself, listed as of round 2 so there is a
+ *                 named way to get back to its bare notification view. See
+ *                 the swap note below.
  *   ghost         Ghost — the real app, already on hardware.
  *   microphones   Subtitles AND Translation AND the voice signature: one
  *                 AppDefinition covering all three (captions-layer.ts,
  *                 translate.ts, speakers.ts).
- *   notifications the full notification list. The home screen is
- *                 notification-first, so this is core to it, not a stock
- *                 extra.
  *   settings      the only way to change anything from the glasses alone.
  *   weather       the one stock app Chris explicitly asked to KEEP
  *                 ("better form than the one in Even's stock app").
@@ -61,13 +61,34 @@ export const EXOCORTEX_APP_ORDER_KEY = "exocortex.appList.order";
  * EvenHub package, and EvenHub packages default to visible below because
  * installing one is already a deliberate act.
  *
+ * ROUND 2 SWAPPED `notifications` FOR `exocortex`, AND THAT SWAP IS BUILT ON
+ * AN UNCONFIRMED READING OF WHAT CHRIS MEANT. His words: "I think Exocortex
+ * is basically just 'notifications' — so we can hide the notification option
+ * in the menu and maybe have exocortex as one of the apps." The reading: the
+ * standalone Notifications entry duplicates what Exocortex's own home screen
+ * already shows at rest, while Exocortex itself had no entry at all.
+ *
+ * What is actually lost is narrower than "notifications": the LIST view
+ * (ui/notifications.ts's NotificationsListLayer, several notifications on one
+ * screen). The home screen shows one at a time and scrolls through all of
+ * them, click still opens the same detail card with its quick actions, and
+ * long-press still clears the tray. Nothing about the popup, the ignore list
+ * or the top-bar icons touches this.
+ *
+ * And nothing here uninstalls anything. Hiding means OUT OF THE PRIMARY LIST
+ * AND NOTHING ELSE (see the header) — the Notifications app stays registered
+ * and launchable from the phone's app screen, the assistant and the watch,
+ * and one switch on that screen puts it back in the glasses list. That is why
+ * this was safe to build on a reading rather than a confirmation: the cost of
+ * being wrong is one toggle, not a rebuild.
+ *
  * EDIT THIS LIST to change what a fresh install shows; per-app overrides made
  * on the phone win over it either way.
  */
 export const CURATED_APP_IDS: readonly string[] = [
+  "exocortex",
   "ghost",
   "microphones",
-  "notifications",
   "settings",
   "weather",
 ];

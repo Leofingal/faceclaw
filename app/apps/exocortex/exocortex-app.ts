@@ -97,6 +97,32 @@ class ExocortexHomeLayer implements Layer {
   constructor(private readonly options: ExocortexOptions) {}
 
   /**
+   * Put the home screen back to its RESTING state: the newest notification if
+   * there is one, the blank screen if there is not, and the app run scrolled
+   * back to the top either way.
+   *
+   * This is the "bare Exocortex" Chris asked for a way to reach. Backing out
+   * of an app lands on this window but does NOT land on this view — normalize()
+   * deliberately leaves a cursor parked in the app run alone, so that an
+   * arriving notification never yanks the reader out of the app list. The
+   * consequence nobody had noticed: once you have scrolled down into the app
+   * list even once, every subsequent return to home puts you back in the app
+   * list, and the notification view the home screen is built around becomes
+   * unreachable for the rest of the session. There was no gesture anywhere
+   * that reset it.
+   *
+   * Called from the app's own `launch` (apps/exocortex/index.ts), which is now
+   * reachable as a real, listed entry — so "open Exocortex", from the glasses
+   * list, the phone's app screen, the assistant or the watch, all mean this.
+   */
+  resetToRestingView(): void {
+    this.zone = "blank";
+    this.selectedKey = "";
+    this.appIndex = 0;
+    this.scrollRow = 0;
+  }
+
+  /**
    * Active notifications, newest first. The home screen's premise is "the
    * most recent notification, then older ones", so the ordering is part of
    * the design rather than incidental — the stock Notifications app takes the
@@ -395,6 +421,24 @@ class ExocortexHomeLayer implements Layer {
   }
 }
 
+/**
+ * The one home layer, held so `launch` can put it back to its resting view.
+ *
+ * A module singleton is honest here rather than lazy: the home window is
+ * registered exactly once, from boot, and is uncloseable — there is no second
+ * instance for this to be ambiguous between, which is the same reason the
+ * window itself can be looked up by a fixed id. Null only before boot has run.
+ */
+let homeLayer: ExocortexHomeLayer | null = null;
+
+/**
+ * Reset the home screen to its resting notification view. A no-op before boot
+ * registers the window, so callers do not have to know about boot ordering.
+ */
+export function resetExocortexHomeView(): void {
+  homeLayer?.resetToRestingView();
+}
+
 /** Icon for a paint pass: allow-stale, reporting staleness to the render loop. */
 function iconForNotification(key: string): GrayImage | null {
   const { icon, stale } = readNotificationIconByKey(key, renderPassAllowsStaleData());
@@ -439,6 +483,8 @@ function notificationBody(notification: AndroidNotification): string {
  * it closes, so losing it would leave the glasses with nothing to show.
  */
 export function createExocortexWindow(options: ExocortexOptions): ShellWindow {
+  const layer = new ExocortexHomeLayer(options);
+  homeLayer = layer;
   const created = createInProcessWindow({
     appId: "exocortex",
     windowId: EXOCORTEX_WINDOW_ID,
@@ -452,7 +498,7 @@ export function createExocortexWindow(options: ExocortexOptions): ShellWindow {
     // survives the home screen changing hands.
     isHomeScreen: true,
     actions: options.actions,
-    baseLayer: new YieldAtRootLayer(new ExocortexHomeLayer(options)),
+    baseLayer: new YieldAtRootLayer(layer),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
   });

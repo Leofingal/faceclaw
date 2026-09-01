@@ -1,0 +1,59 @@
+<!--
+  THE ONE HEADER EVERY COMPANION VIEW USES.
+
+    Exocortex — <the app open on the glasses> — <connection>
+
+  Chris, using the real build (2026-08-31), gave this a number: 80-85% of the
+  companion screen should be the app's own content. What he was actually
+  looking at was five stacked bands of chrome before a single line of session
+  showed —
+
+    1  faceclaw's ActionBar          "Faceclaw            Connected"
+    2  the app-switch bar            "Ghost is open on the glasses   [Hub]"
+    3  the companion's wordmark row  "GHOST      Rich view"
+    4  the companion's status row    "20 in the feed - session ghost-..."
+    5  the pane tab bar              [Terminal][Rich][Doc][Settings]
+
+  Bands 2, 3 and 4 collapse into this single row, and band 1 is hidden while a
+  companion is showing (see MainViewModel.companionActionBarHidden — the
+  connection status Chris asked for in THIS row is the same status the
+  ActionBar was already carrying, so keeping both would have added chrome
+  while claiming to remove it). Band 5 stays; it is navigation, and it was
+  shrunk rather than dropped.
+
+  DELIBERATELY NOT GHOST-SPECIFIC. Nothing here names Ghost: the app segment
+  is whatever the glasses report as foreground. This is the chrome half of the
+  generalized per-app companion mechanism that is still queued as its own
+  design job — that one decides WHICH view shows per app, this one is the
+  frame all of those views sit in. A new per-app companion added later inherits
+  this header by being dropped into main-page.xml's companion body; it does not
+  have to build, or re-litigate, a header of its own.
+
+  Binds to MainViewModel, inherited from the page — NOT to the per-app view
+  model underneath it. Everything in this row is about the app/phone/glasses
+  relationship, which no single app's companion owns.
+
+  "Exocortex" is the tap target back to the hub, which is what replaced the
+  app-switch bar's [Hub] button. The status segment keeps the ActionBar's own
+  tap-for-the-full-string behaviour, so hiding the ActionBar loses nothing.
+-->
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd"
+  rows="auto" columns="auto,auto,*,auto,auto" class="exocortex-header">
+
+  <Label col="0" text="Exocortex" tap="{{ onShowHubTap }}"
+    class="exocortex-header-home" verticalAlignment="center" />
+
+  <Label col="1" text="&#x2014;" class="exocortex-header-sep" verticalAlignment="center" />
+
+  <!-- Whatever is foreground ON THE GLASSES. "Home" when that is the
+       Exocortex home screen itself, which is what glassesForegroundLabel
+       already reports for the cover glance. -->
+  <Label col="2" text="{{ glassesForegroundLabel }}"
+    class="exocortex-header-app" verticalAlignment="center" />
+
+  <Label col="3" text="&#x2014;" class="exocortex-header-sep" verticalAlignment="center" />
+
+  <Label col="4" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}"
+    class="exocortex-header-status" verticalAlignment="center" />
+
+</GridLayout>
