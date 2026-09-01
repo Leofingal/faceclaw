@@ -19,9 +19,11 @@ import {
   displayModeSetting,
   mirrorTouchSetting,
   onAnySettingChanged,
+  showBleBandwidthSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
+import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -111,7 +113,12 @@ export class MainViewModel extends Observable {
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
-    this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+    this.unsubscribers.push(onAnySettingChanged(() => {
+      this.refreshDisplayControls();
+      this.syncBleBandwidthPolling();
+    }));
+    this.syncBleBandwidthPolling();
+    this.unsubscribers.push(() => this.stopBleBandwidthPolling());
   }
 
   /** Detach from the controller and settings; the page calls this when it lets go of the model. */
@@ -1128,6 +1135,72 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
+  // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
+  //
+  // A running total of outbound BLE messages/bytes, overlaid at the bottom of
+  // the page on every tab. Polled from the Java-side counters while enabled.
+
+  private _bleBandwidthLabel = "";
+  private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;
+  // Recent counter samples, one per poll tick, for the windowed rates.
+  private bleRateHistory: Array<{ atMs: number; bytes: number; frames: number }> = [];
+
+  get bleBandwidthVisibility(): "visible" | "collapse" {
+    return showBleBandwidthSetting.get() ? "visible" : "collapse";
+  }
+
+  get bleBandwidthLabel(): string {
+    return this._bleBandwidthLabel;
+  }
+
+  /** Start or stop the poll to match the setting; safe to call repeatedly. */
+  private syncBleBandwidthPolling(): void {
+    const enabled = showBleBandwidthSetting.get();
+    if (enabled && this.bleBandwidthTimer === null) {
+      this.refreshBleBandwidth();
+      this.bleBandwidthTimer = setInterval(() => this.refreshBleBandwidth(), 1000);
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    } else if (!enabled && this.bleBandwidthTimer !== null) {
+      this.stopBleBandwidthPolling();
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    }
+  }
+
+  private stopBleBandwidthPolling(): void {
+    if (this.bleBandwidthTimer !== null) {
+      clearInterval(this.bleBandwidthTimer);
+      this.bleBandwidthTimer = null;
+    }
+    // Don't let a later re-enable compute a rate across the disabled gap.
+    this.bleRateHistory = [];
+  }
+
+  private refreshBleBandwidth(): void {
+    let label: string;
+    try {
+      const sample = sampleBleTraffic();
+      const atMs = Date.now();
+      this.bleRateHistory.push({ atMs, bytes: sample.bytes, frames: sample.frames });
+      while (this.bleRateHistory.length > 0 && this.bleRateHistory[0]!.atMs < atMs - BLE_RATE_WINDOW_MS) {
+        this.bleRateHistory.shift();
+      }
+      label = `BLE sent: ${formatCount(sample.messages)} messages, ${formatCount(sample.bytes)} bytes`;
+      const oldest = this.bleRateHistory[0]!;
+      const elapsedSec = (atMs - oldest.atMs) / 1000;
+      if (elapsedSec > 0) {
+        const byteRate = (sample.bytes - oldest.bytes) / elapsedSec;
+        const frameRate = (sample.frames - oldest.frames) / elapsedSec;
+        label += ` · ${formatByteRate(byteRate)}, ${frameRate.toFixed(1)} fps`;
+      }
+    } catch (error) {
+      label = `BLE sent: ${this.formatError(error)}`;
+    }
+    if (label !== this._bleBandwidthLabel) {
+      this._bleBandwidthLabel = label;
+      this.notifyPropertyChange("bleBandwidthLabel", label);
+    }
+  }
+
   private readLayoutOrientation(): LayoutOrientation {
     const applicationOrientation = Application.orientation();
     if (applicationOrientation === "landscape" || applicationOrientation === "portrait") {
@@ -1139,6 +1212,20 @@ export class MainViewModel extends Observable {
   private formatError(error: unknown): string {
     return formatErrorMessage(error, 240);
   }
+}
+
+/** 1234567 -> "1,234,567"; kept exact rather than rounded so growth is visible at a glance. */
+function formatCount(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** How far back the BLE bandwidth indicator's rates look. */
+const BLE_RATE_WINDOW_MS = 5000;
+
+function formatByteRate(bytesPerSec: number): string {
+  if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(2) + " MB/s";
+  if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(1) + " kB/s";
+  return Math.round(bytesPerSec) + " B/s";
 }
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */

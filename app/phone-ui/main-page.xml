@@ -64,6 +64,14 @@
                 </StackLayout>
             </GridLayout>
         </GridLayout>
+        <!-- Developer BLE-bandwidth indicator: overlays the bottom edge of the
+             page in both orientations, on every tab. -->
+        <Label
+            text="{{ bleBandwidthLabel }}"
+            visibility="{{ bleBandwidthVisibility }}"
+            class="ble-bandwidth-indicator"
+            horizontalAlignment="center"
+            verticalAlignment="bottom" />
         <ScrollView
             class="warnings-modal"
             visibility="{{ warningsModalVisibility }}"

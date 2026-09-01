@@ -5,6 +5,7 @@
 * Add support for the short-then-long-press gesture
 * Update EvenHub compatibility layer to include new functions from 0.0.14
 * EvenHub permissions dialog scrolls when it overflows
+* Add "Show BLE bandwidth usage" option to developer settings
 
 ## 0.6.2 - 2026-08-30
 * Preview Only mode works

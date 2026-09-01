@@ -2243,6 +2243,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         long ackedAtMs = SystemClock.elapsedRealtime();
+        FaceclawBleManager.recordDisplayFrameSent();
         BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.remove(message.imageUpdateId);
         if (stats != null && stats.firstWriteStartedAtMs > 0) {
             emitFrameMetrics(stats.paintMs, (int) Math.max(0, ackedAtMs - stats.firstWriteStartedAtMs), stats.tileCount);

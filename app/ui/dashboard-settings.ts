@@ -399,6 +399,15 @@ export const useMicControlSetting = new ConfigSettingBoolean({
     "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
 });
 
+export const showBleBandwidthSetting = new ConfigSettingBoolean({
+  id: "show-ble-bandwidth",
+  label: "Show BLE bandwidth usage",
+  storageKey: "developer.showBleBandwidth",
+  defaultValue: false,
+  description:
+    "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
+});
+
 export type RingConnectionMode = "glasses" | "direct";
 
 export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({

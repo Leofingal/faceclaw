@@ -98,6 +98,13 @@ Button.-primary {
   font-size: 13;
 }
 
+/* Developer BLE-bandwidth totals overlaid on the main page's bottom edge. */
+.ble-bandwidth-indicator {
+  color: #777777;
+  font-size: 12;
+  padding: 2 8;
+}
+
 /*
  * Stands in for the lens preview when showing it would be misleading (silent
  * mode, or a disconnect explained by a flat battery). Sized by the view model

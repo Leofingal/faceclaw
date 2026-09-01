@@ -47,6 +47,7 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
@@ -176,6 +177,7 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
+        toggleSettingMenuItem(showBleBandwidthSetting),
       ],
     },
     {
