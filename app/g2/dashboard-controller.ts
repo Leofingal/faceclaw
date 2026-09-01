@@ -7,7 +7,8 @@ import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
-import { onAndroidNotificationPosted } from "../native/notification-icons";
+import { onAndroidNotificationPosted, readAllActiveNotifications } from "../native/notification-icons";
+import { isNotificationSourceEnabled } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
@@ -1961,6 +1962,21 @@ class DashboardController {
    * Settings item, and open-apps restore all come through here. Apps with an
    * open window focus it instead of opening another.
    */
+  /**
+   * Launch an app from the phone's own app screen.
+   *
+   * This is the guarantee behind the primary-list visibility toggle: an app
+   * taken out of the glasses' list must still be launchable, and this is
+   * where that stays true. It wakes the display first, because launching
+   * something onto a lens that is asleep looks exactly like nothing
+   * happening.
+   */
+  async launchAppFromPhone(appId: string): Promise<void> {
+    shell.wake("window");
+    await this.launchApp(appId);
+    this.requestShellRender();
+  }
+
   private async launchApp(appId: string, params?: AppLaunchParams): Promise<void> {
     const app = ALL_APPS.find((entry) => entry.appId === appId);
     if (app) {
@@ -2142,10 +2158,25 @@ class DashboardController {
       this.requestShellRender();
       return;
     }
+    // The ignore list is enforced HERE first, before anything else happens.
+    // This is the path Chris's complaint is actually about: an ongoing
+    // Tailscale/Tesla notification re-posting itself pops a modal over
+    // whatever he is doing, and from a dark screen it wakes the display to do
+    // it. A muted source must not reach either. The lookup is against the
+    // unfiltered tray because we are resolving a key we were just handed;
+    // an unknown key (already gone by the time we looked) is let through, so
+    // a race can never silently swallow a real notification.
+    const posted = readAllActiveNotifications().find((item) => item.key === notificationKey);
+    if (posted && !isNotificationSourceEnabled(posted.packageName)) {
+      // Still repaint: the top bar's icon row and the home screen's list are
+      // both filtered, so they need to reflect the tray as it now stands.
+      this.requestShellRender();
+      return;
+    }
     // New notifications open a shell modal over the app viewport; if the
     // screen was off, wake for it and go back to sleep when it is closed.
     // Waking while already on would steal focus, so only wake from sleep.
-    const wokeScreen = shell.isScreenOn() ? false : shell.wake("sidebar");
+    const wokeScreen = shell.isScreenOn() ? false : shell.wake("window");
     if (wokeScreen) {
       this.appendLog("android notification woke the screen");
     }

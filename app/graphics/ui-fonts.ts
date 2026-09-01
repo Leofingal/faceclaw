@@ -73,7 +73,8 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
 }
 
 /** Default UI font when the user has never picked one. */
-const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 };
+const DEFAULT_UI_FONT_FILE = "Roboto-Light.ttf";
+const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: DEFAULT_UI_FONT_FILE, size: 14 };
 
 export function getUiFontSelection(): UiFontSelection {
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
@@ -178,6 +179,58 @@ function bitmapForRole(face: BitmapFace, role: "small" | "medium" | "large"): Bd
   if (role === "medium") return getFont("terminus16");
   if (role === "large") return getFont("terminus24");
   return getFont(face === "terminusv" ? "terminusv12" : "terminus12");
+}
+
+/**
+ * TEXT SIZE ON THE GLASSES — Chris, 2026-08-31: "font sizes on the glasses
+ * read smaller than the equivalent text on the phone."
+ *
+ * Root cause, checked rather than assumed: this is not a missed pass. The
+ * glasses' UI font is a real, stored setting (UI_FONT_SELECTION_KEY) whose
+ * default is Roboto-Light at 14, and the "roughly doubled" phone fonts from
+ * session 0142 were CSS in the HTML pilot — a browser mockup with no glasses
+ * counterpart to inherit from. So the two were never linked, and the glasses
+ * side has simply always been at its shipped default.
+ *
+ * The existing fix is buried in the Settings app's font picker. These two
+ * helpers put the same lever on the phone as three named sizes, and the
+ * DEFAULT IS DELIBERATELY UNCHANGED: every on-glasses layout is hand-laid
+ * against the small font's line height, none of it has been seen rendered
+ * from here, and silently growing every row on a device nobody can look at is
+ * how you turn a legibility complaint into a clipping bug.
+ */
+export const UI_FONT_SIZE_PRESETS = [
+  { label: "Small", size: 14 },
+  { label: "Medium", size: 17 },
+  { label: "Large", size: 20 },
+] as const;
+
+/** Current UI text size as one of the preset labels, or an explicit size. */
+export function uiFontSizeLabel(): string {
+  const selection = getUiFontSelection();
+  if (selection.kind === "bitmap") return fontSelectionLabel(selection);
+  const preset = UI_FONT_SIZE_PRESETS.find((entry) => entry.size === selection.size);
+  return preset ? preset.label : String(selection.size);
+}
+
+/**
+ * Set the UI text size, keeping the chosen face. Returns the size actually
+ * applied: a requested size whose line height falls outside the range UI
+ * layouts are guaranteed (SMALL_FONT_MIN/MAX_LINE_HEIGHT) is stepped down
+ * until it fits rather than written through and silently falling back to the
+ * bitmap face at paint time.
+ */
+export function setUiFontSize(requested: number): number {
+  const selection = getUiFontSelection();
+  const file = selection.kind === "ttf" ? selection.file : DEFAULT_UI_FONT_FILE;
+  const path = installedFontPath(file);
+  for (let size = Math.round(requested); size >= 6; size--) {
+    if (uiFontSizeAllowed(path, size)) {
+      setUiFontSelection({ kind: "ttf", file, size });
+      return size;
+    }
+  }
+  return selection.kind === "ttf" ? selection.size : 0;
 }
 
 export function getDefaultSmallFont(): UiFont {

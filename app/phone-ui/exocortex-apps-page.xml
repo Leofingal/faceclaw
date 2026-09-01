@@ -1,0 +1,52 @@
+<!--
+  One list of every app faceclaw exposes — curated Exocortex apps and
+  faceclaw's own stock apps together, confirmed with Chris 2026-08-31.
+
+  Each row does three things: TAP IT to open the app on the glasses (always
+  available, hidden or not — this screen is what makes hiding safe), the
+  SWITCH controls whether it appears in the glasses' primary app list, and
+  ∧ / ∨ move it within that list. Both list controls are shared state with
+  the glasses, so a change here shows on the lens with no syncing step.
+
+  The order is changed with buttons rather than by dragging: a deliberate
+  substitution for the pilot's drag handle, not an oversight — see the view
+  model's header for why, and say so to Chris rather than letting him find it.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="Apps on the glasses" />
+
+    <ScrollView>
+        <StackLayout class="home-body">
+
+            <Label class="home-row-meta" textWrap="true"
+                text="The switch controls whether an app appears in the glasses' app list. It does not uninstall or disable anything — tap any row here to open that app on the glasses, in the list or not." />
+
+            <Label text="{{ status }}" visibility="{{ statusVisibility }}"
+                class="home-row-meta" textWrap="true" />
+
+            <Repeater items="{{ rows }}">
+                <Repeater.itemsLayout>
+                    <StackLayout />
+                </Repeater.itemsLayout>
+                <Repeater.itemTemplate>
+                    <GridLayout columns="auto,*,auto,auto" class="exo-row">
+                        <Switch col="0" checked="{{ visible }}" checkedChange="{{ onCheckedChange }}"
+                            verticalAlignment="center" />
+                        <!-- The tap target is the name block, not the whole
+                             row: a row-level tap would also fire when the
+                             thumb lands on the switch or a move button. -->
+                        <StackLayout col="1" marginLeft="10" tap="{{ onRowTap }}">
+                            <Label text="{{ title }}" class="home-row-title" textWrap="true" />
+                            <Label text="{{ meta }}" class="home-row-meta" textWrap="true" />
+                        </StackLayout>
+                        <Button col="2" text="&#x2227;" tap="{{ onMoveUpTap }}" visibility="{{ upVisibility }}"
+                            class="app-order-button" verticalAlignment="center" />
+                        <Button col="3" text="&#x2228;" tap="{{ onMoveDownTap }}" visibility="{{ downVisibility }}"
+                            class="app-order-button" verticalAlignment="center" />
+                    </GridLayout>
+                </Repeater.itemTemplate>
+            </Repeater>
+
+        </StackLayout>
+    </ScrollView>
+</Page>

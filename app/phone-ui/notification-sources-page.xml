@@ -1,0 +1,40 @@
+<!--
+  The notification ignore list. Chris's top priority from the 2026-08-31 field
+  feedback: Tailscale's and Tesla's ongoing notifications kept resurfacing and
+  eating the field of view, and nothing could stop them.
+
+  A switch off here is enforced in native/notification-sources.ts at every
+  point a notification could reach the lens — the popup, the home screen's
+  run, the Notifications app, and the top bar's icon row.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="Notification sources" />
+
+    <ScrollView>
+        <StackLayout class="home-body">
+
+            <Label text="{{ emptyMessage }}" visibility="{{ emptyVisibility }}"
+                class="conversation-empty" textWrap="true" />
+
+            <Repeater items="{{ rows }}">
+                <Repeater.itemsLayout>
+                    <StackLayout />
+                </Repeater.itemsLayout>
+                <Repeater.itemTemplate>
+                    <GridLayout columns="*,auto" class="exo-row">
+                        <StackLayout col="0">
+                            <Label text="{{ appName }}" class="home-row-title" textWrap="true" />
+                            <Label text="{{ meta }}" class="home-row-meta" textWrap="true" />
+                        </StackLayout>
+                        <Switch col="1" checked="{{ enabled }}" checkedChange="{{ onCheckedChange }}"
+                            verticalAlignment="center" />
+                    </GridLayout>
+                </Repeater.itemTemplate>
+            </Repeater>
+
+            <Label class="home-row-meta" textWrap="true"
+                text="Built up from what actually posts a notification, not a fixed list of installed apps — a new source appears here (on by default) the first time it shows up." />
+
+        </StackLayout>
+    </ScrollView>
+</Page>

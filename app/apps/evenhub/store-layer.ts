@@ -120,7 +120,7 @@ export class EvenHubStoreLayer implements Layer {
       if (event.type === "click" && !this.loading) {
         this.openCredentialEditor(ctx);
       } else if (event.type === "double-click") {
-        shell.yieldFocusToSidebar();
+        shell.backOutToHome();
       }
       return;
     }
@@ -148,7 +148,7 @@ export class EvenHubStoreLayer implements Layer {
         }
         return;
       case "double-click":
-        shell.yieldFocusToSidebar();
+        shell.backOutToHome();
         return;
       default:
         return;

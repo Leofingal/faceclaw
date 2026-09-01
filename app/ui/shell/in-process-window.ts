@@ -140,7 +140,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         label: "Focus app switcher",
         onSelect: (ctx) => {
           ctx.stack.pop();
-          shell.yieldFocusToSidebar();
+          shell.backOutToHome();
         },
       },
       ...(options.menuItems?.() ?? []),
@@ -254,7 +254,7 @@ export class YieldAtRootLayer implements Layer {
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
-      shell.yieldFocusToSidebar();
+      shell.backOutToHome();
       return;
     }
     await this.inner.handleInput(event, ctx);

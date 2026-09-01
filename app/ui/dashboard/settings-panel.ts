@@ -207,7 +207,7 @@ export class SettingsPanelLayer implements Layer {
           return;
         case "double-click":
         case "swipe-left":
-          shell.yieldFocusToSidebar();
+          shell.backOutToHome();
           return;
         default:
           return;

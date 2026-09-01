@@ -23,6 +23,7 @@ import {
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
+import { mutedNotificationSourceCount } from "../native/notification-sources";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -833,6 +834,24 @@ export class MainViewModel extends Observable {
 
   onSpeakersTap(): void {
     Frame.topmost()?.navigate("phone-ui/speakers-page");
+  }
+
+  /**
+   * Exocortex's own settings: brightness/timeout/text size, the notification
+   * ignore list, and which apps the glasses' home screen lists. Separate from
+   * faceclaw's glasses-side Settings app, which is unchanged and still there.
+   */
+  onExocortexSettingsTap(): void {
+    Frame.topmost()?.navigate("phone-ui/exocortex-settings-page");
+  }
+
+  /** Subtitle for the hub's Settings row — names what is actually behind it. */
+  get exocortexSettingsMeta(): string {
+    const muted = mutedNotificationSourceCount();
+    const notifications = muted
+      ? `${muted} notification ${muted === 1 ? "source" : "sources"} muted`
+      : "notification sources";
+    return `Display, glasses, app list — and ${notifications}`;
   }
 
   /**

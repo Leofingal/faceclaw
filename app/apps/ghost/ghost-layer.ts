@@ -310,16 +310,19 @@ export class GhostLayer implements Layer {
   }
 
   private paintFeedItem(image: GrayImage, item: GhostItem, width: number, height: number): void {
-    const isApprovalCard = item.kind === "approval" && !!item.options?.length;
-    const hint = this.expanded
-      ? gestureHints([
-          [GESTURE_CLICK, "full reply"],
-          [GESTURE_DOUBLE_CLICK, "back"],
-        ])
-      : gestureHints([
-          [GESTURE_SCROLL, "page"],
-          [GESTURE_CLICK, isApprovalCard ? "answer" : "expand"],
-        ]);
+    // NO HINT LINE HERE. Chris, 2026-08-31: the caption pinned to the bottom
+    // of this screen "renders as a visible green line low in my field of
+    // view" and does not earn that. It said the same five words on every
+    // item of every session, to someone who has used this app daily for
+    // weeks — the gesture reference is still there on demand (the phone's
+    // Settings > Interface, and the glasses' own reference row), which is
+    // the distinction he drew: an on-demand PAGE yes, a passive caption no.
+    //
+    // The live-decision screens below (approval, dictation) deliberately KEEP
+    // their hints: there the line names the choice being made right now, not
+    // a fact about the app. That split is a judgment call, flagged for Chris
+    // rather than decided silently — removing those too is a one-line change
+    // in each if he wants the bottom band clear on every screen.
     // Chris's own lines are marked with plain ASCII, not a glyph: a structural
     // marker is the one thing that must not become a box on the glass.
     const tag = item.role === "user" ? "You: " : "";
@@ -328,7 +331,6 @@ export class GhostLayer implements Layer {
       metaRight: ghostSpeakSetting.get() ? "voice" : "",
       headline: tag + item.headline,
       body: this.expanded ? item.body : [],
-      hint,
       scroll: this.bodyScroll,
     });
   }
@@ -345,10 +347,7 @@ export class GhostLayer implements Layer {
       meta: "ghost — full reply",
       headline: (item.role === "user" ? "You: " : "") + item.headline,
       body,
-      hint: gestureHints([
-        [GESTURE_SCROLL, "read"],
-        [GESTURE_DOUBLE_CLICK, "back"],
-      ]),
+      // No hint line: this is a reading screen, see paintFeedItem.
       scroll: this.bodyScroll,
     });
   }
@@ -648,7 +647,7 @@ export class GhostLayer implements Layer {
       this.requestRender();
       return;
     }
-    shell.yieldFocusToSidebar();
+    shell.backOutToHome();
   }
 
   /** A mirror touch: treated as a plain select, which is what tapping a card means. */

@@ -232,9 +232,13 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
 export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
 export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
 
+// Widths here are what the app viewport ACTUALLY gets. The sidebar app
+// switcher used to take 64px off the first two (see geometry.ts, where it was
+// removed); the stored values keep their historic names so nobody's setting
+// changes meaning, but the labels say what the wearer will see.
 const DISPLAY_MODE_LABELS: Record<DisplayModeSetting, string> = {
-  "576x288": "Band · 576×288",
-  "576x480": "Tall · 576×480",
+  "576x288": "Band · 640×288",
+  "576x480": "Full height · 640×480",
   "640x480": "Full panel · 640×480",
 };
 
@@ -250,7 +254,7 @@ export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
   values: DISPLAY_MODE_VALUES,
   formatValue: displayModeLabel,
   description:
-    "Band: the stock 576×288 window beside the sidebar. Tall: the sidebar plus full-height windows. Full panel: the whole 640×480 display; the sidebar overlays the app only while you are in it. Open apps reopen in the new size.",
+    "Band: a 288px-tall window at the vertical position you picked, leaving most of your field of view clear. The other two give every window the whole 480px display and are now equivalent (they differed only in whether the app switcher reserved width, and the switcher is gone). Open apps reopen in the new size.",
 });
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({

@@ -362,7 +362,7 @@ class LauncherGridLayer implements Layer {
         } else if (this.currentFolder !== null) {
           this.exitFolder();
         } else {
-          shell.yieldFocusToSidebar();
+          shell.backOutToHome();
         }
         return;
       default:
@@ -387,7 +387,7 @@ class LauncherGridLayer implements Layer {
     }
     const leave = () => {
       this.mode = "row";
-      shell.yieldFocusToSidebar();
+      shell.backOutToHome();
     };
     switch (event.type) {
       case "swipe-up":
