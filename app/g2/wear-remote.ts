@@ -396,8 +396,11 @@ export class WearRemote {
         return;
       }
       case "sidebar":
+        // The watch's "sidebar" button: show the app switcher. Exocortex's
+        // home screen IS the app switcher now, and this is a "take me there"
+        // request, not a back-out, so it must not sleep when already home.
         shell.wake("sidebar");
-        shell.yieldFocusToSidebar();
+        shell.focusHomeScreen();
         this.host.requestShellRender();
         ack(true);
         return;

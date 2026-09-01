@@ -1,0 +1,120 @@
+<!--
+  Exocortex's Settings, on the phone. The design pilot's categorized page
+  (session 0142) against faceclaw's real setting objects — the same objects
+  the glasses' own Settings app edits, so the two surfaces cannot drift.
+
+  Rows are written out rather than generated from a list: a nested Repeater
+  would buy nothing here (the sections are fixed) and every binding on this
+  page can be checked against the view model by name, which matters when
+  NativeScript resolves bindings at runtime and nobody can put this in front
+  of a phone before it ships.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+    <ActionBar title="Settings" />
+
+    <ScrollView>
+        <StackLayout class="home-body">
+
+            <Label text="Glasses" class="home-section-title" />
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onBrightnessTap }}">
+                <StackLayout col="0">
+                    <Label text="Brightness" class="home-row-title" />
+                    <Label text="Auto lets the ambient sensor pick the level." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ brightnessLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onScreenTimeoutTap }}">
+                <StackLayout col="0">
+                    <Label text="Screen timeout" class="home-row-title" />
+                    <Label text="How long the display stays on after the last input." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ screenTimeoutLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onVerticalPositionTap }}">
+                <StackLayout col="0">
+                    <Label text="Vertical position" class="home-row-title" />
+                    <Label text="Where the window sits in your field of view." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ verticalPositionLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row">
+                <StackLayout col="0">
+                    <Label text="Lock screen" class="home-row-title" />
+                    <Label text="Lock the glasses when they come off and the phone is locked." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Switch col="1" checked="{{ lockScreenEnabled }}" checkedChange="{{ onLockScreenChange }}" verticalAlignment="center" />
+            </GridLayout>
+
+            <Label text="Display" class="home-section-title" />
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onDisplayModeTap }}">
+                <StackLayout col="0">
+                    <Label text="Screen size" class="home-row-title" />
+                    <Label text="How much of the 640×480 panel the interface uses." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ displayModeLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onTextSizeTap }}">
+                <StackLayout col="0">
+                    <Label text="Text size" class="home-row-title" />
+                    <Label text="Size of the text drawn on the glasses. Larger fits less on a screen." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ textSizeLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onTimeFormatTap }}">
+                <Label col="0" text="Time format" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="{{ timeFormatLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onBatteryDisplayTap }}">
+                <StackLayout col="0">
+                    <Label text="Battery display" class="home-row-title" />
+                    <Label text="How the top bar shows phone and glasses battery." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ batteryDisplayLabel }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+
+            <Label text="Notifications" class="home-section-title" />
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onNotificationSourcesTap }}">
+                <StackLayout col="0">
+                    <Label text="Notification sources" class="home-row-title" />
+                    <Label text="Choose which apps can reach the glasses." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ notificationSourcesSummary }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+
+            <Label text="Apps" class="home-section-title" />
+            <GridLayout columns="*,auto" class="exo-row" tap="{{ onAppListTap }}">
+                <StackLayout col="0">
+                    <Label text="Apps" class="home-row-title" />
+                    <Label text="Which apps the glasses list, in what order — and open any of them from here." class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <Label col="1" text="{{ appListSummary }}" class="settings-value" verticalAlignment="center" />
+            </GridLayout>
+
+            <!-- The pilot's "Command interactions" reference. Static: it is
+                 the same five gestures on every screen, and the per-app
+                 version lives on the glasses where the app can supply it. -->
+            <Label text="Interface" class="home-section-title" />
+            <GridLayout columns="auto,*" class="exo-row">
+                <Label col="0" text="Scroll" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="move through the list" class="home-row-meta" textWrap="true" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="auto,*" class="exo-row">
+                <Label col="0" text="Tap" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="select, or dismiss a notification" class="home-row-meta" textWrap="true" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="auto,*" class="exo-row">
+                <Label col="0" text="Double tap" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="back out — to the home screen, or off from there" class="home-row-meta" textWrap="true" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="auto,*" class="exo-row">
+                <Label col="0" text="Long press" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="clear all notifications, or app specific" class="home-row-meta" textWrap="true" verticalAlignment="center" />
+            </GridLayout>
+            <GridLayout columns="auto,*" class="exo-row">
+                <Label col="0" text="Hold longer" class="home-row-title" verticalAlignment="center" />
+                <Label col="1" text="the shell's own escape menu, from anywhere" class="home-row-meta" textWrap="true" verticalAlignment="center" />
+            </GridLayout>
+
+        </StackLayout>
+    </ScrollView>
+</Page>

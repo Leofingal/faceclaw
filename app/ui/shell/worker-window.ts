@@ -169,7 +169,7 @@ export class WorkerAppHost {
         case "yield-focus":
           // Only the focused window's yield is meaningful.
           if (shell.foregroundWindow()?.windowId === message.windowId) {
-            shell.yieldFocusToSidebar();
+            shell.backOutToHome();
           }
           break;
         case "focus-window":

@@ -18,19 +18,47 @@ export function displayMode(): DisplayModeSetting {
 }
 
 /**
+ * THE APP SWITCHER IS GONE (Chris, 2026-08-31: "Remove faceclaw's own app
+ * switcher... two competing ways to move between apps is the problem").
+ *
+ * The strip down the left edge was faceclaw's app switcher: it listed every
+ * open window, scroll moved the selection, click entered it. That is exactly
+ * what Exocortex's home screen app run does, so the two competed — and the
+ * strip did it while permanently occupying 64px of the field of view in the
+ * default band display mode.
+ *
+ * Exocortex's home screen is the only app switcher now. Backing out of an
+ * app's root goes there (shell.backOutToHome), and launching an app that is
+ * already open re-focuses it rather than starting a second copy, so nothing
+ * that was reachable through the strip has become unreachable.
+ *
+ * ONE-LINE REVERSAL: set this to false and the strip, its reserved width and
+ * its focus mode all come back exactly as they were.
+ */
+export const APP_SWITCHER_REMOVED = true;
+
+/**
  * How much of the screen's width the sidebar takes away from app windows:
- * the strip, or nothing in the full-panel mode (where the chrome paints the
- * strip over the window while the sidebar has focus).
+ * nothing at all now the switcher is gone, and previously nothing in the
+ * full-panel mode either (where the chrome painted the strip over the window
+ * while the sidebar had focus).
+ *
+ * EvenHub guests are unaffected by the widening: evenhub-window.ts already
+ * centres its fixed 576px surface inside anything wider, which is the path
+ * the full-panel display mode has always taken.
  */
 export function sidebarWidth(): number {
+  if (APP_SWITCHER_REMOVED) return 0;
   return displayMode() === "640x480" ? 0 : SIDEBAR_WIDTH;
 }
 
 /**
- * Whether the sidebar strip is on screen: always when it reserves width; in
- * the full-panel mode (where it overlays the window) only while it has focus.
+ * Whether the sidebar strip is on screen: never now the switcher is gone;
+ * previously always when it reserved width, and in the full-panel mode only
+ * while it had focus.
  */
 export function sidebarStripVisible(focus: "sidebar" | "window"): boolean {
+  if (APP_SWITCHER_REMOVED) return false;
   return sidebarWidth() > 0 || focus === "sidebar";
 }
 

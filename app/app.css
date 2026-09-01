@@ -827,7 +827,7 @@ Button.permissions-primary-dimmed {
 }
 
 .ghost-header {
-  padding: 10 16 8 16;
+  padding: 6 16 6 16;
   border-bottom-width: 1;
   border-bottom-color: #dddddd;
 }
@@ -839,10 +839,13 @@ Button.permissions-primary-dimmed {
   color: #3b6fd6;
 }
 
+/* Small, beside the wordmark: the highlighted tab immediately below already
+ * says which pane this is, so a 20pt second copy of it was pure header. */
 .ghost-pane-title {
-  font-size: 20;
+  font-size: 14;
   font-weight: bold;
   color: #222222;
+  margin-left: 10;
 }
 
 .ghost-pane-status {
@@ -851,7 +854,7 @@ Button.permissions-primary-dimmed {
 }
 
 .ghost-tab-bar {
-  padding: 6 8;
+  padding: 2 8 4 8;
 }
 
 .ghost-tab {
@@ -869,7 +872,7 @@ Button.permissions-primary-dimmed {
 }
 
 .ghost-pane-body {
-  padding: 12 16 16 16;
+  padding: 8 16 16 16;
 }
 
 .ghost-empty {
@@ -987,8 +990,13 @@ Button.permissions-primary-dimmed {
   background-color: #f4f4f4;
 }
 
+/* 48, not the 88 it was. CHECKED, not assumed: NativeScript core has a
+ * minHeightProperty but NO max-height, so letting this auto-size would grow
+ * the docked bar without a ceiling as you type and push the panes off screen.
+ * A fixed height scrolls internally instead, which is the right behaviour for
+ * a bar docked under the content it is about. */
 .ghost-compose-input {
-  height: 88;
+  height: 48;
   font-size: 15;
   color: #222222;
   background-color: #ffffff;
@@ -1009,7 +1017,7 @@ Button.permissions-primary-dimmed {
 /* The bar above the companion: the only way back to the hub that changes
  * nothing on the glasses. */
 .app-switch-bar {
-  padding: 6 12;
+  padding: 4 12;
   background-color: #f4f4f4;
   border-bottom-width: 1;
   border-bottom-color: #dddddd;
@@ -1104,4 +1112,42 @@ Button.permissions-primary-dimmed {
 
 .ns-dark .ghost-compose-status {
   color: #ff9a8a;
+}
+
+/* Exocortex's own phone settings screens (Settings, Notification sources,
+ * Apps on the glasses). Card rows rather than the flat `.settings-row` used
+ * by the mirror page's controls: these are a list you read down, and a
+ * comfortable thumb target matters more here than density. */
+.exo-row {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 12 14;
+  margin-bottom: 8;
+}
+
+.settings-value {
+  font-size: 14;
+  color: #3b6fd6;
+  margin-left: 12;
+}
+
+.app-order-button {
+  font-size: 18;
+  width: 40;
+  padding: 0;
+  margin: 0 0 0 4;
+  background-color: transparent;
+  color: #3b6fd6;
+}
+
+.ns-dark .exo-row {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .settings-value,
+.ns-dark .app-order-button {
+  color: #8ab0ff;
 }

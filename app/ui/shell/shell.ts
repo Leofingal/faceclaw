@@ -21,7 +21,7 @@ import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
 import { resolveAssistantModel } from "../../assistant/models";
 import type { AssistantContext } from "../../assistant/types";
-import { SingleNotificationLayer } from "../notifications";
+import { NotificationToastLayer } from "../notification-toast";
 import {
   anthropicApiKeySetting,
   assistantBackendSetting,
@@ -244,7 +244,9 @@ class Shell {
   private selectedIndex = 0;
   /** Window ids in most-recently-visible-first order; closing the visible window returns to the next entry. */
   private mruWindowIds: string[] = [];
-  private focus: FocusKind = "sidebar";
+  // Boot focus is the window, not the (removed) sidebar strip: the first
+  // window registered is the pinned Exocortex home screen.
+  private focus: FocusKind = "window";
   private screenOn = true;
   private lastInputAtMs = Date.now();
   private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
@@ -356,7 +358,10 @@ class Shell {
       this.selectedIndex--;
     }
     if (this.focus === "window" && (wasSelected || !this.windows.length)) {
-      this.focus = "sidebar";
+      // Closing the focused window used to drop focus onto the sidebar. With
+      // the switcher gone, focus stays in whatever window is now foreground
+      // (the home screen at worst — it is pinned and never closes).
+      this.focus = this.windows.length && this.homeScreenIndex() >= 0 ? "window" : "sidebar";
     }
     if (wasSelected) {
       // Hand the foreground to whatever is now selected.
@@ -459,7 +464,12 @@ class Shell {
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
-    this.focus = focus;
+    // Callers ask to wake "to the sidebar" meaning "not inside an app". With
+    // the switcher removed there is no such place to land, so waking keeps
+    // input in whatever window was already on screen. Coerced here rather
+    // than at a dozen call sites, and a no-op in a build that still has the
+    // strip (homeScreenIndex is -1 there).
+    this.focus = focus === "sidebar" && this.homeScreenIndex() >= 0 ? "window" : focus;
     if (this.screenOn) return false;
     this.screenOn = true;
     this.config.onScreenStateChanged(true);
@@ -519,8 +529,7 @@ class Shell {
   openNotificationModal(notificationKey: string, wokeScreen: boolean): void {
     if (!this.screenOn) return;
     const modal: ShellModalLayer = new ShellModalLayer(
-      new SingleNotificationLayer(notificationKey, {
-        origin: "new-notification-modal",
+      new NotificationToastLayer(notificationKey, {
         closeModal: () => this.closeNotificationModal(modal, wokeScreen),
       }),
       this.config.actions,
@@ -537,12 +546,58 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  /** Called by a window when the user backs out of its root (double-tap). */
-  yieldFocusToSidebar(): void {
-    if (this.focus === "sidebar") return;
-    this.focus = "sidebar";
-    // Repaint the window so its selection highlight dims to the unfocused
-    // style this frame.
+  /** Index of the pinned home-screen window, or -1 in a build without one. */
+  private homeScreenIndex(): number {
+    return this.windows.findIndex((window) => window.isHomeScreen);
+  }
+
+  /**
+   * Called by a window when the user backs out of its root (double-tap).
+   *
+   * The sidebar app switcher used to catch this. It is gone (see
+   * geometry.ts), so backing out of an app returns to the Exocortex home
+   * screen — the only app switcher now — and backing out of home itself
+   * turns the display off, which is exactly what a double-tap on the
+   * focused sidebar used to do. Two double-taps still put the glasses to
+   * sleep from inside an app, same as before.
+   */
+  backOutToHome(): void {
+    const homeIndex = this.homeScreenIndex();
+    if (homeIndex < 0) {
+      // No pinned home screen (a build still running the stock launcher, or
+      // a test shell). Fall back to the old behaviour rather than trapping
+      // the wearer inside the foreground window.
+      if (this.focus === "sidebar") return;
+      this.focus = "sidebar";
+      this.foregroundWindow()?.requestRender();
+      this.config.requestShellRender();
+      return;
+    }
+    if (this.foregroundWindow()?.isHomeScreen) {
+      this.sleep();
+      this.config.requestShellRender();
+      return;
+    }
+    this.focusHomeScreen();
+  }
+
+  /** Show the home screen without the "already home means sleep" rule. */
+  focusHomeScreen(): void {
+    const homeIndex = this.homeScreenIndex();
+    if (homeIndex < 0) return;
+    this.setSelectedIndex(homeIndex);
+    this.focus = "window";
+    this.windows[homeIndex]?.requestRender();
+    this.config.requestShellRender();
+  }
+
+  /**
+   * Put focus back in the foreground window after a shell overlay closes.
+   * This is NOT backing out of anything — closing the escape menu should
+   * leave you where the menu was opened from, not navigate home.
+   */
+  private restoreWindowFocus(): void {
+    if (this.windows.length) this.focus = "window";
     this.foregroundWindow()?.requestRender();
     this.config.requestShellRender();
   }
@@ -1095,7 +1150,7 @@ class Shell {
         this.openToolDebugDialog();
       },
     });
-    this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    this.stack.push(new ShellOverlayMenuLayer(items, () => this.restoreWindowFocus()));
     this.config.requestShellRender();
   }
 
@@ -1115,7 +1170,7 @@ class Shell {
               entry.spec.name.startsWith(`app.${appId}.`) || entry.windowId === foreground!.windowId,
           )
       : [];
-    this.stack.push(new ToolDebugMenuLayer(appId, entries, () => this.yieldFocusToSidebar()));
+    this.stack.push(new ToolDebugMenuLayer(appId, entries, () => this.restoreWindowFocus()));
     this.config.requestShellRender();
   }
 

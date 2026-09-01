@@ -1,6 +1,11 @@
 import { GrayImage } from "../graphics/image";
 import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
+import {
+  filterEnabledNotifications,
+  mutedNotificationSourceCount,
+  recordNotificationSources,
+} from "./notification-sources";
 
 declare const com: any;
 
@@ -97,6 +102,34 @@ export function readActiveNotificationIcons(maxIcons: number, allowStale: boolea
   return { icons: icons.map(icon => icon.clone()), stale: false };
 }
 
+/**
+ * Top-bar icons with the ignore list applied.
+ *
+ * The batched Java call above returns icons for the whole tray with no way to
+ * say which notification each one belongs to, so a muted source cannot be
+ * dropped from its result. When nothing is muted that does not matter and the
+ * fast batched path is used unchanged — which is every install until the
+ * wearer mutes something. Once something IS muted, the icons are resolved
+ * per-key from the filtered list instead: more Java calls on a cold cache,
+ * but the keyed cache is eagerly invalidated and 60s-backstopped exactly like
+ * the batched one, so the steady state is the same.
+ */
+export function readGlassesNotificationIcons(maxIcons: number, allowStale: boolean): NotificationIconsResult {
+  if (!global.isAndroid || maxIcons <= 0) return { icons: [], stale: false };
+  if (mutedNotificationSourceCount() === 0) {
+    return readActiveNotificationIcons(maxIcons, allowStale);
+  }
+  const notifications = readActiveNotifications(50).slice(0, maxIcons);
+  const icons: GrayImage[] = [];
+  let stale = false;
+  for (const notification of notifications) {
+    const result = readNotificationIconByKey(notification.key, allowStale);
+    if (result.stale) stale = true;
+    if (result.icon) icons.push(result.icon);
+  }
+  return { icons, stale };
+}
+
 export type NotificationIconResult = {
   icon: GrayImage | null;
   /** True when the icon came from an expired (or empty) cache under allowStale. */
@@ -146,7 +179,18 @@ export function readNotificationIconByKey(key: string, allowStale: boolean): Not
   return { icon: icon?.clone() ?? null, stale: false };
 }
 
-export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
+/**
+ * The raw tray, muted sources included. Only three callers want this: the
+ * phone's "Notification sources" screen (a muted source has to stay listed or
+ * it could never be unmuted), the assistant's own notification tool (it is
+ * answering a direct question, not putting something in the field of view),
+ * and the popup gate, which needs to look up the source of a key it was just
+ * handed. Everything that paints the glasses uses readActiveNotifications.
+ *
+ * This is also where discovery happens: the source list is built from what
+ * actually posts, so it has to be fed from the unfiltered read.
+ */
+export function readAllActiveNotifications(maxNotifications = 50): AndroidNotification[] {
   if (!global.isAndroid || maxNotifications <= 0) return [];
   try {
     const json = spanCurrent("fetch-notifications-json", () =>
@@ -158,10 +202,24 @@ export function readActiveNotifications(maxNotifications = 50): AndroidNotificat
     );
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeNotification).filter((item): item is AndroidNotification => Boolean(item));
+    const notifications = parsed
+      .map(normalizeNotification)
+      .filter((item): item is AndroidNotification => Boolean(item));
+    recordNotificationSources(notifications);
+    return notifications;
   } catch {
     return [];
   }
+}
+
+/**
+ * The tray as the glasses should see it: muted sources removed. This is the
+ * default on purpose — every existing caller painted something on the lens,
+ * and the whole point of the ignore list is that it applies wherever a
+ * notification would otherwise take up the wearer's field of view.
+ */
+export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
+  return filterEnabledNotifications(readAllActiveNotifications(maxNotifications));
 }
 
 export function invokeNotificationAction(notificationKey: string, actionIndex: number): boolean {

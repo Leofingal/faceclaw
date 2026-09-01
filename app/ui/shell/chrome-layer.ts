@@ -3,7 +3,7 @@ import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fon
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
-import { readActiveNotificationIcons } from "../../native/notification-icons";
+import { readGlassesNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { renderIcon, renderIconWithGlyph, type IconName } from "../../graphics/icons";
@@ -12,6 +12,7 @@ import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
 import {
+  APP_SWITCHER_REMOVED,
   MIN_WINDOW_HEIGHT,
   minWindowTop,
   SHELL_OPAQUE_BLACK,
@@ -79,6 +80,8 @@ function sidebarListTop(): number {
  * Screenshot cropping uses this to trim the unused part.
  */
 export function sidebarContentLeft(windowCount: number): number {
+  // No strip, no dead strip to trim: screenshots start at the screen edge.
+  if (APP_SWITCHER_REMOVED) return 0;
   return columnLeft(sidebarVariant(windowCount), 0);
 }
 const NOTIFICATION_ICON_SIZE = 24;
@@ -210,6 +213,9 @@ export class ShellChromeLayer implements Layer {
    * the icon the mirror showed.
    */
   windowIndexAt(x: number, y: number, windowCount: number): number | null {
+    // Nothing is drawn there any more, so a touch on the phone's mirror in
+    // that region belongs to the app, not to a switcher icon.
+    if (APP_SWITCHER_REMOVED) return null;
     if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
     const variant = sidebarVariant(windowCount);
     const listTop = sidebarListTop();
@@ -324,7 +330,9 @@ export class ShellChromeLayer implements Layer {
     const iconsX = clockX + font.measureText(clock) + 16;
     const maxIcons = Math.max(0, ((trayLeft - 8 - iconsX) / (NOTIFICATION_ICON_SIZE + 4)) | 0);
     if (maxIcons > 0) {
-      const { icons, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
+      // Ignore-list aware: a muted source must not keep an icon in the top bar
+      // either, or "muted" would still cost field of view.
+      const { icons, stale } = readGlassesNotificationIcons(maxIcons, renderPassAllowsStaleData());
       if (stale) {
         noteStaleDataUsed();
       }

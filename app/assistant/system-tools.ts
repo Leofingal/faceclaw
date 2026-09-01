@@ -1,6 +1,6 @@
 import { readUpcomingEvents, type CalendarEvent } from "../native/calendar";
 import { mediaControllerBridge } from "../native/media-controller";
-import { dismissNotification, readActiveNotifications } from "../native/notification-icons";
+import { dismissNotification, readAllActiveNotifications } from "../native/notification-icons";
 import { shell } from "../ui/shell/shell";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 
@@ -130,7 +130,9 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
     },
     (args) => {
       const max = clampNumber(args?.max, 1, 50, 10);
-      const notifications = readActiveNotifications(max);
+      // The assistant is answering a direct question, not putting something in
+      // the wearer's field of view, so it reads past the ignore list.
+      const notifications = readAllActiveNotifications(max);
       if (!notifications.length) return ok("No current notifications.");
       return ok(notifications.map(formatNotification).join("\n"));
     },

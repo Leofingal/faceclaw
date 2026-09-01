@@ -2,6 +2,7 @@ import { shell } from "../../ui/shell/shell";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../../native/notification-access";
 import { type AppDefinition } from "../app-definition";
 import { createExocortexWindow, EXOCORTEX_SURFACE_ID, EXOCORTEX_WINDOW_ID } from "./exocortex-app";
+import { applyExocortexAppList, isCuratedAppId } from "../../native/exocortex-app-list";
 import {
   getInstalledEvenHubApps,
   installedEvenHubAppId,
@@ -43,7 +44,12 @@ const exocortexApp: AppDefinition = {
         // Apps that hide themselves (the stock launcher, and Exocortex
         // itself) fall out on `showInLauncher`; the explicit self-check is
         // belt-and-braces for a future pass that unhides this app.
-        apps: () => [
+        // applyExocortexAppList is the shared state behind two of Chris's
+        // asks: the per-app "show this in the list" checkbox, and the
+        // reordering done on the phone. The glasses read the same setting the
+        // phone writes, so the order and the hidden set need no syncing —
+        // this is the pilot's "reorder is shared state" property, kept.
+        apps: () => applyExocortexAppList([
           ...ctx.apps
             .filter((app) => app.showInLauncher !== false && app.appId !== ctx.appId)
             .map((app) => ({
@@ -51,14 +57,21 @@ const exocortexApp: AppDefinition = {
               label: app.title,
               icon: app.icon,
               renderIcon: app.renderIcon,
+              // Curated apps are in the list on a fresh install; the rest of
+              // faceclaw's stock apps are not, until let in from the phone.
+              // They stay installed and launchable either way.
+              defaultVisible: isCuratedAppId(app.appId),
             })),
           ...getInstalledEvenHubApps().map((app) => ({
             appId: installedEvenHubAppId(app.packageId),
             label: app.name,
             icon: "package" as const,
             renderIcon: (size: number) => renderInstalledEvenHubIcon(app.packageId, size, app),
+            // Installing an EvenHub package is already a deliberate act, so
+            // it earns its place in the list without being asked for twice.
+            defaultVisible: true,
           })),
-        ],
+        ]),
         launchApp: (appId) => ctx.launchApp(appId),
         submitFrame: (planes, paintMs, frameId) =>
           ctx.submitWindowFrame(EXOCORTEX_SURFACE_ID, planes, paintMs, frameId),

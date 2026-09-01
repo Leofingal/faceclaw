@@ -41,6 +41,7 @@
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
         <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
+        <ActionItem text="Settings" tap="{{ onExocortexSettingsTap }}" android.position="popup" />
         <ActionItem text="Glasses mirror" tap="{{ onGlassesMirrorTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
@@ -129,6 +130,12 @@
                         <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
                     </StackLayout>
                 </GridLayout>
+
+                <Label text="Exocortex" class="home-section-title" />
+                <StackLayout class="home-row" tap="{{ onExocortexSettingsTap }}">
+                    <Label text="Settings" class="home-row-title" />
+                    <Label text="{{ exocortexSettingsMeta }}" class="home-row-meta" textWrap="true" />
+                </StackLayout>
 
                 <Label text="Review" class="home-section-title" />
                 <StackLayout class="home-row" tap="{{ onConversationsTap }}">

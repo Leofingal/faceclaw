@@ -116,6 +116,15 @@ export class GhostCompanionViewModel extends Observable {
     return PANE_NAMES[this.paneId];
   }
 
+  /**
+   * Collapses the status row when there is nothing to say, so the header
+   * costs one line instead of two. Part of the header/content rebalance —
+   * Chris's "the companion should show MORE than fits on the glasses".
+   */
+  get paneStatusVisibility(): "visible" | "collapse" {
+    return this.paneStatus ? "visible" : "collapse";
+  }
+
   /** The one line under the title: what this pane is showing, or why it isn't. */
   get paneStatus(): string {
     if (this._state.status) return this._state.status;
@@ -224,6 +233,7 @@ export class GhostCompanionViewModel extends Observable {
   private notifyPaneChange(): void {
     this.notifyPropertyChange("paneName", this.paneName);
     this.notifyPropertyChange("paneStatus", this.paneStatus);
+    this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);
     this.notifyPropertyChange("terminalTabClass", this.terminalTabClass);
     this.notifyPropertyChange("richTabClass", this.richTabClass);
     this.notifyPropertyChange("docTabClass", this.docTabClass);
@@ -389,6 +399,7 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("docText", this.docText);
     this.notifyPropertyChange("docUnpinVisibility", this.docUnpinVisibility);
     this.notifyPropertyChange("paneStatus", this.paneStatus);
+    this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);
   }
 
   // ── Settings ────────────────────────────────────────────────────────────
@@ -516,6 +527,7 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("feedEmptyVisibility", this.feedEmptyVisibility);
     this.notifyPropertyChange("feedEmptyMessage", this.feedEmptyMessage);
     this.notifyPropertyChange("paneStatus", this.paneStatus);
+    this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);
     this.notifyPropertyChange("sendEnabled", this.sendEnabled);
     this.notifyPropertyChange("ghostSession", this.ghostSession);
     this.notifyPropertyChange("autoFollow", this.autoFollow);
