@@ -23,6 +23,7 @@
     "../app/apps/microphones/sentiment.ts",
     "../app/apps/microphones/dsp.ts",
     "../app/apps/microphones/radar-dots.ts",
-    "../app/apps/microphones/name-guess.ts"
+    "../app/apps/microphones/name-guess.ts",
+    "../app/apps/evenhub/containers.ts"
   ]
 }
