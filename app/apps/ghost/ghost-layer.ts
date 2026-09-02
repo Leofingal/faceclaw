@@ -495,7 +495,28 @@ export class GhostLayer implements Layer {
         // gestures now do the same discard (scroll up, double-click) — both
         // listed rather than picking one, since surfacing both beats
         // assuming he already knows one.
-        headline = this.heard;
+        //
+        // Chris, 2026-09-02: a real, third-refine message ("Send 1/2/3")
+        // never showed on this screen at all - "it only sends it, it doesn't
+        // list it." Root cause: headline is capped at 3 wrapped lines with no
+        // overflow (paintPage's own fixed slice), and a several-part message
+        // routinely runs longer than that - the text was there in this.heard
+        // the whole time (confirmSend() sends it correctly), just silently
+        // clipped from view. Multi-part messages now route through body
+        // instead, which sizes to actual available height rather than a hard
+        // 3-line cap - far more fits, even though scroll itself is still
+        // claimed by refine/cancel here, so there is still no way to page
+        // PAST whatever does fit. A single, unrefined dictation is usually
+        // short enough that the old headline display is still fine, so only
+        // multi-part messages take this path.
+        if (this.capturedParts.length > 1) {
+          headline = "Ready to send:";
+          body = this.capturedParts.map(
+            (part, index) => `Send ${index + 1}${index > 0 ? " (addendum)" : ""}: ${part}`,
+          );
+        } else {
+          headline = this.heard;
+        }
         hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL_DOWN} refine   ${GESTURE_SCROLL_UP}${GESTURE_DOUBLE_CLICK} discard`;
         break;
       case "failed":
