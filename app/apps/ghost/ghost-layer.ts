@@ -66,6 +66,21 @@ const FEED_LIMIT = 20;
  */
 const TRANSCRIPT_TIMEOUT_MS = 20_000;
 
+/**
+ * A slow-rotating glyph, evaluated fresh at paint time rather than driven by
+ * its own timer. Chris, 2026-09-01: wanted this — until now only shown while
+ * actively dictating (paintMic, below) — on the ordinary feed screen's meta
+ * line too, "a low bandwidth still alive heartbeat": proof the render loop is
+ * genuinely ticking even when nothing in the feed has changed, distinct from
+ * a real hang. It only visibly advances as often as something actually
+ * repaints the meta line (every poll on the feed screen, every ~250ms in the
+ * mic screen), which is the honest signal - a faked independent clock here
+ * would tick even if the poll loop had actually died.
+ */
+function heartbeatChar(): string {
+  return "|/-\\"[Math.floor(Date.now() / 250) % 4]!;
+}
+
 export type GhostMicState =
   | "idle"
   | "listening"
@@ -340,7 +355,7 @@ export class GhostLayer implements Layer {
     // uses for arbitrary-length content, rather than trying to show body.
     const isUserItem = item.role === "user";
     this.bodyOverflow = this.paintPage(image, width, height, {
-      meta: `ghost — ${this.cursor + 1}/${this.items.length}${item.kind ? ` · ${item.kind}` : ""}`,
+      meta: `ghost — ${this.cursor + 1}/${this.items.length}${item.kind ? ` · ${item.kind}` : ""} ${heartbeatChar()}`,
       metaRight: ghostSpeakSetting.get() ? "voice" : "",
       headline: this.expanded && isUserItem ? "You said:" : tag + item.headline,
       body: this.expanded ? (isUserItem ? [item.headline, ...item.body] : item.body) : [],
@@ -423,7 +438,7 @@ export class GhostLayer implements Layer {
   }
 
   private paintMic(image: GrayImage, width: number, height: number): void {
-    const spinner = "|/-\\"[Math.floor(Date.now() / 250) % 4]!;
+    const spinner = heartbeatChar();
     let headline: string;
     let body: string[] = [];
     let hint = "";
