@@ -109,7 +109,23 @@ export async function buildCustomFirmware(
   const base = await downloadAndVerifyBase(report);
 
   report({ phase: "extracting-fonts" });
-  persistEvenHubFonts(base);
+  // Chris, 2026-09-01: made non-fatal HERE specifically - the flash itself
+  // does not depend on this, it is a side-effect phone-side cache for
+  // EvenHub-guest apps' fallback text. FONT_SPECS' addresses (firmware-fonts.ts)
+  // were reverse-engineered against the 2.2.6.10 layout and have genuinely
+  // shifted in 2.2.9.22 (unrelated to the URL fix above) - a real
+  // reverse-engineering job, not something to block tonight's flash on.
+  // downloadAndExtractEvenHubFonts()'s own call to this, just below, is
+  // UNCHANGED and stays fatal: that path exists specifically to repair fonts,
+  // so silently swallowing a failure there would defeat its only purpose.
+  // Failure here just means hasExtractedEvenHubFonts() keeps reading false,
+  // which the existing "fonts missing" Attention-needed warning (main-view-
+  // model.ts) already surfaces on its own - nothing new needed for that.
+  try {
+    persistEvenHubFonts(base);
+  } catch (error) {
+    console.warn(`[firmware-builder] EvenHub font extraction failed, continuing without it: ${(error as Error)?.message ?? error}`);
+  }
 
   const patched = applyPatches(new Uint8Array(base), CFW_PATCH_SET.patches, (applied, total) =>
     report({ phase: "patching", applied, total }),
