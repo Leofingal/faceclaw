@@ -28,7 +28,14 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { gestureHints, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
+import {
+  gestureHints,
+  GESTURE_CLICK,
+  GESTURE_DOUBLE_CLICK,
+  GESTURE_SCROLL,
+  GESTURE_SCROLL_DOWN,
+  GESTURE_SCROLL_UP,
+} from "../../ui/gestures";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
@@ -467,8 +474,15 @@ export class GhostLayer implements Layer {
       case "confirming":
         // Chris's own three options (session 0135): "Send as is, let the agent
         // refine or I resend." Three gestures on a four-gesture device.
+        //
+        // Chris, 2026-09-01: the hint used to read "scroll refine / say
+        // again" with one undirected glyph for both — real, confirmed
+        // ambiguity, not user error: he read it, guessed down, and got "say
+        // again" (a full discard) when he meant refine (scroll UP, per
+        // step()'s own gesture mapping just below). Split into the two real
+        // directions so the hint actually says which is which.
         headline = this.heard;
-        hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL} refine / say again   ${GESTURE_DOUBLE_CLICK} discard`;
+        hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL_UP} refine   ${GESTURE_SCROLL_DOWN} say again   ${GESTURE_DOUBLE_CLICK} discard`;
         break;
       case "failed":
         headline = "Did not catch that.";
