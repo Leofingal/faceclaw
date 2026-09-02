@@ -1,6 +1,6 @@
 /**
  * Builds the Faceclaw custom firmware on-device: downloads the stock Even
- * Realities G2 2.2.6.10 image from Even's CDN, verifies its SHA-256, applies
+ * Realities G2 2.2.9.22 image from Even's CDN, verifies its SHA-256, applies
  * the committed byte-patch set (cfw-patches.ts), extracts the stock EvenHub
  * fonts for phone-side rendering, verifies the patched SHA-256, and writes the
  * result to app storage.
@@ -9,6 +9,21 @@
  * URL, same pinned hashes, same offset/old/new patch semantics), so a
  * successful run reproduces the reviewed image byte-for-byte. It does NOT flash
  * anything — producing and verifying the image is the whole job here.
+ *
+ * FIRMWARE_URL, 2026-09-01: g2flash's own build_cfw.sh is the source this file
+ * mirrors, and it keeps the download URL as a THIRD, independent pinned
+ * constant alongside the patch set's baseSha256/outputSha256 (cfw-patches.ts
+ * carries no URL field of its own) - so rebasing the patches onto a newer
+ * stock version (596c767, "Update custom firmware to one based on 2.2.9")
+ * updates the hashes but does not, by itself, update this file's URL. Chris
+ * hit exactly that: "Downloaded stock firmware failed verification" after
+ * tonight's merge - the app was downloading the OLD 2.2.6.10 image and
+ * checking it against the NEW 2.2.9.22 hash cfw-patches.ts now expects.
+ * Confirmed the correct pinned value directly from g2flash's own
+ * build_cfw.sh (FW_URL, matching its BASE_SHA256, which matches
+ * CFW_PATCH_SET.baseSha256 here) rather than guess a URL - Even's CDN is
+ * content-hash-named per file, so the old URL was never going to serve the
+ * new image no matter how it was retried.
  */
 import { File, knownFolders } from "@nativescript/core";
 
@@ -24,9 +39,9 @@ import { EvenHubFont } from "../graphics/evenhub-font";
 
 declare const com: any;
 
-const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/e28738432d7b612d625331b00383149b.bin";
-const CFW_OUTPUT_FILENAME = "g2_2.2.6.10_cfw.bin";
-const STOCK_OUTPUT_FILENAME = "g2_2.2.6.10.bin";
+const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/fc250b05e98a9ff998b4b68f5f99f994.bin";
+const CFW_OUTPUT_FILENAME = "g2_2.2.9.22_cfw.bin";
+const STOCK_OUTPUT_FILENAME = "g2_2.2.9.22.bin";
 
 export type FirmwareProgress =
   | { phase: "downloading" }
