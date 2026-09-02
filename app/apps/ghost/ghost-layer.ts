@@ -113,18 +113,27 @@ export class GhostLayer implements Layer {
   /**
    * "Mark as read, never re-read it" (Chris, session 0135). Every spoken line
    * is a live, billed request, so an item already heard is shown rather than
-   * re-spoken. `expanded` resets on every navigation away, so without these
-   * two sets, backing out and tapping back in re-reads the same body.
+   * re-spoken.
+   *
+   * `spokenBodies` used to gate ONLY the manual tap into tier-2, while the
+   * automatic arrival announcement had its own separate `lastSpokenUuid`
+   * gate and spoke the headline (tier-1), not the body. 2026-09-02
+   * (tier-2-voice-default): tier-2 is now what plays by default on arrival
+   * too, so both triggers speak the same content through the shared
+   * `speakBody()` helper below and this one gate — whichever fires first
+   * marks the item, so the other becomes a no-op instead of restarting or
+   * racing the same audio. `lastSpokenUuid` is gone; nothing else read it.
+   * `expanded` resets on every navigation away, so without this set, backing
+   * out and tapping back in would re-read the same body.
    */
-  private lastSpokenUuid: string | null = null;
+  private readonly spokenBodies = new Set<string>();
   /**
    * A prompt/waiting item is synthetic and ephemeral — derived from live
    * screen state, not a transcript turn. It rides at the end of the feed like
-   * a real message, so tracking it in lastSpokenUuid meant that once it
-   * vanished, the real last message read as unheard and got re-announced.
+   * a real message, so tracking it separately from spokenBodies means that
+   * once it vanishes, the real last message doesn't read as still-unheard.
    */
   private lastSpokenEphemeralUuid: string | null = null;
-  private readonly spokenBodies = new Set<string>();
 
   // -- tier 3: the full prose reply, on demand ------------------------------
   private proseOpen = false;
@@ -691,10 +700,12 @@ export class GhostLayer implements Layer {
     if (!this.expanded) {
       this.expanded = true;
       this.bodyScroll = 0;
-      if (item.uuid && !this.spokenBodies.has(item.uuid)) {
-        this.spokenBodies.add(item.uuid);
-        this.speak(item.body.join(" "));
-      }
+      // Usually a no-op now: the arrival announcement below already speaks
+      // tier-2 by default and marks spokenBodies, so tunneling in here mid-
+      // playback does not restart it. This only actually speaks when tier-2
+      // is reached some other way the arrival trigger didn't cover — paging
+      // back to an older, never-yet-spoken item and tapping in.
+      this.speakBody(item);
       this.requestRender();
       return;
     }
@@ -1090,6 +1101,25 @@ export class GhostLayer implements Layer {
     speakGhost(ttsUrl(sessionId, text), ghostAuthHeaders(), onEnd);
   }
 
+  /**
+   * Speak tier-2 (the authored summary) for an item, once — the one path
+   * both the automatic arrival trigger and the manual tap into tier-2 now
+   * call, so they share a single spokenBodies gate instead of racing or
+   * double-speaking the same content (2026-09-02, tier-2-voice-default).
+   * Falls back to the headline when body is empty: a single-line reply has
+   * no body lines at all (glasses.js's splitBlock: `body: lines.slice(1)`),
+   * and a short turn going unspoken would be a real, silent regression, not
+   * a minor one.
+   */
+  private speakBody(item: GhostItem, onEnd?: () => void): void {
+    if (!item.uuid || this.spokenBodies.has(item.uuid)) {
+      onEnd?.();
+      return;
+    }
+    this.spokenBodies.add(item.uuid);
+    this.speak(item.body.length ? item.body.join(" ") : item.headline, onEnd);
+  }
+
   /** The window menu's Sound entry, so it can confirm itself out loud. */
   toggleSpeech(): void {
     const next = !ghostSpeakSetting.get();
@@ -1204,9 +1234,13 @@ export class GhostLayer implements Layer {
       this.speak(current.kind === "approval" ? "Approval Request" : current.headline);
       return;
     }
-    if (current.uuid === this.lastSpokenUuid) return;
-    this.lastSpokenUuid = current.uuid;
-    this.speak(current.headline);
+    // Tier-2 (the authored summary) is what plays by default now, not the
+    // tier-1 headline shown on the glass — the headline is a visual-glance
+    // affordance, not written for the ear (Chris, 2026-09-02). Routed
+    // through the shared gate: if Chris taps into tier-2 while this is still
+    // playing, that tap finds the item already in spokenBodies and does not
+    // call speak() again, so it neither restarts nor overlaps this audio.
+    this.speakBody(current);
   }
 
   private async checkAutoFollow(): Promise<void> {
@@ -1225,7 +1259,6 @@ export class GhostLayer implements Layer {
     this.bodyScroll = 0;
     this.inApproval = false;
     this.approvalItem = null;
-    this.lastSpokenUuid = null;
     this.lastSpokenEphemeralUuid = null;
     this.resetMic();
     stopGhostSpeech();
