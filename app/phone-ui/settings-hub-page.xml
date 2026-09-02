@@ -108,6 +108,17 @@
                     <Label text="Configure devices" class="home-row-title" />
                     <Label text="Arm and ring addresses, entered by hand" class="home-row-meta" textWrap="true" />
                 </StackLayout>
+                <!-- Chris, 2026-09-01: went looking for this to re-flash after
+                     Jim's 2.2.9 update and found nothing - onboarding's own
+                     firmware-check screen was only ever reachable from the
+                     onboarding chain itself (config-view-model.ts / a fresh
+                     pair), never from Settings once onboarding had already
+                     completed once. Same screen, same page, just a direct
+                     door into it - see onCheckFirmwareTap. -->
+                <StackLayout class="home-row" tap="{{ onCheckFirmwareTap }}">
+                    <Label text="Check firmware" class="home-row-title" />
+                    <Label text="Re-run the firmware check without repairing" class="home-row-meta" textWrap="true" />
+                </StackLayout>
                 <StackLayout class="home-row" tap="{{ onPermissionsTap }}">
                     <Label text="Permissions" class="home-row-title" />
                     <Label text="What Android has granted, and what is still missing" class="home-row-meta" textWrap="true" />

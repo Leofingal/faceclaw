@@ -853,6 +853,27 @@ export class MainViewModel extends Observable {
     Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
   }
 
+  /**
+   * A direct door into the onboarding firmware-check screen, Chris 2026-09-01:
+   * went looking for a way to re-flash after a firmware update and found none
+   * — every existing route into onboarding-firmware-check-page (the
+   * onboarding chain itself, a fresh pair) only ever fires while
+   * onboarding.complete is still false. The screen's own finish()/goToFlashing()
+   * don't depend on how they were reached (verified directly), so this is a
+   * safe, standalone detour, same shape as onPrepareFontsTap just above.
+   */
+  async onCheckFirmwareTap(): Promise<void> {
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the firmware check reports its own connection trouble
+      }
+      resumeAutoReconnect();
+    }
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
+  }
+
   onAllowBackgroundUsageTap(): void {
     this.setWarningsModalVisible(false);
     dashboardController.requestBatteryOptimizationExemption();
