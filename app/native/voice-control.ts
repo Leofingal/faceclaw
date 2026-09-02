@@ -4,6 +4,8 @@ import { CloudSttClient } from "./cloud-stt";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
 import { SonioxSttClient } from "./soniox-stt";
+import { GhostSttClient } from "./ghost-stt";
+import { ghostSessionSetting } from "../ui/dashboard-settings";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -12,7 +14,13 @@ export type VoiceControlState = {
   status: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
+// see openai-stt.ts) -- an unfortunate pre-existing name collision with the model
+// family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
+// Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
+// renamed, since it's a persisted settings value on real installs already.
+// "ghost" transcribes on Chris's own Ghost box over Tailscale -- see ghost-stt.ts.
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "ghost";
 
 export type VoiceTranscriptEvent = {
   /**
@@ -262,6 +270,9 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
+    // Which on-device model to load; a no-op setter for every provider except
+    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
+    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
     this.controller?.start("onboard");
   }
 
@@ -271,7 +282,7 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard") return null;
+    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
       onTranscript: (event: { text: string; isFinal: boolean }) =>
@@ -294,6 +305,16 @@ export class FaceclawVoiceControlBridge {
         return null;
       }
       return new SonioxSttClient({ ...sttOptions, apiKey });
+    }
+    if (options.provider === "ghost") {
+      // No API key to check (auth is the box's own bearer token, read
+      // directly by GhostSttClient); the equivalent missing-config case is
+      // no session id to send audio to.
+      if (!ghostSessionSetting.get().trim()) {
+        this.setStatus("No Ghost session id set (Settings > Voice); using on-device voice.");
+        return null;
+      }
+      return new GhostSttClient(sttOptions);
     }
     const apiKey = options.openAiApiKey.trim();
     if (!apiKey) {

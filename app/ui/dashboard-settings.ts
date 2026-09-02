@@ -425,13 +425,27 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
     "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
+// (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx
+// Whisper backend. Same underlying model family, two different places it
+// runs -- see the same note in native/voice-control.ts. The "whisper" value
+// keeps its name (it's a persisted setting on real installs) but its label
+// below now says "OpenAI" to tell the two apart in the picker.
+// "ghost" transcribes on Chris's own Ghost box (Fedora Server N150 mini PC)
+// over Tailscale, reusing ghostHostSetting/ghostTokenSetting/ghostSessionSetting
+// above -- a genuinely local, non-third-party option distinct from the three
+// cloud providers, but NOT a phone-stays-offline option like the two On-device
+// ones: audio still leaves the phone, just to Chris's own box rather than a
+// vendor. Home-network use only (needs the box reachable); see native/ghost-stt.ts.
+export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "ghost";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
-  onboard: "On-device",
+  onboard: "On-device (Moonshine)",
+  "onboard-whisper": "On-device (Whisper)",
   elevenlabs: "ElevenLabs",
-  whisper: "Whisper",
+  whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
+  ghost: "Ghost box",
 };
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
@@ -439,7 +453,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs", "whisper", "soniox"],
+  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox", "ghost"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -447,7 +461,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. On-device transcription needs the voice model downloaded (below).",
+  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Ghost box transcribes on your own box over Tailscale (Settings > Voice; needs a Session id set below, home network only). The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
@@ -725,6 +739,56 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   description: "Access token for the Nightscout site's API.",
 });
 
+/**
+ * Ghost host/token/session id. Defined here (not in apps/ghost/ghost-client.ts,
+ * which re-exports these) so native/ghost-stt.ts -- the box-side Transcription
+ * Provider option -- can read them without a native/ -> apps/ dependency;
+ * native/nightscout-bridge.ts already imports from this file the same way.
+ * ghostSpeakSetting and ghostAutoFollowSetting stay in ghost-client.ts: they're
+ * Ghost-app UI behavior, not something the STT client needs.
+ *
+ * The tailnet address of the box, not a LAN IP: the glasses follow Chris out
+ * of the house and Tailscale is what makes that work. Kept as the literal
+ * address rather than MagicDNS ('ghost') because name resolution inside the
+ * app is one more thing that can fail silently.
+ */
+const GHOST_DEFAULT_HOST = "http://100.100.41.21:32352";
+
+export const ghostHostSetting = new ConfigSettingString({
+  id: "ghost-host",
+  label: "Ghost host",
+  storageKey: "ghost.host",
+  defaultValue: GHOST_DEFAULT_HOST,
+  description: "Address of the box running cc-web, e.g. http://100.100.41.21:32352",
+  normalize: (value) => normalizeGhostHost(value ?? ""),
+});
+
+export const ghostTokenSetting = new ConfigSettingString({
+  id: "ghost-token",
+  label: "Ghost token",
+  storageKey: "ghost.token",
+  defaultValue: "",
+  inputKind: "password",
+  description: "Bearer token for the box's --auth. Empty sends no header at all.",
+  // Masked rather than truncated: the settings row is on the lens, in public.
+  formatValue: (value) => (value ? "••••••" : ""),
+});
+
+export const ghostSessionSetting = new ConfigSettingString({
+  id: "ghost-session",
+  label: "Session id",
+  storageKey: "ghost.sessionId",
+  defaultValue: "",
+  description: "Which cc-web session to follow. Setting it by hand turns auto-follow off.",
+});
+
+/** Trim, drop a trailing slash, and assume http:// when no scheme was typed. */
+function normalizeGhostHost(raw: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return GHOST_DEFAULT_HOST;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withScheme.replace(/\/+$/, "");
+}
 
 export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | null {
   switch (value) {

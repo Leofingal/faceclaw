@@ -12,8 +12,15 @@
  * Android-notification surface; Ghost is the session, not the tray. So this
  * keeps the existing behaviour: one GET every few seconds against the box.
  */
-import { ConfigSettingBoolean, ConfigSettingString } from "../../ui/dashboard-settings";
+import {
+  ConfigSettingBoolean,
+  ghostHostSetting,
+  ghostSessionSetting,
+  ghostTokenSetting,
+} from "../../ui/dashboard-settings";
 import { fetchWithUserAgent } from "../../util/http";
+
+export { ghostHostSetting, ghostTokenSetting, ghostSessionSetting };
 
 /**
  * One entry of the feed, exactly as the box's own digester emits it
@@ -41,42 +48,13 @@ export type GhostFeed = {
 
 // ---------------------------------------------------------------------------
 // Settings
-
-/**
- * The tailnet address of the box, not a LAN IP: the glasses follow Chris out
- * of the house and Tailscale is what makes that work. Kept as the literal
- * address rather than MagicDNS ('ghost') because name resolution inside the
- * app is one more thing that can fail silently.
- */
-const DEFAULT_HOST = "http://100.100.41.21:32352";
-
-export const ghostHostSetting = new ConfigSettingString({
-  id: "ghost-host",
-  label: "Ghost host",
-  storageKey: "ghost.host",
-  defaultValue: DEFAULT_HOST,
-  description: "Address of the box running cc-web, e.g. http://100.100.41.21:32352",
-  normalize: (value) => normalizeHost(value ?? ""),
-});
-
-export const ghostTokenSetting = new ConfigSettingString({
-  id: "ghost-token",
-  label: "Ghost token",
-  storageKey: "ghost.token",
-  defaultValue: "",
-  inputKind: "password",
-  description: "Bearer token for the box's --auth. Empty sends no header at all.",
-  // Masked rather than truncated: the settings row is on the lens, in public.
-  formatValue: (value) => (value ? "••••••" : ""),
-});
-
-export const ghostSessionSetting = new ConfigSettingString({
-  id: "ghost-session",
-  label: "Session id",
-  storageKey: "ghost.sessionId",
-  defaultValue: "",
-  description: "Which cc-web session to follow. Setting it by hand turns auto-follow off.",
-});
+//
+// ghostHostSetting / ghostTokenSetting / ghostSessionSetting now live in
+// ui/dashboard-settings.ts (imported above, re-exported below for existing
+// callers of this module) so native/ghost-stt.ts -- the box-side
+// Transcription Provider option -- can read them without a native/ -> apps/
+// import. ghostSpeakSetting and ghostAutoFollowSetting stay here: they're
+// Ghost-app UI behavior the STT client has no reason to touch.
 
 export const ghostSpeakSetting = new ConfigSettingBoolean({
   id: "ghost-speak",
@@ -94,14 +72,6 @@ export const ghostAutoFollowSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description: "Track whichever session the box has marked active, instead of a fixed id.",
 });
-
-/** Trim, drop a trailing slash, and assume http:// when no scheme was typed. */
-function normalizeHost(raw: string): string {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed) return DEFAULT_HOST;
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  return withScheme.replace(/\/+$/, "");
-}
 
 export function ghostHost(): string {
   return ghostHostSetting.get();
