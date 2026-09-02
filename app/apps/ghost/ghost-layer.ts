@@ -45,8 +45,6 @@ import {
   ghostSessionId,
   ghostSessionSetting,
   ghostSpeakSetting,
-  joinAddition,
-  refineDictation,
   sendApproval,
   sendInput,
   ttsUrl,
@@ -87,7 +85,6 @@ export type GhostMicState =
   | "listening"
   | "sending"
   | "confirming"
-  | "refining"
   | "failed";
 
 export class GhostLayer implements Layer {
@@ -445,24 +442,27 @@ export class GhostLayer implements Layer {
     let hint = "";
     switch (this.micState) {
       case "listening": {
-        const said = (this.heard + (this.interim ? ` ${this.interim}` : "")).trim();
+        // Chris, 2026-09-01: the live word-by-word interim text "was trying to
+        // update my screen live as I type" - a repaint on every partial STT
+        // chunk, real trouble before too. Screen now stays static through the
+        // whole capture; the transcript only ever appears once, on the confirm
+        // screen, after a tap ends it. (this.interim is still tracked in
+        // onTranscript in case something else ever wants it, just not painted
+        // here or used to build the headline.)
+        //
         // "Adding" rather than "Listening" when this capture supplements a
         // transcript already waiting on the confirm screen. The two captures
         // are one scroll apart and produce an identical screen otherwise, so
         // the label is the only thing telling Chris whether what he says next
         // is MERGED INTO what he already said or REPLACES it.
         const verb = this.addingToRaw ? "Adding" : "Listening";
-        headline = said || `${verb}...  ${spinner}`;
-        body = said ? [] : [this.micStatus || "Speak, then tap to send."];
+        headline = `${verb}...  ${spinner}`;
+        body = [this.micStatus || "Speak, then tap to send."];
         hint = gestureHints([[GESTURE_CLICK, "send"]]);
         break;
       }
       case "sending":
         headline = `Sending...  ${spinner}`;
-        break;
-      case "refining":
-        headline = `Refining...  ${spinner}`;
-        body = ["Merging what you added."];
         break;
       case "confirming":
         // Chris's own three options (session 0135): "Send as is, let the agent
@@ -587,9 +587,10 @@ export class GhostLayer implements Layer {
       this.commitCapture();
       return;
     }
-    // A transcription or a refine is in flight; the tap that would start a
-    // fresh capture has to wait for it.
-    if (this.micState === "sending" || this.micState === "refining") return;
+    // A transcription is in flight; the tap that would start a fresh capture
+    // has to wait for it. (Refine is synchronous now - see refineNow - so
+    // there is no separate in-flight state for it to wait on any more.)
+    if (this.micState === "sending") return;
     this.startListening(false);
   }
 
@@ -866,9 +867,11 @@ export class GhostLayer implements Layer {
     if (!this.capturing) return;
     if (!event.isFinal) {
       if (this.micState !== "listening") return;
-      // REPLACE semantics, not a delta — render what arrived, as-is.
+      // Tracked (REPLACE semantics, not a delta) but deliberately NOT painted
+      // - Chris, 2026-09-01: the live per-chunk repaint was itself the
+      // trouble. The listening screen now stays static; no requestRender()
+      // here on purpose.
       this.interim = event.text;
-      this.requestRender();
       return;
     }
     if (this.micState !== "listening" && this.micState !== "sending") return;
@@ -885,7 +888,7 @@ export class GhostLayer implements Layer {
     // to nothing is not a failed dictation, it is "refine with no addition" —
     // he triggered a refine and stayed quiet.
     if (asAddition) {
-      void this.refineNow(text);
+      this.refineNow(text);
       return;
     }
     if (!text) {
@@ -903,25 +906,31 @@ export class GhostLayer implements Layer {
     this.requestRender();
   }
 
-  private async refineNow(addition: string): Promise<void> {
-    const base = this.refineBase;
-    this.micState = "refining";
-    this.heard = base; // so any bail-out lands on real text, never blank
-    this.requestRender();
-    try {
-      const result = await refineDictation(ghostSessionId(), base, addition);
-      if (this.micState !== "refining") return; // he navigated away; his call wins
-      this.heard = result.text;
-      this.refineOk = result.ok;
-    } catch {
-      if (this.micState !== "refining") return;
-      // The box is unreachable or the route failed. The addition is still
-      // something he said and meant to send, so concatenate rather than drop
-      // it — unpolished and confirmable beats losing his words.
-      this.heard = joinAddition(base, addition);
-      this.refineOk = false;
-    }
+  /**
+   * Combine the original dictation with a follow-up capture. Chris,
+   * 2026-09-01, after the box's own Haiku merge (refineDictation) failed him
+   * twice in one evening: it dropped his first transcript wholesale rather
+   * than merging when that transcript read as too garbled to be "missing a
+   * detail" (a real edge case in the merge prompt's own instructions, not a
+   * fluke), and it seemed to stop working while the interactive session was
+   * busy — plausible, since it spawned its own claude process on the box,
+   * competing for capacity. His own fix, not a guess: "we must be doing
+   * something too complicated... stop trying to interpret the text and just
+   * send it... you can just get the two parts and interpret them." So this
+   * no longer calls the box at all — pure, local, synchronous string
+   * assembly, nothing left to be unreliable. Labeled "Send 1" / "Send 2"
+   * rather than silently space-joined (his own suggestion), so whoever reads
+   * it downstream — the live conversation, not a separate model call — can
+   * tell this was two passes, not one continuous utterance.
+   */
+  private refineNow(addition: string): void {
+    const base = this.refineBase.trim();
+    const add = addition.trim();
+    // No addition is not this function's job to relabel — he triggered a
+    // refine and stayed quiet, so the base goes back exactly as it was.
+    this.heard = add ? `Send 1: ${base}\nSend 2 (addendum): ${add}` : base;
     this.refineBase = this.heard;
+    this.refineOk = true;
     this.micState = "confirming";
     this.requestRender();
   }
