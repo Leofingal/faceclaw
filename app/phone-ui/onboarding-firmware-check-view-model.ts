@@ -83,7 +83,15 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   get secondaryLabel(): string {
-    return "Back";
+    // Chris, 2026-09-01: went looking for a way to re-flash after Jim shipped
+    // an updated CFW and this screen just said "Finish" - hasCustomFirmware()
+    // only checks for the presence of our capability tokens (img640/fbguard/
+    // wearnotify), which an OLDER custom build also advertises, so "custom"
+    // means "some build of ours is already on there", not "the current one
+    // is." There is no on-device signal that distinguishes CFW builds at all
+    // (see firmware-compat.ts), so this can only ever be an explicit,
+    // deliberate escape hatch, never something the check offers on its own.
+    return this._phase === "custom" ? "Reflash anyway" : "Back";
   }
 
   get primaryVisibility(): "visible" | "collapse" {
@@ -91,8 +99,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   get secondaryVisibility(): "visible" | "collapse" {
-    // Once the custom firmware is confirmed present, Finish is the only action.
-    return this._phase === "custom" || this._phase === "fonts" ? "collapse" : "visible";
+    // "fonts" is a transient busy state - nothing should be tappable there.
+    return this._phase === "fonts" ? "collapse" : "visible";
   }
 
   get errorActionsVisibility(): "visible" | "collapse" {
@@ -119,6 +127,15 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   onSecondaryTap(): void {
+    if (this._phase === "custom") {
+      // Same destination as the flashable/newer paths - the flash process
+      // always downloads a fresh pinned image and does a full write
+      // regardless of what is currently on the glasses (session 0143), so
+      // this genuinely re-flashes rather than fighting the "already custom"
+      // classification.
+      this.goToFlashing();
+      return;
+    }
     this.disposeProbe();
     const frame = Frame.topmost();
     if (frame?.canGoBack()) {
