@@ -628,7 +628,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
       .then(() => renderAndSubmit(win, frameId));
     return;
   }
-  if (event.type === "long-press") {
+  if (event.type === "short-then-long-press") {
     const items = [...defaultWindowMenuItems(win.windowId, post)];
     if (phase === "navigating" || phase === "arrived") {
       items.unshift({
@@ -698,7 +698,7 @@ function paintIdle(image: GrayImage): void {
   image.drawText(mediumFont, 24, 16, "Navigate", 245);
   const busy = phase !== "idle";
   const hint = isMapboxConfigured()
-    ? "Ask the voice assistant to navigate somewhere, or use Voice input from the long-press menu to say a destination."
+    ? "Ask the voice assistant to navigate somewhere, or use Voice input from the tap-then-hold menu to say a destination."
     : "Set a Mapbox token in Settings > API Keys to enable navigation.";
   image.drawTextWrapped({ font: smallFont, x: 24, y: 64, width: image.width - 48, text: hint, value: 170 });
   if (statusMessage) {

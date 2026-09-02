@@ -1,5 +1,5 @@
 /**
- * Ghost's window: the layer, its long-press menu, the text plumbing, and the
+ * Ghost's window: the layer, its tap-then-hold menu, the text plumbing, and the
  * poll loop that feeds it.
  *
  * The poll runs for as long as the window is open, foreground or not. That is

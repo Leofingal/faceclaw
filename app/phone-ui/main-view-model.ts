@@ -1318,8 +1318,9 @@ export class MainViewModel extends Observable {
   // ---- the phone's own controller: touchpad, d-pad, mirror touch ----
   //
   // Everything here is the watch scheme (origin "watch"): spatial swipes,
-  // tap = select, double-tap / two fingers = back, hold = menu. The ring row
-  // above stays on the ring's own scheme.
+  // tap = select, double-tap / two fingers = back, hold = the focused app's
+  // own direct action (if any), tap-then-hold = its menu. The ring row above
+  // stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
   // See the ring pad above: defers the double-click so a longPress can turn

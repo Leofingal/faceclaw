@@ -439,7 +439,7 @@ export class FileBrowserLayer implements Layer {
   }
 
   /**
-   * App-specific entries for the window long-press menu: the view switch,
+   * App-specific entries for the window's tap-then-hold menu: the view switch,
    * plus bookmark/unbookmark for the selected entry (in icons view only once
    * an item, not just a row, is selected).
    */

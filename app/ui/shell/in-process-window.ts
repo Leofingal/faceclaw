@@ -33,9 +33,9 @@ export type InProcessWindowOptions = {
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
   /**
-   * App-specific entries for the window's long-press menu, listed ahead of
-   * the default Voice input / Close window entries. Called at open time, so
-   * the items can reflect current app state.
+   * App-specific entries for the window's tap-then-hold menu, listed ahead
+   * of the default Voice input / Close window entries. Called at open time,
+   * so the items can reflect current app state.
    */
   menuItems?: () => MenuItem[];
   /** Shared actions; requestRender is rebound to this window's render. */
@@ -130,12 +130,12 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     }
   }
 
-  // The window's long-press menu: app-specific items, then the defaults every
-  // window shares. In-process apps run on the main thread, so the default
-  // items act on the shell directly (workers post messages instead).
+  // The window's tap-then-hold menu: app-specific items, then the defaults
+  // every window shares. In-process apps run on the main thread, so the
+  // default items act on the shell directly (workers post messages instead).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    // "Focus app switcher" first: long-press then tap defocuses the app
+    // "Focus app switcher" first: tap-then-hold then tap defocuses the app
     // (hands focus to the sidebar) without closing it — the reliable way out
     // for apps that consume double-click.
     const items: MenuItem[] = [
@@ -188,9 +188,13 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     },
     drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
-      // The default long-press response: the window menu. Handled here (not
-      // per-layer) so it works over submenus and app content alike.
-      if (event.type === "long-press") {
+      // The default tap-then-hold response: the window menu. Handled here
+      // (not per-layer) so it works over submenus and app content alike. An
+      // ordinary long-press used to open this too, but that made the menu
+      // pop on any accidental ring/touchpad contact -- it now falls through
+      // to the layer stack below, so apps are free to bind it to a direct
+      // action (or nothing) instead.
+      if (event.type === "short-then-long-press") {
         openWindowMenu();
         await render(frameId);
         return;

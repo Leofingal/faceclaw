@@ -8,7 +8,7 @@
  * on a destination moves there; cascade-to-cascade moves take the longest
  * legal run that fits (supermoves via empty cells/columns). Double-click
  * sends the card at the cursor to its foundation, or cancels a pending
- * selection. Long-press opens the window menu (undo, new game, restart).
+ * selection. Short-then-long-press opens the window menu (undo, new game, restart).
  * Watch swipes move the cursor spatially: left/right within the row, up/down
  * between the top row (cells + foundations) and the cascades.
  * Safe cards auto-play to the foundations after every move.
@@ -25,7 +25,7 @@ import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
-import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, GESTURE_SHORT_THEN_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
 declare const com: any;
@@ -105,7 +105,7 @@ type FreecellWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: "playing" | "won";
   cascades: number[][];
@@ -212,7 +212,7 @@ function playSfx(window: FreecellWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
+/** The window's tap-then-hold menu (game actions + default entries). */
 function openWindowMenu(window: FreecellWindow): void {
   const items: MenuItem[] = [];
   if (window.undoStack.length > 0 && window.phase === "playing") {
@@ -326,7 +326,7 @@ function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: 
         sendToFoundation(window, window.cursor);
       }
       break;
-    case "long-press":
+    case "short-then-long-press":
       openWindowMenu(window);
       break;
     default:
@@ -346,7 +346,7 @@ function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: numb
       frameTimings.finishFrame(frameId, "discarded: freecell yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       openWindowMenu(window);
       break;
     default:
@@ -748,7 +748,7 @@ function paintWinOverlay(image: GrayImage, window: FreecellWindow): void {
   drawCenteredIn(image, largeFont, x, width, y + 14, "You win!", 255);
   drawCenteredIn(image, smallFont, x, width, y + 56, `${window.moves} moves`, 170);
   drawCenteredIn(image, smallFont, x, width, y + 80, `${GESTURE_CLICK} new game   ${GESTURE_DOUBLE_CLICK} leave`, 150);
-  drawCenteredIn(image, smallFont, x, width, y + 98, `${GESTURE_LONG_PRESS} menu`, 150);
+  drawCenteredIn(image, smallFont, x, width, y + 98, `${GESTURE_SHORT_THEN_LONG_PRESS} menu`, 150);
 }
 
 function drawCenteredIn(

@@ -35,10 +35,11 @@ class EvenHubAppLayer implements Layer {
   }
 
   handleInput(event: InputEvent): void {
-    // Everything goes to the app; long-press never reaches here (the window
-    // menu intercepts it), which is the guaranteed way out since EvenHub
-    // apps own double-click. The press is still reported to the app as
-    // LONG_PRESS_EVENT — see the handleInput wrapper below.
+    // Everything goes to the app, including plain long-press (reported as
+    // LONG_PRESS_EVENT/LONG_PRESS_RELEASE_EVENT, SDK 0.0.14) -- only
+    // short-then-long-press is intercepted before reaching here, to open the
+    // window menu, which is the guaranteed way out since EvenHub apps own
+    // double-click.
     this.session.handleGesture(event);
   }
 }
@@ -62,10 +63,10 @@ export function createEvenHubWindow(
       fallbackIcon,
     ),
     heightMode: "medium",
-    // The window's long-press menu doubles as the OS contextual menu EvenHub
-    // apps register with `menuObject` (SDK 0.0.14): the app's own entries come
-    // first, then the host entries. Evaluated at open time, so a rebuild that
-    // changes or clears the menu is reflected on the next press.
+    // The window's tap-then-hold menu doubles as the OS contextual menu
+    // EvenHub apps register with `menuObject` (SDK 0.0.14): the app's own
+    // entries come first, then the host entries. Evaluated at open time, so a
+    // rebuild that changes or clears the menu is reflected on the next press.
     menuItems: () => [
       ...session.contextMenuItems().map((item) => ({
         label: item.itemName,
@@ -101,17 +102,13 @@ export function createEvenHubWindow(
     windowId,
   });
 
-  // LONG_PRESS_EVENT / LONG_PRESS_RELEASE_EVENT (SDK 0.0.14). Wrapped at the
-  // window rather than handled in the base layer because the press opens the
-  // window menu and so never reaches a layer, and because the release lands on
-  // that menu once it is up.
-  const baseHandleInput = created.window.handleInput;
-  created.window.handleInput = async (event, frameId) => {
-    if (event.type === "long-press" || event.type === "long-press-release") {
-      session.handleGesture(event);
-    }
-    await baseHandleInput(event, frameId);
-  };
+  // LONG_PRESS_EVENT / LONG_PRESS_RELEASE_EVENT (SDK 0.0.14) used to need
+  // wrapping here: an ordinary long-press opened the window menu and so
+  // never reached the base layer at all. Now the menu opens only on
+  // short-then-long-press (in-process-window.ts), so a plain press/release
+  // reaches EvenHubAppLayer.handleInput -> session.handleGesture directly,
+  // the same path every other event type already used. A wrapper here now
+  // would double-dispatch the gesture to the app.
 
   // FOREGROUND_ENTER/EXIT for the app on shell focus changes.
   const baseSetForeground = created.window.setForeground;

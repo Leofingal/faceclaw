@@ -339,7 +339,7 @@ class DashboardController {
     shell.configure({
       actions: {
         ...sharedActions,
-        // Shell overlays (voice dialog, long-press menu) live on the shell
+        // Shell overlays (voice dialog, tap-then-hold menu) live on the shell
         // surface, so their repaints go through the shell render path.
         requestRender: () => this.requestShellRender(),
       },

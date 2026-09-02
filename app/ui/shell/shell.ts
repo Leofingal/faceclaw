@@ -57,12 +57,14 @@ import {
  *
  * Input flow: every event enters via receiveInput. The shell consumes
  * everything while the sidebar or a shell overlay has focus and forwards the
- * rest to the focused window. Long-press goes to the foreground window (from
- * the sidebar it focuses the window first); by convention apps answer it with
- * a window menu that ends in Voice input / Close window. Holding the press
- * past the escape threshold opens the shell's own escape menu, so the shell
- * keeps working when a window's handler hangs. The 2.2.9 tap-then-hold gesture
- * opens that shell menu immediately.
+ * rest to the focused window. Long-press and the 2.2.9 tap-then-hold gesture
+ * both go to the foreground window (from the sidebar either one focuses the
+ * window first), but they mean different things: long-press is free for an
+ * app's own direct-action binding, and by convention apps answer
+ * tap-then-hold with a window menu that ends in Voice input / Close window.
+ * Holding an ordinary long-press past the escape threshold opens the shell's
+ * own escape menu instead, independent of whatever the app does with either
+ * gesture, so the shell keeps working when a window's handler hangs.
  */
 
 export type ShellWindow = {
@@ -695,20 +697,41 @@ class Shell {
       return { shell: false, window: false };
     }
 
-    // The 2.2.9 tap-then-hold gesture is a direct, shell-owned escape hatch.
-    // Unlike an ordinary long-press it never reaches the app or starts the
-    // fallback timer: it opens the same system menu that an extended hold
-    // would eventually open. Its later generic release is consumed while the
-    // shell overlay is active and therefore cannot leak into the app.
+    // The 2.2.9 tap-then-hold gesture is the deliberate, compound gesture
+    // for "open this window's own menu" (app-specific items, Voice input,
+    // Close window) -- the ring's plain long-press is too easy to trigger by
+    // accident (ordinary handling/wearing) to keep using it for that, per
+    // Chris's own field report. It is forwarded to the window exactly like
+    // an ordinary long-press below, just without starting the escape-menu
+    // fallback timer -- that stays keyed to an extended hold of the plain
+    // gesture (see below), which remains the one gesture guaranteed to reach
+    // the shell's escape menu even if the foreground app is wedged. Nothing
+    // upstream distinguishes it from long-press for a foregrounding/focus
+    // purpose, so it shares that logic rather than duplicating it.
     if (event.type === "short-then-long-press") {
-      this.openEscapeMenu();
-      return { shell: true, window: false };
+      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
+        return { shell: true, window: false };
+      }
+      const window = this.foregroundWindow();
+      if (!window) {
+        return { shell: true, window: false };
+      }
+      if (this.focus === "sidebar") {
+        this.focus = "window";
+        window.onFocus?.(this.lastInput);
+      }
+      await window.handleInput(event, frameId);
+      return { shell: true, window: true };
     }
 
     // Long-press goes to the foreground window (from the sidebar it focuses
-    // the window first); apps conventionally answer it with their window
-    // menu. The escape timer runs regardless of what the app does with it:
-    // holding the press long enough opens the shell's own menu.
+    // the window first): apps that bind it to a direct action (Exocortex's
+    // notification clear-all, a game's nudge/flag/hard-drop, ...) see it
+    // here. It no longer doubles as "open the window's menu" -- that moved to
+    // short-then-long-press, above -- but holding it past
+    // LONG_PRESS_ESCAPE_MENU_MS still opens the shell's own escape menu
+    // regardless of what the app does with it (the safety net an
+    // unresponsive app can't block; see startEscapeMenuTimer).
     if (event.type === "long-press") {
       this.startEscapeMenuTimer();
       if (this.activeVoiceLayer || !this.stack.isAtBase()) {
@@ -1216,9 +1239,12 @@ class Shell {
 
   /**
    * The system/escape menu. Shell-owned and shell-drawn (never the app's), so
-   * an unresponsive app can always be closed. It opens after an extended hold
-   * or immediately for tap-then-hold, over whatever the app did with an earlier
-   * ordinary long-press, including opening its own menu.
+   * an unresponsive app can always be closed. Reachable only by holding an
+   * ordinary long-press past LONG_PRESS_ESCAPE_MENU_MS -- deliberately the
+   * one path that does not depend on the foreground app or window ever
+   * seeing the press (see startEscapeMenuTimer). Tap-then-hold no longer
+   * routes here; it opens the window's own menu instead (see
+   * handleShellInput's short-then-long-press branch).
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;

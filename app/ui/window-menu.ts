@@ -6,11 +6,15 @@ import { MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
 
 /**
- * The window long-press menu. By convention every app answers a long-press by
- * opening one of these: its app-specific actions followed by the default
- * entries (Voice input, Close window). This is a convenience path, not the
- * safety net — the shell separately opens its own escape menu when the press
- * is held long enough, so an unresponsive app can always be closed.
+ * The window's tap-then-hold menu. By convention every app answers the
+ * compound short-then-long-press gesture by opening one of these: its
+ * app-specific actions followed by the default entries (Voice input, Close
+ * window). This is a convenience path, not the safety net — the shell
+ * separately opens its own escape menu when an ordinary long-press is held
+ * long enough, so an unresponsive app can always be closed even if it never
+ * sees the compound gesture at all. Plain long-press itself is free for an
+ * app's own direct-action bindings (a game's nudge/flag/hard-drop, a
+ * clear-all, ...) — it is no longer eaten by this menu.
  */
 
 /** Viewport-relative layout; visually matches the shell's escape menu position. */

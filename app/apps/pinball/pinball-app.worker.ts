@@ -17,7 +17,7 @@
  * Watch swipes: left/right work the matching flipper, up nudges (or raises
  * launch power at the plunger), down lowers launch power.
  * Paused/game over: click resumes or starts a new game, double-click yields
- * focus, long-press opens the window menu.
+ * focus, short-then-long-press opens the window menu.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -247,7 +247,7 @@ type PinballWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** "ready" = parked on the plunger awaiting launch; "live" = in play. */
@@ -443,7 +443,7 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
+/** The window's tap-then-hold menu (game actions + default entries). */
 function openWindowMenu(window: PinballWindow): void {
   windowMenu(window).open([
     {
@@ -573,7 +573,7 @@ function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: numb
       frameTimings.finishFrame(frameId, "discarded: pinball yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       openWindowMenu(window);
       break;
     default:

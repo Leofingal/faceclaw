@@ -47,7 +47,7 @@ type TimerWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   view: TimerView;
   stopwatchAction: number;
@@ -292,7 +292,7 @@ function refreshWindowsAfterToolChange(): void {
   }
 }
 
-/** The window's long-press menu (default entries only), created lazily. */
+/** The window's tap-then-hold menu (default entries only), created lazily. */
 function windowMenu(window: TimerWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
@@ -313,7 +313,7 @@ function handleInput(window: TimerWindow, event: InputEvent, frameId: number): v
       .then(() => renderAndSubmit(window, frameId));
     return;
   }
-  if (event.type === "long-press") {
+  if (event.type === "short-then-long-press") {
     windowMenu(window).open(defaultWindowMenuItems(window.windowId, post));
     renderAndSubmit(window, frameId);
     return;

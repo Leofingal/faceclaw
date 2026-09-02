@@ -478,7 +478,7 @@ function notificationBody(notification: AndroidNotification): string {
  * index.ts's `boot` callback, never through launchInProcessApp.
  *
  * Uncloseable on purpose. `closeable: false` does two things: it drops "Close
- * window" from the long-press menu, and it makes shell.closeWindow ignore this
+ * window" from the tap-then-hold menu, and it makes shell.closeWindow ignore this
  * window id, so the shell's own escape paths can't take it either. Nothing
  * re-opens it — the home screen is what every other window falls back to when
  * it closes, so losing it would leave the glasses with nothing to show.

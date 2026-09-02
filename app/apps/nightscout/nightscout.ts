@@ -303,7 +303,7 @@ export class NightscoutLayer implements Layer {
 
     if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
       image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(font, 22, 44 + step, "Long-press for the menu, then pick Settings to set", 140);
+      image.drawText(font, 22, 44 + step, "Tap-then-hold for the menu, then pick Settings to set", 140);
       image.drawText(font, 22, 44 + 2 * step, "the site URL and API token.", 140);
       return image;
     }
@@ -363,7 +363,7 @@ export class NightscoutLayer implements Layer {
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    // The menu lives on the window's long-press menu (see nightscoutMenuItems);
+    // The menu lives on the window's tap-then-hold menu (see nightscoutMenuItems);
     // double-click at the app root is handled by the yield wrapper.
     if (event.type === "double-click") {
       ctx.stack.pop();
@@ -371,7 +371,7 @@ export class NightscoutLayer implements Layer {
   }
 }
 
-/** App-specific entries for the window's long-press menu. */
+/** App-specific entries for the window's tap-then-hold menu. */
 export function nightscoutMenuItems(): MenuItem[] {
   return [
     {

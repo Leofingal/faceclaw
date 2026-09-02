@@ -6,7 +6,7 @@
  * Controls (in play): scroll moves the piece, click rotates, long-press hard
  * drops, double-click pauses. Watch swipes are spatial: left/right move,
  * up rotates, down hard-drops. Paused: click resumes, double-click yields
- * focus, long-press opens the window menu.
+ * focus, short-then-long-press opens the window menu.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -141,7 +141,7 @@ type BlocksWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** Locked cells; 0 = empty, otherwise the piece's shade byte. */
@@ -285,7 +285,7 @@ function playSfx(window: BlocksWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (sound toggle + default entries). */
+/** The window's tap-then-hold menu (sound toggle + default entries). */
 function openWindowMenu(window: BlocksWindow): void {
   windowMenu(window).open([
     {
@@ -378,7 +378,7 @@ function handleIdleInput(window: BlocksWindow, event: InputEvent, frameId: numbe
       frameTimings.finishFrame(frameId, "discarded: blocks yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       openWindowMenu(window);
       break;
     default:

@@ -11,7 +11,7 @@
  * Watch swipes skip the two-layer scheme and move the cell cursor in four
  * directions; a watch double-click pauses directly.
  * Paused/won/lost: click resumes or starts a new game, double-click yields
- * focus, long-press opens the window menu.
+ * focus, short-then-long-press opens the window menu.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -30,6 +30,7 @@ import {
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  GESTURE_SHORT_THEN_LONG_PRESS,
   isWatchInput,
   type InputEvent,
 } from "../../ui/gestures";
@@ -99,7 +100,7 @@ type MinesweeperWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   difficultyIndex: number;
@@ -249,7 +250,7 @@ function playSfx(window: MinesweeperWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
+/** The window's tap-then-hold menu (game actions + default entries). */
 function openWindowMenu(window: MinesweeperWindow): void {
   const nextDifficulty = DIFFICULTIES[(window.difficultyIndex + 1) % DIFFICULTIES.length]!;
   windowMenu(window).open([
@@ -391,7 +392,7 @@ function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: 
       frameTimings.finishFrame(frameId, "discarded: minesweeper yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       openWindowMenu(window);
       break;
     default:
@@ -693,7 +694,7 @@ function paintPanel(image: GrayImage, window: MinesweeperWindow): void {
   if (window.phase === "won" || window.phase === "lost") {
     image.drawText(mediumFont, PANEL_X, BOARD_Y + 152, window.phase === "won" ? "CLEARED!" : "BOOM!", 250);
     image.drawText(smallFont, PANEL_X, BOARD_Y + 178, `${GESTURE_CLICK} new game`, 150);
-    image.drawText(smallFont, PANEL_X, BOARD_Y + 198, `${GESTURE_LONG_PRESS} menu`, 150);
+    image.drawText(smallFont, PANEL_X, BOARD_Y + 198, `${GESTURE_SHORT_THEN_LONG_PRESS} menu`, 150);
   } else if (window.selectMode === "row") {
     image.drawText(smallFont, PANEL_X, 200, `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick`, 115);
     image.drawText(smallFont, PANEL_X, 222, `${GESTURE_DOUBLE_CLICK} pause`, 115);

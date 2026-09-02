@@ -73,7 +73,7 @@ export class WeatherLayer implements Layer {
   handleInput(event: InputEvent): void {
     const weather = this.state();
     if (event.type === "click") {
-      // Refresh on the forecast view lives in the long-press menu; a tap
+      // Refresh on the forecast view lives in the tap-then-hold menu; a tap
       // only acts on the permission prompt and the error screen.
       if (weather.phase === "permission-required" || weather.phase === "error") {
         this.requestUpdate();

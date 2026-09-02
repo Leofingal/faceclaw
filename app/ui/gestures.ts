@@ -115,6 +115,12 @@ export const GESTURE_SCROLL_UP = "▲";
 export const GESTURE_SCROLL_DOWN = "▼";
 export const GESTURE_SCROLL = "▲▼";
 export const GESTURE_LONG_PRESS = "-";
+/**
+ * short-then-long-press: click glyph then long-press glyph, same composition
+ * pattern as double-click -- both existing codepoints, no new font coverage
+ * needed.
+ */
+export const GESTURE_SHORT_THEN_LONG_PRESS = GESTURE_CLICK + GESTURE_LONG_PRESS;
 
 /**
  * Join "glyph action" hint pairs into a single line, e.g.
