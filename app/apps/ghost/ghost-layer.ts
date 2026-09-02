@@ -326,11 +326,24 @@ export class GhostLayer implements Layer {
     // Chris's own lines are marked with plain ASCII, not a glyph: a structural
     // marker is the one thing that must not become a box on the glass.
     const tag = item.role === "user" ? "You: " : "";
+    // A user turn's headline is capped at 3 wrapped lines (paintPage) with no
+    // overflow indicator and no scroll - fine for a short message, but Chris,
+    // 2026-09-01: "needs to skip straight to full text on my replies", after
+    // tapping expanded on a longer one and finding it "just sits there."
+    // Root cause: item.body only ever holds text AFTER Chris's first '\n'
+    // (server.js's digestUserTurn splits on newlines, not on render width),
+    // which is empty for the ordinary single-paragraph dictated message -
+    // expanding revealed nothing because there was nothing in body to reveal.
+    // The headline itself IS the full text, just cut off at render time. So
+    // for a user item, expanding pulls the headline OUT of the capped title
+    // slot and into the same scrollable body path the prose view already
+    // uses for arbitrary-length content, rather than trying to show body.
+    const isUserItem = item.role === "user";
     this.bodyOverflow = this.paintPage(image, width, height, {
       meta: `ghost — ${this.cursor + 1}/${this.items.length}${item.kind ? ` · ${item.kind}` : ""}`,
       metaRight: ghostSpeakSetting.get() ? "voice" : "",
-      headline: tag + item.headline,
-      body: this.expanded ? item.body : [],
+      headline: this.expanded && isUserItem ? "You said:" : tag + item.headline,
+      body: this.expanded ? (isUserItem ? [item.headline, ...item.body] : item.body) : [],
       scroll: this.bodyScroll,
     });
   }
