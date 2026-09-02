@@ -86,6 +86,9 @@ const TRANSCRIPT_POLL_MS = 3000;
 /** The file manifest changes far less often than the transcript; refetching
  * it every 3s would be pure waste (it walks the whole working tree). */
 const MANIFEST_TTL_MS = 30000;
+/** /api/transcript returns the whole session unbounded, and Rich view's
+ * <Repeater> is not virtualized (see `turns` below) — cap what renders. */
+const RICH_VIEW_MAX_ROWS = 300;
 
 /** One row of the Rich view. */
 export type GhostTurnRow = {
@@ -375,7 +378,16 @@ export class GhostCompanionViewModel extends Observable {
 
   get turns(): GhostTurnRow[] {
     const cursorUuid = this.cursorTurnUuid();
-    return this._transcript.map((turn, index) => {
+    // /api/transcript returns the WHOLE session, unbounded (unlike the
+    // digest's own `limit` param) -- and this XML's <Repeater> is not
+    // virtualized, so an unbounded row count on a long-running session would
+    // mean hundreds of live native views. Cap what actually RENDERS; doc
+    // viewer / cursor matching below still search the full `_transcript`
+    // array, so an older turn stays reachable by pin/cursor even once its
+    // row has scrolled out of this list.
+    const start = Math.max(0, this._transcript.length - RICH_VIEW_MAX_ROWS);
+    return this._transcript.slice(start).map((turn, offset) => {
+      const index = start + offset;
       const { headline, body } = splitHeadlineBody(stripGlassesBlock(turn.text));
       return {
         who: turnWhoLabel(turn),
@@ -387,6 +399,19 @@ export class GhostCompanionViewModel extends Observable {
         onRowTap: () => this.openDocFor(index),
       };
     });
+  }
+
+  /** Surfaces the RICH_VIEW_MAX_ROWS cap rather than silently dropping
+   * history — see `turns` above for why the cap exists. Older turns stay
+   * reachable via Doc viewer's pin/cursor matching even though their row
+   * isn't rendered here. */
+  get olderTurnsHiddenVisibility(): "visible" | "collapse" {
+    return this._transcript.length > RICH_VIEW_MAX_ROWS ? "visible" : "collapse";
+  }
+
+  get olderTurnsHiddenMessage(): string {
+    const hidden = this._transcript.length - RICH_VIEW_MAX_ROWS;
+    return hidden > 0 ? `${hidden} earlier turn${hidden === 1 ? "" : "s"} not shown here` : "";
   }
 
   get feedEmptyVisibility(): "visible" | "collapse" {
@@ -718,6 +743,8 @@ export class GhostCompanionViewModel extends Observable {
    * changes `turns`' content (not just which row is highlighted). */
   private refreshTranscriptViews(): void {
     this.notifyPropertyChange("turns", this.turns);
+    this.notifyPropertyChange("olderTurnsHiddenVisibility", this.olderTurnsHiddenVisibility);
+    this.notifyPropertyChange("olderTurnsHiddenMessage", this.olderTurnsHiddenMessage);
     this.notifyPropertyChange("feedEmptyVisibility", this.feedEmptyVisibility);
     this.notifyPropertyChange("feedEmptyMessage", this.feedEmptyMessage);
     this.notifyPropertyChange("paneStatus", this.paneStatus);

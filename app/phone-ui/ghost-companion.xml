@@ -43,11 +43,18 @@
        compose bar below keeps the same position however deep a pane scrolls. -->
   <GridLayout row="1" swipe="{{ onPaneSwipe }}">
 
-    <!-- Rich view: the feed the lens is paging through, its cursor marked.
-         Tapping a row opens that turn in the Doc viewer. -->
+    <!-- Rich view (round 4): the REAL transcript, every turn, not just the
+         glasses' own digest. Tapping a row opens that turn in the Doc
+         viewer. See ghost-companion-view-model.ts's own header for why this
+         needed a second, separate poll from the glasses' digest one. -->
     <ScrollView visibility="{{ richPaneVisibility }}">
       <StackLayout class="ghost-pane-body">
         <Label text="{{ feedEmptyMessage }}" visibility="{{ feedEmptyVisibility }}"
+          class="ghost-empty" textWrap="true" />
+        <!-- RICH_VIEW_MAX_ROWS caps what actually renders (the Repeater
+             below is not virtualized); this says so instead of silently
+             dropping older history. -->
+        <Label text="{{ olderTurnsHiddenMessage }}" visibility="{{ olderTurnsHiddenVisibility }}"
           class="ghost-empty" textWrap="true" />
         <Repeater items="{{ turns }}">
           <Repeater.itemsLayout>
