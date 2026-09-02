@@ -20,9 +20,20 @@ import {
   mirrorTouchSetting,
   onAnySettingChanged,
   showBleBandwidthSetting,
+  voiceProviderSetting,
+  wakeWordActionSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
+import {
+  ASR_MODELS,
+  asrModelState,
+  cancelAsrModelDownload,
+  deleteAsrModel,
+  onAsrModelStateChanged,
+  startAsrModelDownload,
+  type AsrModelId,
+} from "../native/asr-model";
 import { mutedNotificationSourceCount } from "../native/notification-sources";
 import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
@@ -205,6 +216,12 @@ export class MainViewModel extends Observable {
     }));
     this.syncBleBandwidthPolling();
     this.unsubscribers.push(() => this.stopBleBandwidthPolling());
+    // Round 4: the on-device ASR model downloads' live progress (bytes/sec
+    // ticks while a download runs), mirrored from the glasses' Settings >
+    // Voice menu onto this page — see the "Voice" section below for why.
+    for (const id of Object.keys(ASR_MODELS) as AsrModelId[]) {
+      this.unsubscribers.push(onAsrModelStateChanged(id, () => this.refreshAsrModelControls(id)));
+    }
     // Folding, unfolding, and any other window resize.
     this.unsubscribers.push(onFoldStateChanged((snapshot) => this.setDisplayClass(displayClass(snapshot))));
     this.ghostCompanion.attach();
@@ -1535,6 +1552,128 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
+  // ---- Voice (round 4, on the Settings page) ----
+  //
+  // Chris's own ask (2026-09-01): mirror wake word / transcription provider /
+  // on-device model downloads onto the phone, so changing them doesn't mean
+  // gesture-scrolling the glasses' own Settings > Voice menu. Same
+  // ConfigSettingEnum objects and the same asr-model.ts download machinery
+  // the glasses menu uses (ui/dashboard/settings-menus.ts) — a change here
+  // shows up there and vice versa, exactly like displayModeLabel above.
+
+  get voiceProviderLabel(): string {
+    return voiceProviderSetting.displayValue() + " ▾";
+  }
+
+  async onVoiceProviderTap(): Promise<void> {
+    const current = voiceProviderSetting.get();
+    // Skip options that are disabled for a real reason (no API key entered
+    // yet) rather than offering a choice that would silently fail to record.
+    const selectable = voiceProviderSetting.values.filter((value) => !voiceProviderSetting.isDisabled(value));
+    const options = selectable.map(
+      (value) => voiceProviderSetting.displayValue(value) + (value === current ? "  ✓" : ""),
+    );
+    const picked = await Dialogs.action({ title: "Transcription Provider", cancelButtonText: "Cancel", actions: options });
+    const index = options.indexOf(picked);
+    if (index < 0) return;
+    const value = selectable[index];
+    if (value !== current) voiceProviderSetting.set(value);
+    this.notifyPropertyChange("voiceProviderLabel", this.voiceProviderLabel);
+  }
+
+  get wakeWordActionLabel(): string {
+    return wakeWordActionSetting.displayValue() + " ▾";
+  }
+
+  async onWakeWordActionTap(): Promise<void> {
+    const current = wakeWordActionSetting.get();
+    const options = wakeWordActionSetting.values.map(
+      (value) => wakeWordActionSetting.displayValue(value) + (value === current ? "  ✓" : ""),
+    );
+    const picked = await Dialogs.action({ title: 'Wakeword Action ("Hey Even")', cancelButtonText: "Cancel", actions: options });
+    const index = options.indexOf(picked);
+    if (index < 0) return;
+    const value = wakeWordActionSetting.values[index];
+    if (value !== current) wakeWordActionSetting.set(value);
+    this.notifyPropertyChange("wakeWordActionLabel", this.wakeWordActionLabel);
+  }
+
+  // On-device ASR model downloads: two models, same shape, written once and
+  // called twice rather than a data-bound Repeater — this page's Settings
+  // rows are already all written out explicitly (see "Glasses display"
+  // above), and two is not enough entries to earn a list abstraction.
+  private asrModelStatusText(id: AsrModelId): string {
+    const state = asrModelState(id);
+    const totalLabel = formatMegabytes(state.totalBytes);
+    if (state.status === "ready") return `Downloaded (${totalLabel}) — ready to use`;
+    if (state.status === "downloading") {
+      const pct = state.totalBytes > 0 ? Math.round((state.bytesDownloaded / state.totalBytes) * 100) : 0;
+      return `Downloading… ${pct}% of ${totalLabel}`;
+    }
+    return `Not downloaded (${totalLabel})`;
+  }
+
+  private asrModelButtonLabel(id: AsrModelId): string {
+    const status = asrModelState(id).status;
+    if (status === "ready") return "Delete";
+    if (status === "downloading") return "Cancel";
+    return "Download";
+  }
+
+  private onAsrModelButtonTap(id: AsrModelId): void {
+    const status = asrModelState(id).status;
+    if (status === "ready") deleteAsrModel(id);
+    else if (status === "downloading") cancelAsrModelDownload(id);
+    else startAsrModelDownload(id);
+    // The download/cancel/delete calls above notify asynchronously as bytes
+    // actually move (see the onAsrModelStateChanged subscription in attach());
+    // this covers the immediate state flip (absent -> downloading, etc.) so
+    // the button's own label doesn't wait for the first progress tick.
+    this.refreshAsrModelControls(id);
+  }
+
+  private refreshAsrModelControls(id: AsrModelId): void {
+    if (id === "moonshine") {
+      this.notifyPropertyChange("moonshineModelStatus", this.moonshineModelStatus);
+      this.notifyPropertyChange("moonshineModelButtonLabel", this.moonshineModelButtonLabel);
+    } else if (id === "whisper-base-en") {
+      this.notifyPropertyChange("whisperModelStatus", this.whisperModelStatus);
+      this.notifyPropertyChange("whisperModelButtonLabel", this.whisperModelButtonLabel);
+    }
+  }
+
+  get moonshineModelLabel(): string {
+    return ASR_MODELS.moonshine.label;
+  }
+
+  get moonshineModelStatus(): string {
+    return this.asrModelStatusText("moonshine");
+  }
+
+  get moonshineModelButtonLabel(): string {
+    return this.asrModelButtonLabel("moonshine");
+  }
+
+  onMoonshineModelButtonTap(): void {
+    this.onAsrModelButtonTap("moonshine");
+  }
+
+  get whisperModelLabel(): string {
+    return ASR_MODELS["whisper-base-en"].label;
+  }
+
+  get whisperModelStatus(): string {
+    return this.asrModelStatusText("whisper-base-en");
+  }
+
+  get whisperModelButtonLabel(): string {
+    return this.asrModelButtonLabel("whisper-base-en");
+  }
+
+  onWhisperModelButtonTap(): void {
+    this.onAsrModelButtonTap("whisper-base-en");
+  }
+
   // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
   //
   // A running total of outbound BLE messages/bytes, overlaid at the bottom of
@@ -1626,6 +1765,13 @@ function formatByteRate(bytesPerSec: number): string {
   if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(2) + " MB/s";
   if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(1) + " kB/s";
   return Math.round(bytesPerSec) + " B/s";
+}
+
+/** A plain total, not a rate — the ASR model download rows (round 4). Every
+ * model here is well within the tens-to-low-hundreds of MB range, so unlike
+ * file-info-dialog.ts's formatFileSize this doesn't need a GB tier. */
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(0) + " MB";
 }
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */

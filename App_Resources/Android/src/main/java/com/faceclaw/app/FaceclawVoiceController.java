@@ -121,6 +121,10 @@ public class FaceclawVoiceController {
     private VoiceInputMode mode = VoiceInputMode.CLOUD;
     private volatile OnboardModelKind onboardModelKind = OnboardModelKind.MOONSHINE;
     private OfflineRecognizer recognizer;
+    // Which model kind `recognizer` above was actually built with. Read/written only
+    // from the worker thread (runLoop and its finally block), same as `recognizer`
+    // itself -- start() allows only one worker at a time, so no extra locking needed.
+    private OnboardModelKind recognizerKind;
     private FaceclawLc3Decoder lc3Decoder;
     private final float[] transcriptSamples = new float[TRANSCRIPT_SEGMENT_MAX_SAMPLES];
     private int transcriptSampleCount;
@@ -340,8 +344,15 @@ public class FaceclawVoiceController {
         }
     }
 
+    /**
+     * Real app teardown -- the only other place (besides an on-device model-kind
+     * change, handled inline in runLoop()) the resident recognizer is released.
+     * stop() above joins the worker thread first, so by the time releaseSherpa()
+     * runs here the worker is no longer touching `recognizer` in the common case.
+     */
     public void close() {
         stop();
+        releaseSherpa();
     }
 
     private VoiceInputMode parseMode(String requestedMode) {
@@ -357,13 +368,26 @@ public class FaceclawVoiceController {
             VoiceInputMode currentMode = mode;
             OnboardModelKind currentOnboardKind = onboardModelKind;
             if (currentMode == VoiceInputMode.ONBOARD) {
-                File modelDir = findAsrModelDir(currentOnboardKind);
-                if (modelDir == null) {
-                    emitStatus("Voice model not downloaded (see Settings > Voice).");
-                    return;
+                // The recognizer is kept resident across captures (see recognizerKind
+                // below) -- constructing an OfflineRecognizer loads the ONNX model from
+                // disk, which used to happen fresh on every single push-to-talk press
+                // (measured as the dominant cost in the startup-latency investigation).
+                // Only rebuild it here if it's missing (first capture since app start)
+                // or the wearer just switched on-device models in Settings.
+                if (recognizer != null && recognizerKind != currentOnboardKind) {
+                    recognizer.release();
+                    recognizer = null;
                 }
-                emitStatus("Loading transcription model...");
-                recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir, currentOnboardKind));
+                if (recognizer == null) {
+                    File modelDir = findAsrModelDir(currentOnboardKind);
+                    if (modelDir == null) {
+                        emitStatus("Voice model not downloaded (see Settings > Voice).");
+                        return;
+                    }
+                    emitStatus("Loading transcription model...");
+                    recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir, currentOnboardKind));
+                    recognizerKind = currentOnboardKind;
+                }
                 resetTranscriptState();
                 lastTranscript = "";
             }
@@ -426,7 +450,9 @@ public class FaceclawVoiceController {
         } finally {
             stopG2Audio();
             writeRecordingIfAny();
-            releaseSherpa();
+            // recognizer is NOT released here any more -- it stays resident across
+            // captures (see the ONBOARD branch above). releaseSherpa() now runs only
+            // from close(), on real app teardown.
             releaseLc3();
             synchronized (lock) {
                 started = false;

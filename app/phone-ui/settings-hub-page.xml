@@ -99,6 +99,46 @@
                     </StackLayout>
                 </GridLayout>
 
+                <!-- Voice (round 4): wake word, transcription provider, and
+                     the two on-device model downloads, mirrored from the
+                     glasses' own Settings > Voice menu (Chris's ask,
+                     2026-09-01) so changing them doesn't mean gesture-
+                     scrolling that menu. Same setting objects and the same
+                     download machinery either surface uses — a change here
+                     shows up there and back, like Glasses display above. -->
+                <Label text="Voice" class="home-section-title" />
+                <!-- Round 4, P2 item 6: the real UX debt named alongside this
+                     mirror — this phone page and the glasses' own native
+                     Settings app (a separate Android app) share the name
+                     "Settings" with disjoint content, which is exactly what
+                     had Chris thinking this section had been removed rather
+                     than never mirrored. Cross-linked rather than renamed:
+                     renaming "Settings" itself would touch more surfaces
+                     (the ActionBar title, every place that names this page)
+                     for less real benefit than just saying, once, where the
+                     other copy lives. -->
+                <Label text="Also on the glasses' own Settings app, under Voice — the two stay in step either way." class="home-row-meta" textWrap="true" />
+                <GridLayout rows="auto" columns="auto,*" class="settings-row">
+                    <Label col="0" text="Wakeword action" class="settings-row-label" verticalAlignment="center" />
+                    <Button col="1" text="{{ wakeWordActionLabel }}" tap="{{ onWakeWordActionTap }}" class="mode-button" horizontalAlignment="left" />
+                </GridLayout>
+                <GridLayout rows="auto" columns="auto,*" class="settings-row">
+                    <Label col="0" text="Transcription provider" class="settings-row-label" verticalAlignment="center" />
+                    <Button col="1" text="{{ voiceProviderLabel }}" tap="{{ onVoiceProviderTap }}" class="mode-button" horizontalAlignment="left" />
+                </GridLayout>
+                <GridLayout rows="auto,auto" columns="*,auto" class="settings-row">
+                    <Label row="0" col="0" text="{{ moonshineModelLabel }}" class="settings-row-label" />
+                    <Label row="1" col="0" text="{{ moonshineModelStatus }}" class="home-row-meta" textWrap="true" />
+                    <Button row="0" rowSpan="2" col="1" text="{{ moonshineModelButtonLabel }}" tap="{{ onMoonshineModelButtonTap }}"
+                        class="mode-button" verticalAlignment="center" />
+                </GridLayout>
+                <GridLayout rows="auto,auto" columns="*,auto" class="settings-row">
+                    <Label row="0" col="0" text="{{ whisperModelLabel }}" class="settings-row-label" />
+                    <Label row="1" col="0" text="{{ whisperModelStatus }}" class="home-row-meta" textWrap="true" />
+                    <Button row="0" rowSpan="2" col="1" text="{{ whisperModelButtonLabel }}" tap="{{ onWhisperModelButtonTap }}"
+                        class="mode-button" verticalAlignment="center" />
+                </GridLayout>
+
                 <Label text="Devices" class="home-section-title" />
                 <StackLayout class="home-row" tap="{{ onPairGlassesTap }}">
                     <Label text="Pair glasses" class="home-row-title" />

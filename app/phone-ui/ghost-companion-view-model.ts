@@ -3,30 +3,39 @@
  * (Terminal · Rich view · Doc viewer · Settings) with the compose box docked
  * below the three content panes.
  *
- * It is a VIEW OF THE GLASSES' OWN SESSION. Everything it shows comes from
- * ghost-companion-store, which GhostLayer fills from the poll it is already
- * running; nothing here opens a second connection to the box. The one thing
- * this screen does that the lens cannot is write — a paragraph typed with two
- * thumbs, instead of dictated a sentence at a time through the ring.
+ * It is a VIEW OF THE GLASSES' OWN SESSION for the glasses-facing state
+ * (open/cursor/status) — that part still comes from ghost-companion-store,
+ * which GhostLayer fills from the poll it already runs; nothing here opens a
+ * second connection for THAT. Round 4 (2026-09-02) added a second, genuinely
+ * separate poll (see "Transcript + files" below) for Rich view and Doc
+ * viewer's own content, because the digest that store carries can't serve
+ * either — see transcript-turns.ts's header for exactly why.
  *
  * Where the pilot's four panes landed on what Ghost actually has:
  *
- *   Rich view   the feed, headline + body, exactly the items the lens pages
- *               through, with the lens's own cursor marked. The default pane.
- *   Terminal    the same feed UNDIGESTED — every field of every item in a
- *               monospace dump, plus the poll diagnostics. It is not a live
- *               PTY: the glasses client talks to /api/glasses, which serves
- *               the digested feed and nothing else, so a real terminal would
- *               need a new route on the box. Named for what it is on screen.
- *   Doc viewer  the full prose behind one turn, from /api/glasses/:id/prose/
- *               :uuid — the tier-3 fetch the lens offers on demand. Tapping a
- *               row in Rich view opens it here.
+ *   Rich view   the REAL transcript (round 4): every turn, not just the
+ *               authored <glasses> HUD lines the lens pages through. The
+ *               lens's own cursor is still marked, matched by uuid. Default
+ *               pane.
+ *   Terminal    the glasses' own digest UNDIGESTED — every field of every
+ *               DIGEST item in a monospace dump, plus poll diagnostics. Left
+ *               exactly as it was; round 4's instruction scoped the new
+ *               transcript data path to Rich view and Doc viewer only. Named
+ *               for what it shows on screen, not for what Rich view now is.
+ *   Doc viewer  round 4: the current turn's real file reference when it has
+ *               one — an actual project file, fetched and shown, not an
+ *               echo of the turn's own text (0138's spec, never built before
+ *               now). Falls back to the turn's own text (glasses-block
+ *               stripped) when it doesn't reference a file. Tapping a row in
+ *               Rich view opens it here.
  *   Settings    Ghost's real settings (host, token, session, auto-follow,
  *               speak), the same ConfigSetting objects the glasses menu edits.
  */
 import { Observable } from "@nativescript/core";
 import {
-  fetchProse,
+  fetchFileManifest,
+  fetchFileText,
+  fetchTranscript,
   ghostAutoFollowSetting,
   ghostHostSetting,
   ghostSessionSetting,
@@ -34,6 +43,7 @@ import {
   ghostTokenSetting,
   sendInput,
   type GhostItem,
+  type GhostTurn,
 } from "../apps/ghost/ghost-client";
 import {
   ghostCompanionState,
@@ -41,6 +51,14 @@ import {
   type GhostCompanionState,
 } from "../apps/ghost/ghost-companion-store";
 import { formatErrorMessage } from "../util/format-error";
+import {
+  buildBasenameIndex,
+  findFileReference,
+  isTextRenderableReference,
+  splitHeadlineBody,
+  stripGlassesBlock,
+  turnWhoLabel,
+} from "./transcript-turns";
 
 type PaneId = "terminal" | "rich" | "doc" | "settings";
 
@@ -58,6 +76,16 @@ const PANE_NAMES: Record<PaneId, string> = {
  * being re-decided here.
  */
 const DEFAULT_PANE_INDEX = 1;
+
+/** How often the transcript + file manifest are polled while this pane is on
+ * screen — same cadence GhostLayer already uses for the glasses digest poll,
+ * kept identical so nothing here ever looks staler than the lens. This is a
+ * SEPARATE poll (see the file header): the digest and the full transcript
+ * are different payloads for different consumers, not two copies of one. */
+const TRANSCRIPT_POLL_MS = 3000;
+/** The file manifest changes far less often than the transcript; refetching
+ * it every 3s would be pure waste (it walks the whole working tree). */
+const MANIFEST_TTL_MS = 30000;
 
 /** One row of the Rich view. */
 export type GhostTurnRow = {
@@ -78,16 +106,29 @@ export class GhostCompanionViewModel extends Observable {
   private _sending = false;
   private _composeStatus = "";
 
+  // ── Transcript + files (round 4) ─────────────────────────────────────────
+  // Powers Rich view directly and Doc viewer's file-reference detection.
+  // Polled only while this view model is attached (i.e. the phone is
+  // actually showing the Ghost companion) — see attach()/dispose().
+  private _transcript: GhostTurn[] = [];
+  private _transcriptError = "";
+  private transcriptTimer: ReturnType<typeof setInterval> | null = null;
+  private _fileList: string[] = [];
+  private _fileBaseIndex: Map<string, string | null> = new Map();
+  private manifestSessionId: string | null = null;
+  private manifestAt = 0;
+
   /**
    * Which item the Doc viewer is on. Null means "follow the lens" — the doc
    * pane then shows whatever the glasses are showing, which is what you want
    * when you unfold the phone mid-session. Tapping a row pins it instead.
    */
   private _pinnedUuid: string | null = null;
-  private _docText = "";
-  private _docUuid: string | null = null;
-  private _docLoading = false;
-  private _docError = "";
+  /** The current doc turn's resolved file reference, once one is found. */
+  private _docFileRef: string | null = null;
+  private _docFileText = "";
+  private _docFileLoading = false;
+  private _docFileError = "";
 
   private unsubscribe: (() => void) | null = null;
 
@@ -99,11 +140,68 @@ export class GhostCompanionViewModel extends Observable {
       this.refreshFeed();
     });
     this.refreshFeed();
+    this.startTranscriptPoll();
   }
 
   dispose(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.stopTranscriptPoll();
+  }
+
+  // ── Transcript + files polling (round 4) ───────────────────────────────
+
+  private startTranscriptPoll(): void {
+    if (this.transcriptTimer) return;
+    this.pollTranscript();
+    this.transcriptTimer = setInterval(() => this.pollTranscript(), TRANSCRIPT_POLL_MS);
+  }
+
+  private stopTranscriptPoll(): void {
+    if (this.transcriptTimer) {
+      clearInterval(this.transcriptTimer);
+      this.transcriptTimer = null;
+    }
+  }
+
+  private pollTranscript(): void {
+    const sessionId = this._state.sessionId;
+    if (!sessionId) return;
+    fetchTranscript(sessionId)
+      .then((turns) => {
+        this._transcript = turns;
+        this._transcriptError = "";
+        this.refreshTranscriptViews();
+        this.refreshFileManifestIfStale(sessionId);
+      })
+      .catch((error) => {
+        // Keep whatever transcript we already have on screen; only surface
+        // the error where nothing has ever loaded (feedEmptyMessage below).
+        this._transcriptError = formatErrorMessage(error, 160);
+        this.refreshTranscriptViews();
+      });
+  }
+
+  private refreshFileManifestIfStale(sessionId: string): void {
+    const now = Date.now();
+    if (this.manifestSessionId === sessionId && now - this.manifestAt < MANIFEST_TTL_MS) return;
+    this.manifestAt = now;
+    this.manifestSessionId = sessionId;
+    fetchFileManifest(sessionId)
+      .then((files) => {
+        this._fileList = files;
+        this._fileBaseIndex = buildBasenameIndex(files);
+        // A reference may have been sitting in the current turn's text
+        // before the manifest loaded; re-check now that it has.
+        this.loadDocFileIfNeeded();
+        this.notifyDocChange();
+      })
+      .catch(() => {
+        // Manifest failures just mean file-reference detection stays off
+        // for now (findFileReference returns null on an empty list) — the
+        // doc pane still falls back to the turn's own text, so this is a
+        // silent degradation, not a broken pane.
+      });
   }
 
   // ── Panes ───────────────────────────────────────────────────────────────
@@ -145,11 +243,11 @@ export class GhostCompanionViewModel extends Observable {
     if (this._state.status) return this._state.status;
     switch (this.paneId) {
       case "rich":
-        return `${this._state.items.length} in the feed · session ${this.sessionLabel}`;
+        return `${this._transcript.length} in the transcript · session ${this.sessionLabel}`;
       case "terminal":
         return `raw feed · session ${this.sessionLabel}`;
       case "doc":
-        return this._docLoading ? "loading the full reply…" : this.docSubtitle;
+        return this._docFileLoading ? "loading the referenced file…" : this.docSubtitle;
       default:
         return "host, session and voice — the same settings the glasses menu edits";
     }
@@ -242,7 +340,7 @@ export class GhostCompanionViewModel extends Observable {
     if (next === this._paneIndex) return;
     this._paneIndex = next;
     this.notifyPaneChange();
-    if (this.paneId === "doc") this.loadDocIfNeeded();
+    if (this.paneId === "doc") this.loadDocFileIfNeeded();
   }
 
   private notifyPaneChange(): void {
@@ -260,37 +358,60 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("composeVisibility", this.composeVisibility);
   }
 
-  // ── Rich view ───────────────────────────────────────────────────────────
+  // ── Rich view (round 4: the real transcript, not the digest) ───────────
+
+  /** Which transcript turn the lens's own cursor corresponds to, by uuid —
+   * the digest and the raw transcript are read from the same JSONL, so an
+   * assistant digest item's uuid is the same turn's uuid here (confirmed
+   * against the box's own digestTurns(), glasses.js: `uuid: t.uuid`). Falls
+   * back to no match (no row highlighted) rather than guessing, on a user
+   * turn or anything digestTurns() didn't preserve identically. */
+  private cursorTurnUuid(): string | null {
+    const items = this._state.items;
+    const cursor = this._state.cursor;
+    if (cursor >= 0 && cursor < items.length) return items[cursor].uuid ?? null;
+    return null;
+  }
 
   get turns(): GhostTurnRow[] {
-    return this._state.items.map((item, index) => ({
-      who: whoLabel(item),
-      headline: item.headline ?? "",
-      body: (item.body ?? []).join("\n"),
-      bodyVisibility: (item.body ?? []).length > 0 ? "visible" : "collapse",
-      rowClass: index === this._state.cursor ? "ghost-turn ghost-turn-current" : "ghost-turn",
-      index,
-      onRowTap: () => this.openDocFor(index),
-    }));
+    const cursorUuid = this.cursorTurnUuid();
+    return this._transcript.map((turn, index) => {
+      const { headline, body } = splitHeadlineBody(stripGlassesBlock(turn.text));
+      return {
+        who: turnWhoLabel(turn),
+        headline,
+        body,
+        bodyVisibility: body.length > 0 ? "visible" : "collapse",
+        rowClass: turn.uuid && turn.uuid === cursorUuid ? "ghost-turn ghost-turn-current" : "ghost-turn",
+        index,
+        onRowTap: () => this.openDocFor(index),
+      };
+    });
   }
 
   get feedEmptyVisibility(): "visible" | "collapse" {
-    return this._state.items.length === 0 ? "visible" : "collapse";
+    return this._transcript.length === 0 ? "visible" : "collapse";
   }
 
   get feedEmptyMessage(): string {
+    if (this._transcriptError && this._transcript.length === 0) return this._transcriptError;
     if (this._state.status) return this._state.status;
     if (!this._state.open) return "Ghost is not open on the glasses.";
-    return "Nothing in the feed yet.";
+    return "Nothing in the transcript yet.";
   }
 
-  // ── Terminal ────────────────────────────────────────────────────────────
+  // ── Terminal (unchanged — still the glasses' own digest, undigested) ───
 
   /**
-   * The undigested feed. Deliberately verbose — this pane exists for the
-   * moment the Rich view looks wrong and the question is what actually
-   * arrived, so it prints the fields the digest drops (uuid, kind, role, the
-   * approval options) rather than a prettier version of the same thing.
+   * The digest feed, undigested. Deliberately verbose — this pane exists for
+   * the moment the Rich view looks wrong and the question is what actually
+   * arrived on the LENS specifically, so it prints the digest's own fields
+   * (uuid, kind, role, the approval options) rather than the full
+   * transcript Rich view now shows. Left untouched by round 4 on purpose:
+   * the instruction scoped the new transcript data path to Rich view and
+   * Doc viewer, and this pane's whole reason to exist is showing the
+   * glasses' own, smaller payload — widening it to the full transcript would
+   * make it a second Rich view, not a diagnostic tool.
    */
   get terminalText(): string {
     const lines: string[] = [];
@@ -310,42 +431,73 @@ export class GhostCompanionViewModel extends Observable {
     return lines.join("\n");
   }
 
-  // ── Doc viewer ──────────────────────────────────────────────────────────
+  // ── Doc viewer (round 4: a real file reference, or the turn's own text) ─
 
-  /** The item the doc pane is on: the pinned one, else whatever the lens shows. */
-  private currentDocItem(): GhostItem | null {
-    const items = this._state.items;
+  /** The transcript turn the Doc pane is on: the pinned one, else whatever
+   * the lens's cursor points at, else the newest turn. */
+  private currentDocTurn(): GhostTurn | null {
+    const turns = this._transcript;
     if (this._pinnedUuid) {
-      const pinned = items.find((item) => item.uuid === this._pinnedUuid);
+      const pinned = turns.find((t) => t.uuid === this._pinnedUuid);
       if (pinned) return pinned;
     }
+    const cursorUuid = this.cursorTurnUuid();
+    if (cursorUuid) {
+      const atCursor = turns.find((t) => t.uuid === cursorUuid);
+      if (atCursor) return atCursor;
+    }
+    return turns.length ? turns[turns.length - 1] : null;
+  }
+
+  /** The one thing glanceHeadline() (below, for the cover glance) needs: the
+   * digest item the lens is currently on. Kept separate from
+   * currentDocTurn() above — the cover glance must stay cheap and
+   * synchronous, with no dependency on the transcript poll having run yet. */
+  private currentGlanceItem(): GhostItem | null {
+    const items = this._state.items;
     if (this._state.cursor >= 0 && this._state.cursor < items.length) {
       return items[this._state.cursor];
     }
     return items.length ? items[items.length - 1] : null;
   }
 
+  /** The current doc turn's resolved file reference, if any — null while the
+   * manifest hasn't loaded, or when nothing in the turn's text resolves. */
+  private currentFileRef(): string | null {
+    const turn = this.currentDocTurn();
+    if (!turn) return null;
+    return findFileReference(turn.text, this._fileList, this._fileBaseIndex);
+  }
+
   get docTitle(): string {
-    const item = this.currentDocItem();
-    return item ? item.headline : "Nothing open";
+    const fileRef = this.currentFileRef();
+    if (fileRef) return fileRef;
+    const turn = this.currentDocTurn();
+    if (!turn) return "Nothing open";
+    const { headline } = splitHeadlineBody(stripGlassesBlock(turn.text));
+    return headline || turnWhoLabel(turn);
   }
 
   private get docSubtitle(): string {
-    if (this._docError) return this._docError;
-    const item = this.currentDocItem();
-    if (!item) return "a turn's full text opens here";
+    if (this._docFileError) return this._docFileError;
+    const fileRef = this.currentFileRef();
+    if (fileRef) return this._pinnedUuid ? `pinned · file: ${fileRef}` : `following the glasses · file: ${fileRef}`;
+    const turn = this.currentDocTurn();
+    if (!turn) return "a turn opens here, or the file it references";
     return this._pinnedUuid ? "pinned · tap ✕ to follow the glasses again" : "following the glasses";
   }
 
   get docText(): string {
-    if (this._docLoading) return "Loading…";
-    if (this._docError) return this._docError;
-    if (this._docText) return this._docText;
-    const item = this.currentDocItem();
-    if (!item) return "A turn's full text opens here. Tap a row in Rich view.";
-    // The digested body is a real, useful fallback: the tier-3 prose only
-    // exists for turns Ghost wrote above a <glasses> block.
-    return (item.body ?? []).join("\n") || item.headline;
+    const fileRef = this.currentFileRef();
+    if (fileRef) {
+      if (this._docFileLoading) return `Loading ${fileRef}…`;
+      if (this._docFileError) return this._docFileError;
+      if (this._docFileText) return this._docFileText;
+    }
+    const turn = this.currentDocTurn();
+    if (!turn) return "A turn's full text opens here — or the real file it references, if it names one. Tap a row in Rich view.";
+    const stripped = stripGlassesBlock(turn.text).trim();
+    return stripped || turn.text;
   }
 
   get docUnpinVisibility(): "visible" | "collapse" {
@@ -354,57 +506,65 @@ export class GhostCompanionViewModel extends Observable {
 
   onDocUnpinTap(): void {
     this._pinnedUuid = null;
-    this._docText = "";
-    this._docUuid = null;
-    this._docError = "";
     this.notifyDocChange();
-    this.loadDocIfNeeded();
+    this.loadDocFileIfNeeded();
   }
 
   private openDocFor(index: number): void {
-    const item = this._state.items[index];
-    if (!item) return;
-    this._pinnedUuid = item.uuid ?? null;
-    this._docText = "";
-    this._docUuid = null;
-    this._docError = "";
+    const turn = this._transcript[index];
+    if (!turn) return;
+    this._pinnedUuid = turn.uuid ?? null;
     this.setPane(2);
     this.notifyDocChange();
-    this.loadDocIfNeeded();
+    this.loadDocFileIfNeeded();
   }
 
   /**
-   * Fetch the full prose for the doc pane's item, once per uuid. Only while
-   * the pane is actually showing: this is a network call, and Rich view is
-   * where the session normally sits.
+   * Fetch the referenced file's real content, once per resolved path, and
+   * only while the Doc pane is actually showing — this is a network call,
+   * and Rich view is where the session normally sits. Clears the file state
+   * (falling back to the turn's own text) the moment the current turn no
+   * longer references a file, e.g. the lens moved on to an ordinary reply.
    */
-  private loadDocIfNeeded(): void {
+  private loadDocFileIfNeeded(): void {
     if (this.paneId !== "doc") return;
-    const item = this.currentDocItem();
+    const fileRef = this.currentFileRef();
+    if (!fileRef) {
+      if (this._docFileRef !== null) {
+        this._docFileRef = null;
+        this._docFileText = "";
+        this._docFileError = "";
+        this.notifyDocChange();
+      }
+      return;
+    }
+    if (this._docFileRef === fileRef || this._docFileLoading) return;
+    if (!isTextRenderableReference(fileRef)) {
+      this._docFileRef = fileRef;
+      this._docFileText = `[${fileRef} isn't a text file this pane can render yet — open it on the box to view it.]`;
+      this._docFileError = "";
+      this.notifyDocChange();
+      return;
+    }
     const sessionId = this._state.sessionId;
-    if (!item || !item.uuid || !sessionId) return;
-    if (this._docUuid === item.uuid || this._docLoading) return;
-    this._docUuid = item.uuid;
-    this._docLoading = true;
-    this._docError = "";
+    if (!sessionId) return;
+    this._docFileRef = fileRef;
+    this._docFileLoading = true;
+    this._docFileError = "";
     this.notifyDocChange();
-    const requestedUuid = item.uuid;
-    fetchProse(sessionId, requestedUuid)
-      .then((prose) => {
-        // The pane may have moved on while the request was in flight.
-        if (this._docUuid !== requestedUuid) return;
-        this._docText = prose.join("\n");
-        this._docLoading = false;
+    fetchFileText(sessionId, fileRef)
+      .then((text) => {
+        if (this._docFileRef !== fileRef) return; // moved on while in flight
+        // A generous but real cap: this is a phone Label, not a code editor.
+        const MAX = 20000;
+        this._docFileText = text.length > MAX ? `${text.slice(0, MAX)}\n\n[truncated — ${text.length} chars total]` : text;
+        this._docFileLoading = false;
         this.notifyDocChange();
       })
       .catch((error) => {
-        if (this._docUuid !== requestedUuid) return;
-        this._docLoading = false;
-        // Not a failure worth shouting about: most turns have no tier-3 prose,
-        // and the digested body below is still the real content.
-        this._docError = "";
-        this._docText = "";
-        console.warn(`ghost prose fetch failed: ${formatErrorMessage(error, 200)}`);
+        if (this._docFileRef !== fileRef) return;
+        this._docFileLoading = false;
+        this._docFileError = `Could not load ${fileRef}: ${formatErrorMessage(error, 120)}`;
         this.notifyDocChange();
       });
   }
@@ -536,6 +696,10 @@ export class GhostCompanionViewModel extends Observable {
 
   // ── Feed changes ────────────────────────────────────────────────────────
 
+  /** Digest-store changes: cursor moved, status changed, session/open
+   * flipped. Re-renders everything that depends on _state (cursor highlight,
+   * doc pane's "which turn"), independent of whether the transcript poll has
+   * fired again. */
   private refreshFeed(): void {
     this.notifyPropertyChange("turns", this.turns);
     this.notifyPropertyChange("terminalText", this.terminalText);
@@ -547,18 +711,31 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("ghostSession", this.ghostSession);
     this.notifyPropertyChange("autoFollow", this.autoFollow);
     this.notifyDocChange();
-    this.loadDocIfNeeded();
+    this.loadDocFileIfNeeded();
   }
 
-  /** One line for the cover screen: what Ghost has on the lens right now. */
+  /** Transcript poll changes: same set, plus this is the one that actually
+   * changes `turns`' content (not just which row is highlighted). */
+  private refreshTranscriptViews(): void {
+    this.notifyPropertyChange("turns", this.turns);
+    this.notifyPropertyChange("feedEmptyVisibility", this.feedEmptyVisibility);
+    this.notifyPropertyChange("feedEmptyMessage", this.feedEmptyMessage);
+    this.notifyPropertyChange("paneStatus", this.paneStatus);
+    this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);
+    this.notifyDocChange();
+    this.loadDocFileIfNeeded();
+  }
+
+  /** One line for the cover screen: what Ghost has on the lens right now.
+   * Digest-based, deliberately — see currentGlanceItem()'s own comment. */
   glanceHeadline(): string {
     if (this._state.status) return this._state.status;
-    const item = this.currentDocItem();
-    return item ? `${whoLabel(item)}: ${item.headline}` : "Nothing in the feed yet.";
+    const item = this.currentGlanceItem();
+    return item ? `${glanceWhoLabel(item)}: ${item.headline}` : "Nothing in the feed yet.";
   }
 }
 
-function whoLabel(item: GhostItem): string {
+function glanceWhoLabel(item: GhostItem): string {
   if (item.kind === "approval") return "Approval";
   return item.role === "user" ? "Chris" : "Ghost";
 }

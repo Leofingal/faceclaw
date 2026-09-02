@@ -46,6 +46,24 @@ export type GhostFeed = {
   speak?: boolean;
 };
 
+/**
+ * One turn exactly as the box's own transcript reader emits it
+ * (apps/claude-code-web/src/transcript-reader.js's readTurns) — the raw
+ * conversation, not the glasses digest. `text` is the model's actual
+ * markdown, <glasses> block and all; nothing here is stripped or
+ * summarized. This is what Rich view and Doc viewer render as of round 4 —
+ * see phone-ui/transcript-turns.ts for why GhostItem's digest can't serve
+ * either any more.
+ */
+export type GhostTurn = {
+  uuid: string;
+  ts?: string | number;
+  role: "user" | "assistant";
+  text: string;
+  /** 'tool' | 'question' | 'answer', absent on an ordinary reply/message. */
+  kind?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Settings
 //
@@ -196,6 +214,54 @@ export async function fetchProse(sessionId: string, uuid: string): Promise<strin
   if (!response.ok) throw new Error(`server said ${response.status}`);
   const data = (await response.json()) as any;
   return Array.isArray(data?.prose) ? (data.prose as string[]) : [];
+}
+
+/**
+ * The real, undigested transcript — round 4's P1 fix. Same route cc-web's own
+ * Rich view already reads (`/api/transcript/:sessionId`, server.js), unused by
+ * the phone until now: the phone only ever polled the glasses digest
+ * (`fetchFeed` above), which is deliberately not the full conversation (see
+ * transcript-turns.ts). No server work was needed for this — the route
+ * already existed and already returns exactly this shape.
+ */
+export async function fetchTranscript(sessionId: string): Promise<GhostTurn[]> {
+  const response = await fetchWithUserAgent(`${ghostHost()}/api/transcript/${sessionId}`, {
+    headers: { accept: "application/json", ...ghostAuthHeaders() },
+  });
+  if (!response.ok) throw new Error(`server said ${response.status}`);
+  const data = (await response.json()) as any;
+  return Array.isArray(data?.turns) ? (data.turns as GhostTurn[]) : [];
+}
+
+/**
+ * The session's real file manifest — same route and same purpose as cc-web's
+ * own rich view (app.js's `_ensureManifest`): a path only counts as a real
+ * file reference if it resolves against this list, so a phrase in ordinary
+ * prose never false-positives into "open this file".
+ */
+export async function fetchFileManifest(sessionId: string): Promise<string[]> {
+  const response = await fetchWithUserAgent(`${ghostHost()}/api/files?sessionId=${encodeURIComponent(sessionId)}`, {
+    headers: { accept: "application/json", ...ghostAuthHeaders() },
+  });
+  if (!response.ok) throw new Error(`server said ${response.status}`);
+  const data = (await response.json()) as any;
+  return Array.isArray(data?.files) ? (data.files as string[]) : [];
+}
+
+/**
+ * Raw content of one real project file, for Doc viewer to actually show —
+ * the point of round 4's P1 fix ("when Ghost sends/references a file, it
+ * opens inline"). Scoped server-side to the session's working directory
+ * (server.js's `/api/file`, traversal-safe); only called for a path
+ * `findFileReference` already resolved against the manifest above, and only
+ * for extensions `isTextRenderableReference` calls safe to decode as text —
+ * see transcript-turns.ts for both.
+ */
+export async function fetchFileText(sessionId: string, relPath: string): Promise<string> {
+  const url = `${ghostHost()}/api/file?path=${encodeURIComponent(relPath)}&sessionId=${encodeURIComponent(sessionId)}`;
+  const response = await fetchWithUserAgent(url, { headers: { ...ghostAuthHeaders() } });
+  if (!response.ok) throw new Error(`server said ${response.status}`);
+  return await response.text();
 }
 
 /**
