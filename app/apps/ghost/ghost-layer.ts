@@ -897,11 +897,16 @@ export class GhostLayer implements Layer {
     if (!this.capturing) return;
     if (!event.isFinal) {
       if (this.micState !== "listening") return;
-      // Tracked (REPLACE semantics, not a delta) but deliberately NOT painted
-      // - Chris, 2026-09-01: the live per-chunk repaint was itself the
-      // trouble. The listening screen now stays static; no requestRender()
-      // here on purpose.
+      // Tracked (REPLACE semantics, not a delta), but paintMic's "listening"
+      // case no longer reads this.interim - the static headline is just
+      // "Listening...  <spinner>". So the render this triggers can't leak
+      // live text back onto the screen; it only advances the spinner. Chris,
+      // 2026-09-01, caught the real cost of over-removing this: with NO
+      // render at all during listening, the spinner itself froze too -
+      // "the little spinner is not spinning" was a real, self-inflicted
+      // regression from the first pass at this fix, not a separate bug.
       this.interim = event.text;
+      this.requestRender();
       return;
     }
     if (this.micState !== "listening" && this.micState !== "sending") return;
