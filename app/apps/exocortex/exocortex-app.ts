@@ -16,7 +16,8 @@ import { isNotificationListenerEnabled } from "../../native/notification-access"
 import { SingleNotificationLayer } from "../../ui/notifications";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
-import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
 import { type Plane } from "../../graphics/plane";
 import { createInProcessWindow, YieldAtRootLayer } from "../../ui/shell/in-process-window";
 import { type ShellWindow } from "../../ui/shell/shell";
@@ -323,7 +324,7 @@ class ExocortexHomeLayer implements Layer {
     }
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const notifications = this.notifications();
     const apps = this.options.apps();
     this.normalize(notifications, apps.length);

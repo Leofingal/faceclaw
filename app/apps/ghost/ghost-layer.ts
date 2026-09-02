@@ -31,7 +31,8 @@ import { truncateText, wrapText } from "../../graphics/textwrap";
 import { gestureHints, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
-import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
 import { shell } from "../../ui/shell/shell";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { clamp } from "../../util/numeric-util";
@@ -461,7 +462,7 @@ export class GhostLayer implements Layer {
   // =========================================================================
   // Input
 
-  async handleInput(event: DashboardInputEvent, _ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
         this.step(-1);

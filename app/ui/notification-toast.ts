@@ -38,7 +38,8 @@ import {
 } from "../native/notification-icons";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { SingleNotificationLayer } from "./notifications";
-import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { type InputEvent } from "./gestures";
 
 const PAD_X = 10;
 const PAD_TOP = 6;
@@ -185,7 +186,7 @@ export class NotificationToastLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const notification = this.notification();
     if (!notification) {
       this.options.closeModal(ctx);
