@@ -149,7 +149,18 @@ export class GhostLayer implements Layer {
   private pendingRaw = "";
   /** This capture is an ADDITION to text already on the confirm screen. */
   private addingToRaw = false;
-  private refineBase = "";
+  /**
+   * Every utterance captured for the message in progress, in order. Chris,
+   * 2026-09-02: refining twice in a row produced "Send 1: Send 1: ..." with
+   * TWO "Send 2 (addendum):" lines - a real bug, not a garbled dictation.
+   * The old design stored only the two most recent PARTS as a single
+   * already-labeled STRING (refineBase), so a second refine wrapped
+   * (base = the first refine's own labeled output) in a fresh label pair
+   * instead of extending the original list. Keeping the raw parts here and
+   * rendering labels fresh each time (renderCaptured()) is what lets a
+   * third, fourth, etc. refine number correctly instead of nesting.
+   */
+  private capturedParts: string[] = [];
   private refineOk = true;
   private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -631,7 +642,7 @@ export class GhostLayer implements Layer {
     this.heard = "";
     this.interim = "";
     this.pendingRaw = "";
-    this.refineBase = "";
+    this.capturedParts = [];
     this.refineOk = true;
   }
 
@@ -837,7 +848,8 @@ export class GhostLayer implements Layer {
   private startListening(asAddition: boolean): void {
     // Barge-in: never let the microphone hear our own voice.
     stopGhostSpeech();
-    if (asAddition) this.refineBase = this.heard;
+    // No snapshot needed here any more - capturedParts already holds every
+    // prior utterance; refineNow() below just pushes onto it.
     this.addingToRaw = asAddition;
     this.heard = "";
     this.interim = "";
@@ -880,10 +892,12 @@ export class GhostLayer implements Layer {
       if (this.micState !== "sending") return;
       this.capturing = false;
       // A refine whose addition never transcribed is not a lost dictation:
-      // put the confirm screen back with the text he already had.
+      // put the confirm screen back with the text he already had. Nothing
+      // was pushed onto capturedParts for this failed attempt, so
+      // re-rendering it is exactly the pre-attempt state.
       if (this.addingToRaw) {
         this.addingToRaw = false;
-        this.heard = this.refineBase;
+        this.heard = this.renderCaptured();
         this.refineOk = false;
         this.micState = "confirming";
       } else {
@@ -934,18 +948,30 @@ export class GhostLayer implements Layer {
       return;
     }
     this.pendingRaw = text;
+    this.capturedParts = [text];
     this.heard = text;
-    this.refineBase = text;
     this.refineOk = true;
     this.micState = "confirming";
     this.requestRender();
   }
 
   /**
-   * Combine the original dictation with a follow-up capture. Chris,
-   * 2026-09-01, after the box's own Haiku merge (refineDictation) failed him
-   * twice in one evening: it dropped his first transcript wholesale rather
-   * than merging when that transcript read as too garbled to be "missing a
+   * Render every captured utterance as one message. A single part goes out
+   * exactly as spoken, unlabeled - the label scheme only exists to mark
+   * MULTIPLE utterances as separate passes rather than one continuous one.
+   */
+  private renderCaptured(): string {
+    if (this.capturedParts.length <= 1) return this.capturedParts[0] ?? "";
+    return this.capturedParts
+      .map((part, index) => `Send ${index + 1}${index > 0 ? " (addendum)" : ""}: ${part}`)
+      .join("\n");
+  }
+
+  /**
+   * Add a follow-up capture to the message in progress. Chris, 2026-09-01,
+   * after the box's own Haiku merge (refineDictation) failed him twice in
+   * one evening: it dropped his first transcript wholesale rather than
+   * merging when that transcript read as too garbled to be "missing a
    * detail" (a real edge case in the merge prompt's own instructions, not a
    * fluke), and it seemed to stop working while the interactive session was
    * busy — plausible, since it spawned its own claude process on the box,
@@ -953,18 +979,24 @@ export class GhostLayer implements Layer {
    * something too complicated... stop trying to interpret the text and just
    * send it... you can just get the two parts and interpret them." So this
    * no longer calls the box at all — pure, local, synchronous string
-   * assembly, nothing left to be unreliable. Labeled "Send 1" / "Send 2"
-   * rather than silently space-joined (his own suggestion), so whoever reads
-   * it downstream — the live conversation, not a separate model call — can
-   * tell this was two passes, not one continuous utterance.
+   * assembly, nothing left to be unreliable. Labeled "Send 1" / "Send 2 /
+   * Send 3 / ..." rather than silently space-joined (his own suggestion), so
+   * whoever reads it downstream — the live conversation, not a separate
+   * model call — can tell this was several passes, not one utterance.
+   *
+   * 2026-09-02: refining a SECOND time used to wrap the first refine's own
+   * already-labeled output in a fresh "Send 1: .../Send 2: ..." pair,
+   * producing "Send 1: Send 1: ..." with duplicate "Send 2" lines - a real
+   * bug Chris hit live. capturedParts (an array of raw utterances, never
+   * itself re-labeled) plus rendering fresh from it every time is what makes
+   * a third, fourth, etc. addition number correctly instead of nesting.
    */
   private refineNow(addition: string): void {
-    const base = this.refineBase.trim();
     const add = addition.trim();
     // No addition is not this function's job to relabel — he triggered a
-    // refine and stayed quiet, so the base goes back exactly as it was.
-    this.heard = add ? `Send 1: ${base}\nSend 2 (addendum): ${add}` : base;
-    this.refineBase = this.heard;
+    // refine and stayed quiet, so nothing about the captured parts changes.
+    if (add) this.capturedParts.push(add);
+    this.heard = this.renderCaptured();
     this.refineOk = true;
     this.micState = "confirming";
     this.requestRender();
@@ -1005,7 +1037,7 @@ export class GhostLayer implements Layer {
     this.heard = "";
     this.interim = "";
     this.pendingRaw = "";
-    this.refineBase = "";
+    this.capturedParts = [];
     this.refineOk = true;
     if (wasApproval) {
       // A freeform answer is sent as ordinary text, same as any other reply —
