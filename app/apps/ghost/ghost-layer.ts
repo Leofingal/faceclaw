@@ -475,14 +475,17 @@ export class GhostLayer implements Layer {
         // Chris's own three options (session 0135): "Send as is, let the agent
         // refine or I resend." Three gestures on a four-gesture device.
         //
-        // Chris, 2026-09-01: the hint used to read "scroll refine / say
-        // again" with one undirected glyph for both — real, confirmed
-        // ambiguity, not user error: he read it, guessed down, and got "say
-        // again" (a full discard) when he meant refine (scroll UP, per
-        // step()'s own gesture mapping just below). Split into the two real
-        // directions so the hint actually says which is which.
+        // Chris, 2026-09-01, twice: first found the hint's single undirected
+        // glyph genuinely ambiguous between refine and discard (fixed by
+        // splitting the two directions out); then, on trying it, said the
+        // split itself had refine and cancel backwards — scroll-up already
+        // means "abandon" everywhere else in the mic flow (see step()), so it
+        // should mean that here too, freeing scroll-down for refine. Two
+        // gestures now do the same discard (scroll up, double-click) — both
+        // listed rather than picking one, since surfacing both beats
+        // assuming he already knows one.
         headline = this.heard;
-        hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL_UP} refine   ${GESTURE_SCROLL_DOWN} say again   ${GESTURE_DOUBLE_CLICK} discard`;
+        hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL_DOWN} refine   ${GESTURE_SCROLL_UP}${GESTURE_DOUBLE_CLICK} discard`;
         break;
       case "failed":
         headline = "Did not catch that.";
@@ -531,22 +534,35 @@ export class GhostLayer implements Layer {
   }
 
   private step(delta: number): void {
-    // REFINE: scroll UP while confirming. Checked above the per-surface routing
-    // because the gesture has to mean the same thing on both mic surfaces.
+    // CANCEL: scroll UP while confirming. Chris, 2026-09-01: this used to be
+    // refine, which he flagged as backwards - scroll-up already means
+    // "abandon" everywhere else in the mic interaction (it is what the
+    // fallthrough below does while actively LISTENING, no special case
+    // needed there), so confirming should not be the one place it means
+    // something else. Same resetMic() the double-click discard already uses
+    // - two gestures, one action, not a new mechanism. Checked above the
+    // per-surface routing because it has to mean the same thing on both mic
+    // surfaces (see onMicSurface()'s own doc comment on why that matters).
     if (delta < 0 && this.micState === "confirming" && this.onMicSurface()) {
-      this.startListening(true);
+      this.resetMic();
+      this.requestRender();
       return;
     }
     if (this.inApproval) {
       this.approvalStep(delta);
       return;
     }
-    // Scrolling further down while already parked on the reply slot is
-    // otherwise an inert repeat of the gesture that opened it — free real
-    // estate, so it means "say it again": a full discard and re-record, which
-    // is the whole difference between this gesture and refine above.
+    // REFINE: scroll DOWN while confirming, parked on the reply slot -
+    // otherwise an inert repeat of the gesture that opened it, so free real
+    // estate. Chris's own reasoning for putting refine here instead of on
+    // scroll-up: the old one-gesture "say it again" (full discard + redo) is
+    // still reachable, just as a two-step now - scroll up to cancel (above),
+    // then down again to arrive fresh on the reply slot, which starts a new
+    // capture on its own (ARRIVING IS THE INTENT, this file's own header
+    // comment). That freed the single down-gesture for the more differentiated
+    // action.
     if (this.onMic() && this.micState === "confirming" && delta > 0) {
-      this.startListening(false);
+      this.startListening(true);
       return;
     }
     // NOTE: there is deliberately no early return for the reply slot here.
