@@ -12,6 +12,7 @@ const minesweeperApp: AppDefinition = {
       title: "Minesweeper",
       iconLetter: "M",
       icon: "bomb",
+      acceptsDirectional: true,
     }),
 };
 

@@ -69,6 +69,21 @@
                 </StackLayout>
             </GridLayout>
         </GridLayout>
+        <!-- Developer BLE-bandwidth indicator (upstream 85508b8): overlays the
+             bottom edge of the page in both orientations. Ported here rather
+             than to main-page.xml — this page is the direct successor of the
+             body upstream's diff targeted (see the file header); main-page.xml
+             is the app-list home screen now and never had a mirror layout to
+             anchor it to. FLAG: worth asking Chris whether he also wants this
+             on the home screen, now that it exists and is a developer setting
+             (collapsed unless showBleBandwidthSetting is on, so harmless
+             either way). -->
+        <Label
+            text="{{ bleBandwidthLabel }}"
+            visibility="{{ bleBandwidthVisibility }}"
+            class="ble-bandwidth-indicator"
+            horizontalAlignment="center"
+            verticalAlignment="bottom" />
         <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
              shrunk) page, so it sits in the space below the mirror and only
              overlaps the mirror when the open keyboard leaves too little

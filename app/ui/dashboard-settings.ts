@@ -1,4 +1,4 @@
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -17,7 +17,7 @@ import {
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
-import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
+import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
 export type NightscoutSettings = {
@@ -392,6 +392,24 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   storageKey: "developer.suspendEvenHubWhenScreenOff",
   defaultValue: true,
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
+});
+
+export const useMicControlSetting = new ConfigSettingBoolean({
+  id: "use-mic-control",
+  label: "Use microphone control",
+  storageKey: "developer.useMicControl",
+  defaultValue: true,
+  description:
+    "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
+});
+
+export const showBleBandwidthSetting = new ConfigSettingBoolean({
+  id: "show-ble-bandwidth",
+  label: "Show BLE bandwidth usage",
+  storageKey: "developer.showBleBandwidth",
+  defaultValue: false,
+  description:
+    "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
 });
 
 export type RingConnectionMode = "glasses" | "direct";
@@ -882,7 +900,7 @@ export class EditTextSettingLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       void ctx.actions.endTextSettingEdit();
       ctx.stack.pop();

@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type MicSessionState } from "./mic-session";
 import { dotBrightness } from "./radar-dots";
 
@@ -175,7 +175,7 @@ export class RadarLayer implements Layer {
     return normalize(worldDeg - state.headingDeg);
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         micSession.setBeamWorldDeg(this.state.beamWorldDeg - 15);

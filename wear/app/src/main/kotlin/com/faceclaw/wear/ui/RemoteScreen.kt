@@ -190,6 +190,9 @@ fun RemoteScreen(
                 }
             },
             onDoubleTap = { _ -> doubleClick() },
+            onShortThenLongPress = {
+                if (!glassesScreenIsOff()) { haptics.heavy(); link.sendGesture(Gesture.SHORT_THEN_LONG_PRESS) }
+            },
             // Two fingers = back as well: easier than timing a double-tap.
             onTwoFingerTap = { doubleClick() },
             onTwoFingerSwipe = { dx, dy ->

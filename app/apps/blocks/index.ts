@@ -12,6 +12,7 @@ const blocksApp: AppDefinition = {
       title: "Blocks",
       iconLetter: "B",
       icon: "l-piece",
+      acceptsDirectional: true,
     }),
 };
 

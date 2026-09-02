@@ -12,7 +12,6 @@ import {
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
-import { shell } from "../ui/shell/shell";
 import {
   brightnessSetting,
   DISPLAY_MODE_VALUES,
@@ -20,10 +19,12 @@ import {
   displayModeSetting,
   mirrorTouchSetting,
   onAnySettingChanged,
+  showBleBandwidthSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
 import { mutedNotificationSourceCount } from "../native/notification-sources";
+import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -102,13 +103,18 @@ export class MainViewModel extends Observable {
   private _secondaryTextSettingTitle = "";
   private _secondaryTextSettingValue = "";
   private _secondaryTextSettingInputKind: "text" | "email" | "password" = "text";
+  private _activeTextEditorToggleLabel = "";
+  private _activeTextEditorToggleValue = false;
+  private _activeTextEditorToggleVisible = false;
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
+  private _fontsMissingWarningVisible = false;
   private _warningsModalVisible = false;
+  private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   // ── What the phone shows, and why ────────────────────────────────────────
@@ -166,6 +172,7 @@ export class MainViewModel extends Observable {
     if (this.unsubscribers.length > 0) return;
     this.unsubscribers.push(dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
+      this.previewMode = snapshot.previewMode;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
@@ -178,17 +185,26 @@ export class MainViewModel extends Observable {
       this.secondaryTextSettingTitle = snapshot.secondaryTextSettingTitle;
       this.secondaryTextSettingValue = snapshot.secondaryTextSettingValue;
       this.secondaryTextSettingInputKind = snapshot.secondaryTextSettingInputKind;
+      this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
+      this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
+      this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
+      this.fontsMissingWarningVisible = snapshot.fontsMissingWarningVisible;
       this.setForegroundApp(snapshot.foregroundAppId, snapshot.foregroundAppTitle);
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
-    this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+    this.unsubscribers.push(onAnySettingChanged(() => {
+      this.refreshDisplayControls();
+      this.syncBleBandwidthPolling();
+    }));
+    this.syncBleBandwidthPolling();
+    this.unsubscribers.push(() => this.stopBleBandwidthPolling());
     // Folding, unfolding, and any other window resize.
     this.unsubscribers.push(onFoldStateChanged((snapshot) => this.setDisplayClass(displayClass(snapshot))));
     this.ghostCompanion.attach();
@@ -241,7 +257,22 @@ export class MainViewModel extends Observable {
         // phase still "connecting"; keep that distinction visible.
         return this._status.startsWith("Reconnecting") ? "Reconnecting" : "Connecting";
       default:
-        return this._status.startsWith("Failed") ? "Failed" : "Disconnected";
+        if (this._status.startsWith("Failed")) return "Failed";
+        // The headless preview display is live; "Disconnected" would suggest
+        // the interactive mirror below it is broken.
+        return this._previewMode ? "Preview" : "Disconnected";
+    }
+  }
+
+  get previewMode(): boolean {
+    return this._previewMode;
+  }
+
+  set previewMode(value: boolean) {
+    if (this._previewMode !== value) {
+      this._previewMode = value;
+      this.notifyPropertyChange("previewMode", value);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
   }
 
@@ -627,6 +658,43 @@ export class MainViewModel extends Observable {
     return this.hasSecondaryTextSetting ? "next" : "done";
   }
 
+  get activeTextEditorToggleLabel(): string {
+    return this._activeTextEditorToggleLabel;
+  }
+
+  set activeTextEditorToggleLabel(value: string) {
+    if (this._activeTextEditorToggleLabel !== value) {
+      this._activeTextEditorToggleLabel = value;
+      this.notifyPropertyChange("activeTextEditorToggleLabel", value);
+    }
+  }
+
+  get activeTextEditorToggleValue(): boolean {
+    return this._activeTextEditorToggleValue;
+  }
+
+  set activeTextEditorToggleValue(value: boolean) {
+    if (this._activeTextEditorToggleValue !== value) {
+      this._activeTextEditorToggleValue = value;
+      this.notifyPropertyChange("activeTextEditorToggleValue", value);
+    }
+  }
+
+  get activeTextEditorToggleVisible(): boolean {
+    return this._activeTextEditorToggleVisible;
+  }
+
+  set activeTextEditorToggleVisible(value: boolean) {
+    if (this._activeTextEditorToggleVisible !== value) {
+      this._activeTextEditorToggleVisible = value;
+      this.notifyPropertyChange("activeTextEditorToggleVisibility", this.activeTextEditorToggleVisibility);
+    }
+  }
+
+  get activeTextEditorToggleVisibility(): "visible" | "collapse" {
+    return this._activeTextEditorToggleVisible ? "visible" : "collapse";
+  }
+
   get isTextSettingEditorActive(): boolean {
     return this._activeTextSettingId !== null;
   }
@@ -748,6 +816,43 @@ export class MainViewModel extends Observable {
     return this._batteryOptimizationWarningVisible ? "visible" : "collapse";
   }
 
+  get fontsMissingWarningVisible(): boolean {
+    return this._fontsMissingWarningVisible;
+  }
+
+  set fontsMissingWarningVisible(value: boolean) {
+    if (this._fontsMissingWarningVisible !== value) {
+      this._fontsMissingWarningVisible = value;
+      this.notifyPropertyChange("fontsMissingWarningVisible", value);
+      this.notifyPropertyChange("fontsMissingWarningVisibility", this.fontsMissingWarningVisibility);
+      this.refreshWarningIndicator();
+    }
+  }
+
+  get fontsMissingWarningVisibility(): "visible" | "collapse" {
+    return this._fontsMissingWarningVisible ? "visible" : "collapse";
+  }
+
+  /**
+   * Jump back into the onboarding firmware check, whose missing-fonts path
+   * downloads the stock firmware and extracts the G2 fonts without reflashing.
+   * The check probes the glasses itself, so drop the main connection first;
+   * like pairing, this is a detour rather than a Disconnect, so lift the
+   * auto-reconnect suppression right away.
+   */
+  async onPrepareFontsTap(): Promise<void> {
+    this.setWarningsModalVisible(false);
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the firmware check reports its own connection trouble
+      }
+      resumeAutoReconnect();
+    }
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
+  }
+
   onAllowBackgroundUsageTap(): void {
     this.setWarningsModalVisible(false);
     dashboardController.requestBatteryOptimizationExemption();
@@ -759,7 +864,8 @@ export class MainViewModel extends Observable {
     return (
       this._evenAppConflictWarningVisible ||
       this._firmwareWarningVisible ||
-      this._batteryOptimizationWarningVisible
+      this._batteryOptimizationWarningVisible ||
+      this._fontsMissingWarningVisible
     );
   }
 
@@ -864,6 +970,10 @@ export class MainViewModel extends Observable {
    */
   async autoConnect(): Promise<void> {
     if (this.phase !== "disconnected") return;
+    // Preview-only users get the headless preview display instead of a
+    // connection; a no-op in every other state (including while suppressed:
+    // suppression is about not re-dialing glasses, and there are none).
+    await dashboardController.ensurePreviewDisplay();
     if (isAutoReconnectSuppressed()) return;
     const addresses = loadDeviceAddresses();
     if (!isValidMacAddress(addresses.right) || !isValidMacAddress(addresses.left)) return;
@@ -1111,29 +1221,56 @@ export class MainViewModel extends Observable {
     dashboardController.finishActiveTextSettingEdit();
   }
 
+  onTextSettingToggleChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    dashboardController.setActiveTextEditorToggleValue(
+      args.object?.checked ?? args.value ?? false,
+    );
+  }
+
   onOpenEvenAppSettingsTap(): void {
     this.setWarningsModalVisible(false);
     dashboardController.openEvenAppSettings();
   }
 
-  async onSyntheticUpTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-up");
-  }
+  // Tap-then-hold on the simulated pads: NativeScript reports doubleTap on
+  // the second finger-down and still runs the long-press recognizer on that
+  // same press, so the sequence arrives as doubleTap followed by longPress.
+  // Each pad therefore defers its double-click until the finger-up (the touch
+  // handler) and converts the deferred pair into the G2 tap-then-hold gesture
+  // when a longPress lands first.
 
-  async onSyntheticDownTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-down");
-  }
+  private ringPadDoubleTapPending = false;
 
-  async onSyntheticLeftTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click");
-  }
-
-  async onSyntheticRightTap(): Promise<void> {
+  async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
-  async onSyntheticLongPressTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press");
+  async onRingPadDoubleTap(): Promise<void> {
+    this.ringPadDoubleTapPending = true;
+  }
+
+  async onRingPadLongPress(): Promise<void> {
+    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.ringPadDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind);
+  }
+
+  async onRingPadTouch(args: TouchGestureEventData): Promise<void> {
+    if (args.action !== "up" && args.action !== "cancel") return;
+    const pending = this.ringPadDoubleTapPending;
+    this.ringPadDoubleTapPending = false;
+    if (args.action === "up" && pending) {
+      await dashboardController.injectSyntheticRingInput("double-click");
+    }
+  }
+
+  /** The ring pad only has a vertical axis, so left/right swipes are ignored. */
+  async onRingPadSwipe(args: SwipeGestureEventData): Promise<void> {
+    if (args.direction === SwipeDirection.up) {
+      await dashboardController.injectSyntheticRingInput("scroll-up");
+    } else if (args.direction === SwipeDirection.down) {
+      await dashboardController.injectSyntheticRingInput("scroll-down");
+    }
   }
 
   async onSyntheticMicTap(): Promise<void> {
@@ -1147,6 +1284,9 @@ export class MainViewModel extends Observable {
   // above stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
+  // See the ring pad above: defers the double-click so a longPress can turn
+  // the pair into tap-then-hold.
+  private padDoubleTapPending = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
@@ -1164,12 +1304,13 @@ export class MainViewModel extends Observable {
   }
 
   async onPadDoubleTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click", "watch");
-    this.refreshPadFocusLine();
+    this.padDoubleTapPending = true;
   }
 
   async onPadLongPress(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.padDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind, "watch");
     this.refreshPadFocusLine();
   }
 
@@ -1186,6 +1327,8 @@ export class MainViewModel extends Observable {
       return;
     }
     if (args.action === "up" || args.action === "cancel") {
+      const pendingDouble = this.padDoubleTapPending;
+      this.padDoubleTapPending = false;
       const twoFinger = this.padTwoFingerDown;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.
@@ -1196,43 +1339,11 @@ export class MainViewModel extends Observable {
           await dashboardController.injectSyntheticRingInput("double-click", "watch");
           this.refreshPadFocusLine();
         }
+      } else if (args.action === "up" && pendingDouble) {
+        await dashboardController.injectSyntheticRingInput("double-click", "watch");
+        this.refreshPadFocusLine();
       }
     }
-  }
-
-  async onDpadUp(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-up", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadDown(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-down", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadLeft(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-left", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadRight(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("swipe-right", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onDpadSelect(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("click", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onBackTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click", "watch");
-    this.refreshPadFocusLine();
-  }
-
-  async onMenuTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press", "watch");
-    this.refreshPadFocusLine();
   }
 
   // ---- touching the mirror itself ----
@@ -1403,6 +1514,72 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
+  // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
+  //
+  // A running total of outbound BLE messages/bytes, overlaid at the bottom of
+  // the page on every tab. Polled from the Java-side counters while enabled.
+
+  private _bleBandwidthLabel = "";
+  private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;
+  // Recent counter samples, one per poll tick, for the windowed rates.
+  private bleRateHistory: Array<{ atMs: number; bytes: number; frames: number }> = [];
+
+  get bleBandwidthVisibility(): "visible" | "collapse" {
+    return showBleBandwidthSetting.get() ? "visible" : "collapse";
+  }
+
+  get bleBandwidthLabel(): string {
+    return this._bleBandwidthLabel;
+  }
+
+  /** Start or stop the poll to match the setting; safe to call repeatedly. */
+  private syncBleBandwidthPolling(): void {
+    const enabled = showBleBandwidthSetting.get();
+    if (enabled && this.bleBandwidthTimer === null) {
+      this.refreshBleBandwidth();
+      this.bleBandwidthTimer = setInterval(() => this.refreshBleBandwidth(), 1000);
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    } else if (!enabled && this.bleBandwidthTimer !== null) {
+      this.stopBleBandwidthPolling();
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    }
+  }
+
+  private stopBleBandwidthPolling(): void {
+    if (this.bleBandwidthTimer !== null) {
+      clearInterval(this.bleBandwidthTimer);
+      this.bleBandwidthTimer = null;
+    }
+    // Don't let a later re-enable compute a rate across the disabled gap.
+    this.bleRateHistory = [];
+  }
+
+  private refreshBleBandwidth(): void {
+    let label: string;
+    try {
+      const sample = sampleBleTraffic();
+      const atMs = Date.now();
+      this.bleRateHistory.push({ atMs, bytes: sample.bytes, frames: sample.frames });
+      while (this.bleRateHistory.length > 0 && this.bleRateHistory[0]!.atMs < atMs - BLE_RATE_WINDOW_MS) {
+        this.bleRateHistory.shift();
+      }
+      label = `BLE sent: ${formatCount(sample.messages)} messages, ${formatCount(sample.bytes)} bytes`;
+      const oldest = this.bleRateHistory[0]!;
+      const elapsedSec = (atMs - oldest.atMs) / 1000;
+      if (elapsedSec > 0) {
+        const byteRate = (sample.bytes - oldest.bytes) / elapsedSec;
+        const frameRate = (sample.frames - oldest.frames) / elapsedSec;
+        label += ` · ${formatByteRate(byteRate)}, ${frameRate.toFixed(1)} fps`;
+      }
+    } catch (error) {
+      label = `BLE sent: ${this.formatError(error)}`;
+    }
+    if (label !== this._bleBandwidthLabel) {
+      this._bleBandwidthLabel = label;
+      this.notifyPropertyChange("bleBandwidthLabel", label);
+    }
+  }
+
   private readLayoutOrientation(): LayoutOrientation {
     const applicationOrientation = Application.orientation();
     if (applicationOrientation === "landscape" || applicationOrientation === "portrait") {
@@ -1414,6 +1591,20 @@ export class MainViewModel extends Observable {
   private formatError(error: unknown): string {
     return formatErrorMessage(error, 240);
   }
+}
+
+/** 1234567 -> "1,234,567"; kept exact rather than rounded so growth is visible at a glance. */
+function formatCount(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** How far back the BLE bandwidth indicator's rates look. */
+const BLE_RATE_WINDOW_MS = 5000;
+
+function formatByteRate(bytesPerSec: number): string {
+  if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(2) + " MB/s";
+  if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(1) + " kB/s";
+  return Math.round(bytesPerSec) + " B/s";
 }
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */

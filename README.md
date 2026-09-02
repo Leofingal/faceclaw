@@ -19,7 +19,18 @@ User-facing documentation lives at https://faceclaw.org/.
 ![Assistant settings](website/screenshots/settings-assistant.png)
 ![Display settings](website/screenshots/settings-display.png)
 
+
 ## Installation
+
+Download faceclaw-<version>.apk from the GitHub releases section on the phone
+that will be paired with the glasses and install it. On first run, the app will
+walk you through pairing with the glasses and installing custom firmware.
+
+
+## Compiling
+
+If you want to customize faceclaw, the best way to do it is to download the
+source code and using a coding agent such as Codex or Claude Code.
 
 To compile, you will need an Android SDK environment with SDK version 35
 installed and licenses accepted, and the ANDROID_HOME pointing to the install.
@@ -33,6 +44,12 @@ your phone, and `adb` connected. To enable developer mode, go to Settings>About
 phone and tap the "Build number" field seven times. Then plug the phone's USB-C
 port into your computer, authorize access on the phone, and run
 `./build_and_run.sh` to install.
+
+Note that if you have installed a signed release build, you will have to
+uninstall it before installing a customized version. Use scripts/pull_config.sh
+to export a copy of your configuration first, and scripts/push_config.sh to
+import it into the new version.
+
 
 ## Features
 

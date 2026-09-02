@@ -11,31 +11,16 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { lineStep } from "../../ui/metrics";
-import { gestureHints, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, gestureHints, type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
 import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { shell } from "../../ui/shell/shell";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { type MathBranchOutcome, MathCoordinator } from "./math/coordinator";
-import {
-  type LongRunOffer,
-  type LongRunProgress,
-  offerGlassesPrompt,
-  progressText,
-} from "./math/workload";
+import { type LongRunOffer, type LongRunProgress, offerGlassesPrompt, progressText } from "./math/workload";
 import { plain } from "./math/text-renderer";
 import { drawGraph } from "./calculator-graph";
-import {
-  type CalculatorListening,
-  type CalculatorMode,
-  CALCULATOR_MODES,
-  cycleMode,
-  isDictationCancellation,
-  isWorthAnswering,
-  listeningLabel,
-  modeCommand,
-  modeLabel,
-} from "./calculator-commands";
+import { type CalculatorListening, type CalculatorMode, CALCULATOR_MODES, cycleMode, isDictationCancellation, isWorthAnswering, listeningLabel, modeCommand, modeLabel } from "./calculator-commands";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -314,7 +299,7 @@ export class CalculatorLayer implements Layer {
     this.submit(text);
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
       case "scroll-down": {

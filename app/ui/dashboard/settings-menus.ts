@@ -42,13 +42,12 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   ringConnectionModeSetting,
-  roamApiTokenSetting,
-  roamGraphNameSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
@@ -56,6 +55,7 @@ import {
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
+  useMicControlSetting,
   verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
@@ -147,13 +147,6 @@ function settingsSections(): SettingsSection[] {
       ],
     },
     {
-      label: "Roam",
-      items: [
-        textSettingMenuItem(roamGraphNameSetting),
-        textSettingMenuItem(roamApiTokenSetting),
-      ],
-    },
-    {
       label: "Phone display",
       // The phone app's mirror of the glasses screen and its controls
       // (app/phone-ui/): all read live by the main page.
@@ -183,6 +176,8 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
+        toggleSettingMenuItem(useMicControlSetting),
+        toggleSettingMenuItem(showBleBandwidthSetting),
       ],
     },
     {

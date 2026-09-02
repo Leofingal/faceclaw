@@ -4,16 +4,15 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
-  DashboardInputEvent,
   directionalFallback,
+  InputEvent,
+  type InputEventPayload,
   type InputSource,
   isDirectionalInput,
-  Layer,
-  LayerActions,
-  LayerContext,
-  LayerStack,
-  noopLayerActions,
-} from "../layers";
+  isWatchInput,
+  makeInputEvent,
+} from "../gestures";
+import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { voiceActivity } from "./voice-activity";
@@ -62,7 +61,8 @@ import {
  * the sidebar it focuses the window first); by convention apps answer it with
  * a window menu that ends in Voice input / Close window. Holding the press
  * past the escape threshold opens the shell's own escape menu, so the shell
- * keeps working when a window's handler hangs.
+ * keeps working when a window's handler hangs. The 2.2.9 tap-then-hold gesture
+ * opens that shell menu immediately.
  */
 
 export type ShellWindow = {
@@ -99,7 +99,7 @@ export type ShellWindow = {
    * tracking) passes to the window: it must eventually reach a frame submit
    * or a finishFrame call.
    */
-  handleInput: (event: DashboardInputEvent, frameId: number) => Promise<void> | void;
+  handleInput: (event: InputEvent, frameId: number) => Promise<void> | void;
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
   /**
@@ -120,6 +120,14 @@ export type ShellWindow = {
   receiveTextInput?: (text: string) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
+  /**
+   * Input focus moved into this window. `lastInput` is the most recent input
+   * event the shell received — for a focus that a click or swipe caused, the
+   * event that caused it. A programmatic focus (a worker's focus-window
+   * request, a wake path) can deliver an older event: check timestampMs
+   * before treating it as current.
+   */
+  onFocus?: (lastInput: InputEvent | null) => void;
   /** Screen turned on/off; hidden or screen-off windows should stop painting. */
   setScreenOn?: (on: boolean) => void;
 };
@@ -129,6 +137,12 @@ export type ShellConfig = {
   actions: LayerActions;
   getScreenTimeoutMs: () => number | null;
   requestShellRender: () => void;
+  /**
+   * Asked before the voice dialog opens; resolving false swallows the open.
+   * Preview-only mode uses it to turn the tap into a mic-permission prompt
+   * when RECORD_AUDIO isn't granted yet (the phone mic is the source there).
+   */
+  prepareVoiceCapture?: () => Promise<boolean>;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
@@ -220,7 +234,7 @@ class ShellAlertLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     if (event.type === "click" || event.type === "double-click") {
       this.clearTimer();
       this.onDismiss();
@@ -249,6 +263,8 @@ class Shell {
   private focus: FocusKind = "window";
   private screenOn = true;
   private lastInputAtMs = Date.now();
+  /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
+  private lastInput: InputEvent | null = null;
   private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
@@ -461,6 +477,11 @@ class Shell {
     return index === null ? null : this.windows[index] ?? null;
   }
 
+  /** Whether input focus currently targets this window (regardless of screen state). */
+  private isFocusTarget(window: ShellWindow | undefined): boolean {
+    return !!window && this.focus === "window" && this.foregroundWindow() === window;
+  }
+
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
@@ -469,7 +490,11 @@ class Shell {
     // input in whatever window was already on screen. Coerced here rather
     // than at a dozen call sites, and a no-op in a build that still has the
     // strip (homeScreenIndex is -1 there).
-    this.focus = focus === "sidebar" && this.homeScreenIndex() >= 0 ? "window" : focus;
+    const resolvedFocus = focus === "sidebar" && this.homeScreenIndex() >= 0 ? "window" : focus;
+    const gaining = resolvedFocus === "window" ? this.foregroundWindow() : undefined;
+    const alreadyFocused = this.isFocusTarget(gaining);
+    this.focus = resolvedFocus;
+    if (gaining && !alreadyFocused) gaining.onFocus?.(this.lastInput);
     if (this.screenOn) return false;
     this.screenOn = true;
     this.config.onScreenStateChanged(true);
@@ -498,8 +523,11 @@ class Shell {
   focusWindow(windowId: string): void {
     const index = this.windows.findIndex((w) => w.windowId === windowId);
     if (index < 0) return;
+    const target = this.windows[index];
+    const alreadyFocused = this.isFocusTarget(target);
     this.setSelectedIndex(index);
     this.focus = "window";
+    if (!alreadyFocused) target?.onFocus?.(this.lastInput);
   }
 
   /** Idle timeout: sleep if the configured timeout elapsed. Returns whether it slept. */
@@ -610,7 +638,15 @@ class Shell {
     return this.stack.paint();
   }
 
-  async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
+  async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    const previous = this.lastInput;
+    this.lastInput = event;
+    // A visible window may paint a source-dependent indicator (see
+    // lastInputEvent); when the source class flips (watch <-> ring/arms),
+    // repaint it so the indicator follows the device now in use.
+    if (this.screenOn && previous && isWatchInput(previous) !== isWatchInput(event)) {
+      this.foregroundWindow()?.requestRender();
+    }
     // The stock lifecycle has already interpreted the physical double tap as
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
@@ -659,6 +695,16 @@ class Shell {
       return { shell: false, window: false };
     }
 
+    // The 2.2.9 tap-then-hold gesture is a direct, shell-owned escape hatch.
+    // Unlike an ordinary long-press it never reaches the app or starts the
+    // fallback timer: it opens the same system menu that an extended hold
+    // would eventually open. Its later generic release is consumed while the
+    // shell overlay is active and therefore cannot leak into the app.
+    if (event.type === "short-then-long-press") {
+      this.openEscapeMenu();
+      return { shell: true, window: false };
+    }
+
     // Long-press goes to the foreground window (from the sidebar it focuses
     // the window first); apps conventionally answer it with their window
     // menu. The escape timer runs regardless of what the app does with it:
@@ -674,6 +720,7 @@ class Shell {
       }
       if (this.focus === "sidebar") {
         this.focus = "window";
+        window.onFocus?.(this.lastInput);
       }
       // The window owns frameId from here (render or explicit finish).
       await window.handleInput(event, frameId);
@@ -746,6 +793,22 @@ class Shell {
     return `fg=${foreground} target=${this.focus}`;
   }
 
+  /**
+   * The most recent input event received, from any source. Windows whose
+   * appearance depends on the input device in use (e.g. the launcher's
+   * defocused selection preview) can read it at paint time; the shell
+   * repaints the foreground window whenever the source class changes, so
+   * such paints stay current even while the window is not focused.
+   */
+  lastInputEvent(): InputEvent | null {
+    return this.lastInput;
+  }
+
+  /** Whether the most recent input came from the watch (see lastInputEvent). */
+  lastInputWasWatch(): boolean {
+    return this.lastInput !== null && isWatchInput(this.lastInput);
+  }
+
   /** Whether a window is the current input target (foreground + focus in-window). */
   isWindowFocused(windowId: string): boolean {
     return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
@@ -760,7 +823,7 @@ class Shell {
     return this.screenOn && this.foregroundWindow()?.windowId === windowId;
   }
 
-  private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
+  private handleSidebarInput(event: InputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":
         // A double-tap at the root (the app switcher selected) turns the
@@ -782,6 +845,7 @@ class Shell {
         // sidebar's right). Left has nowhere further to go and is ignored.
         if (this.windows.length) {
           this.focus = "window";
+          this.foregroundWindow()?.onFocus?.(this.lastInput);
           // Repaint the window now so its selection highlight reflects focus
           // this frame, not one frame late.
           this.foregroundWindow()?.requestRender();
@@ -811,7 +875,35 @@ class Shell {
     this.config.onWindowsChanged?.();
   }
 
+  // True while a voice-dialog open waits on prepareVoiceCapture (e.g. the
+  // preview-mode permission prompt); a second tap must not queue another open.
+  private voiceDialogPending = false;
+
   private openVoiceDialog(options: {
+    finishOnClick?: boolean;
+    handsFree?: boolean;
+    defaultTarget: "assistant" | "app";
+  }): void {
+    if (this.voiceDialogPending) return;
+    this.voiceDialogPending = true;
+    void (async () => {
+      let ready = true;
+      try {
+        ready = (await this.config.prepareVoiceCapture?.()) ?? true;
+      } catch {
+        ready = false;
+      } finally {
+        this.voiceDialogPending = false;
+      }
+      // Re-checked after the await: another path may have opened a dialog
+      // (or torn down the base state) while a permission prompt was up.
+      if (!ready || this.activeVoiceLayer) return;
+      this.openVoiceDialogNow(options);
+      this.config.requestShellRender();
+    })();
+  }
+
+  private openVoiceDialogNow(options: {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
@@ -1123,9 +1215,10 @@ class Shell {
   }
 
   /**
-   * The held-long-press safeguard menu. Shell-owned and shell-drawn (never
-   * the app's), so an unresponsive app can always be closed. It opens over
-   * whatever the app did with the long-press, including its own menu.
+   * The system/escape menu. Shell-owned and shell-drawn (never the app's), so
+   * an unresponsive app can always be closed. It opens after an extended hold
+   * or immediately for tap-then-hold, over whatever the app did with an earlier
+   * ordinary long-press, including opening its own menu.
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
@@ -1209,7 +1302,11 @@ function formatAssistantTime(date: Date): string {
   return `${day}, ${hours}:${minutes} ${meridiem}`;
 }
 
-export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
+export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
+  return makeInputEvent(rawInputEventToPayload(event));
+}
+
+function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   if (event.kind === "sys-event") {
     if (event.eventType === OsEventTypeList.CLICK_EVENT) {
       return {
@@ -1232,6 +1329,8 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
       return { type: "long-press", source: eventSourceToString(event.eventSource) };
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
+    } else if (event.eventType === OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT) {
+      return { type: "short-then-long-press", source: eventSourceToString(event.eventSource) };
     }
   } else if (event.kind === "watch-gesture") {
     // Synthetic, from the Wear OS remote (app/g2/wear-remote.ts); the glasses
@@ -1272,7 +1371,7 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
 }
 
 /** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
-function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): DashboardInputEvent {
+function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
   return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
 }
 
@@ -1289,7 +1388,7 @@ function eventSourceToString(eventSource: number): InputSource {
   return "ring";
 }
 
-export function inputEventToString(event: DashboardInputEvent): string {
+export function inputEventToString(event: InputEvent): string {
   switch (event.type) {
     case "click":
       return `Click from ${event.source}`;
@@ -1303,6 +1402,8 @@ export function inputEventToString(event: DashboardInputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "short-then-long-press":
+      return `Short then long press from ${event.source}`;
     case "swipe-left":
       return `Swipe left from ${event.source}`;
     case "swipe-right":
