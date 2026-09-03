@@ -906,8 +906,17 @@ Button.permissions-primary-dimmed {
   color: #ffffff;
 }
 
+/* The explicit background is LOAD-BEARING, not decoration. Rich view used to
+ * survive the live-theme-switch bug (the app reads the system theme once at
+ * launch and never re-subscribes, so a mid-session switch leaves foreground
+ * and background disagreeing — Terminal and Doc go white-on-white) purely
+ * because every turn was a card carrying its own background colour. Removing
+ * those cards to fix the turn-grouping bug would have removed that immunity
+ * with them. Painting the pane body instead keeps background and text driven
+ * by the SAME .ns-dark state, at the container rather than per row. */
 .ghost-pane-body {
   padding: 8 16 16 16;
+  background-color: #ffffff;
 }
 
 .ghost-empty {
@@ -917,41 +926,77 @@ Button.permissions-primary-dimmed {
   text-align: center;
 }
 
-.ghost-turn {
-  padding: 10 12;
-  margin-bottom: 8;
-  border-radius: 10;
-  border-width: 1;
-  border-color: #dddddd;
-  background-color: #f4f4f4;
+/* Rich view renders one logical TURN as a continuous block: consecutive prose
+ * runs together at one weight, and tool activity collapses to small muted
+ * marker lines BETWEEN the prose. Deliberately NOT a card per row — round 4
+ * gave every transcript entry the same bordered box with a bold 16pt
+ * headline, so a one-line `Read foo.ts` marker outweighed the reply it sat
+ * inside. Same convention cc-web's own rich view already proves
+ * (apps/claude-code-web/src/public/style.css, `.rich-tool-lines`): "muted so
+ * prose stays primary." */
+.ghost-seg {
+  padding-left: 2;
+  padding-right: 2;
 }
 
-/* The item the LENS has under its cursor. The phone and the glasses are two
- * views of one session, so the phone says where the wearer is rather than
- * keeping a cursor of its own. */
-.ghost-turn-current {
-  border-color: #3b6fd6;
-  border-width: 2;
+/* The separator lives at the END of a logical turn, not between its own
+ * segments — that is what makes one reply read as one block. */
+.ghost-seg-end {
+  padding-bottom: 14;
+  margin-bottom: 14;
+  border-bottom-width: 1;
+  border-bottom-color: #e2e2e2;
 }
 
-.ghost-turn-who {
+/* The segment the LENS has under its cursor. The phone and the glasses are
+ * two views of one session, so the phone says where the wearer is rather than
+ * keeping a cursor of its own. A left rule rather than a box, so marking it
+ * cannot reintroduce the per-segment card this pass removed. */
+.ghost-seg-current {
+  border-left-width: 3;
+  border-left-color: #3b6fd6;
+  padding-left: 9;
+}
+
+.ghost-seg-who {
   font-size: 11;
   text-transform: uppercase;
   letter-spacing: 0.08;
   color: #666666;
+  margin-bottom: 3;
 }
 
-.ghost-turn-headline {
+/* Prose is the content. One weight, no headline split — splitHeadlineBody()
+ * is the glasses digest's convention and does not belong on a full reply. */
+.ghost-seg-prose {
   font-size: 16;
-  font-weight: bold;
   color: #222222;
   margin-top: 2;
+  margin-bottom: 2;
 }
 
-.ghost-turn-body {
-  font-size: 14;
-  color: #444444;
-  margin-top: 4;
+/* Tool markers: small, monospace, muted, and almost no vertical space. */
+.ghost-seg-tool {
+  font-family: monospace;
+  font-size: 11;
+  color: #8a8a8a;
+  margin-top: 3;
+  margin-bottom: 3;
+}
+
+/* Surfaced AskUserQuestion turns — a side channel, tinted so they do not read
+ * as something Ghost said mid-sentence. Must stay AFTER .ghost-seg-prose:
+ * both classes are applied to the same Label. */
+.ghost-seg-question {
+  border-left-width: 3;
+  border-left-color: #a371f7;
+  padding-left: 10;
+}
+
+.ghost-seg-answer {
+  border-left-width: 3;
+  border-left-color: #3fb950;
+  padding-left: 10;
 }
 
 /* Not a live terminal — the undigested feed. Monospace because the alignment
@@ -1067,7 +1112,7 @@ Button.permissions-primary-dimmed {
 }
 
 .ns-dark .exocortex-header-app,
-.ns-dark .ghost-turn-headline,
+.ns-dark .ghost-seg-prose,
 .ns-dark .ghost-terminal,
 .ns-dark .ghost-doc-body,
 .ns-dark .ghost-setting-label {
@@ -1076,7 +1121,7 @@ Button.permissions-primary-dimmed {
 
 .ns-dark .exocortex-header-status,
 .ns-dark .ghost-empty,
-.ns-dark .ghost-turn-who,
+.ns-dark .ghost-seg-who,
 .ns-dark .ghost-doc-path,
 .ns-dark .ghost-setting-desc {
   color: #a0a0a0;
@@ -1086,8 +1131,18 @@ Button.permissions-primary-dimmed {
   color: #6a6a6a;
 }
 
-.ns-dark .ghost-turn-body {
-  color: #cfcfcf;
+.ns-dark .ghost-seg-tool {
+  color: #909090;
+}
+
+/* See .ghost-pane-body's own comment: this pairing is what keeps Rich view
+ * readable now that it no longer boxes every segment. */
+.ns-dark .ghost-pane-body {
+  background-color: #1e1e1e;
+}
+
+.ns-dark .ghost-seg-end {
+  border-bottom-color: #3d3d3d;
 }
 
 .ns-dark .exocortex-header-home,
@@ -1095,14 +1150,13 @@ Button.permissions-primary-dimmed {
   color: #8ab0ff;
 }
 
-.ns-dark .ghost-turn,
 .ns-dark .ghost-setting {
   background-color: #2e2e2e;
   border-color: #4a4a4a;
 }
 
-.ns-dark .ghost-turn-current {
-  border-color: #8ab0ff;
+.ns-dark .ghost-seg-current {
+  border-left-color: #8ab0ff;
 }
 
 .ns-dark .ghost-setting-field,

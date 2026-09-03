@@ -31,7 +31,7 @@
  *   Settings    Ghost's real settings (host, token, session, auto-follow,
  *               speak), the same ConfigSetting objects the glasses menu edits.
  */
-import { Observable } from "@nativescript/core";
+import { Observable, ScrollView } from "@nativescript/core";
 import {
   fetchFileManifest,
   fetchFileText,
@@ -54,6 +54,7 @@ import { formatErrorMessage } from "../util/format-error";
 import {
   buildBasenameIndex,
   findFileReference,
+  groupTranscript,
   isTextRenderableReference,
   splitHeadlineBody,
   stripGlassesBlock,
@@ -89,14 +90,29 @@ const MANIFEST_TTL_MS = 30000;
 /** /api/transcript returns the whole session unbounded, and Rich view's
  * <Repeater> is not virtualized (see `turns` below) — cap what renders. */
 const RICH_VIEW_MAX_ROWS = 300;
+/** How close to the end still counts as "reading the newest content", and so
+ * keeps Rich view following new arrivals. Same intent as cc-web's own 40px
+ * check, in device-independent pixels against a bigger phone line height. */
+const AT_BOTTOM_SLACK = 80;
 
-/** One row of the Rich view. */
+/**
+ * One row of the Rich view — one SEGMENT of a logical turn, not one transcript
+ * entry (see transcript-turns.ts's groupTranscript() for the bug that
+ * distinction fixes). A row is either prose or a compact tool marker, never
+ * both, and only the first row of a logical turn carries the speaker label:
+ * the rest run straight on so a reply reads as one continuous block.
+ */
 export type GhostTurnRow = {
   who: string;
-  headline: string;
-  body: string;
-  bodyVisibility: "visible" | "collapse";
-  /** Marks the item the lens has under its cursor right now. */
+  /** Visible on the first row of a logical turn only. */
+  whoVisibility: "visible" | "collapse";
+  proseText: string;
+  proseVisibility: "visible" | "collapse";
+  /** Carries the question/answer tint; prose otherwise. */
+  proseClass: string;
+  toolText: string;
+  toolVisibility: "visible" | "collapse";
+  /** Marks the item the lens has under its cursor, and the end of a turn. */
   rowClass: string;
   index: number;
   onRowTap: () => void;
@@ -132,6 +148,10 @@ export class GhostCompanionViewModel extends Observable {
   private _docFileText = "";
   private _docFileLoading = false;
   private _docFileError = "";
+
+  /** Rich view's ScrollView, handed over by its own `loaded` event — the only
+   * way to drive scroll position from here (see scrollRichToBottom). */
+  private richScroll: ScrollView | null = null;
 
   private unsubscribe: (() => void) | null = null;
 
@@ -344,6 +364,10 @@ export class GhostCompanionViewModel extends Observable {
     this._paneIndex = next;
     this.notifyPaneChange();
     if (this.paneId === "doc") this.loadDocFileIfNeeded();
+    // Arriving on Rich view always lands on the newest turn — including the
+    // hop onSendTap() makes after a send, where the whole point is to watch
+    // the reply arrive.
+    if (this.paneId === "rich") this.scrollRichToBottom(true);
   }
 
   private notifyPaneChange(): void {
@@ -376,6 +400,20 @@ export class GhostCompanionViewModel extends Observable {
     return null;
   }
 
+  /**
+   * Rich view's rows. NOT one row per transcript entry any more — that was the
+   * bug (see groupTranscript()'s header for Chris's own field report). The
+   * entries are first grouped into logical turns, consecutive prose is
+   * concatenated, and tool activity collapses to compact marker rows BETWEEN
+   * the prose rather than into equally-weighted boxes of its own.
+   *
+   * splitHeadlineBody() is deliberately NOT used here any more. It is the
+   * GLASSES digest's convention — first line as a bold headline, the rest
+   * smaller — and applying it to a real reply both re-weighted the opening
+   * sentence as a heading and dropped every blank line, destroying the
+   * paragraph structure of the prose it was meant to show. It stays in use for
+   * docTitle(), where a genuine one-line summary is what's wanted.
+   */
   get turns(): GhostTurnRow[] {
     const cursorUuid = this.cursorTurnUuid();
     // /api/transcript returns the WHOLE session, unbounded (unlike the
@@ -384,21 +422,74 @@ export class GhostCompanionViewModel extends Observable {
     // mean hundreds of live native views. Cap what actually RENDERS; doc
     // viewer / cursor matching below still search the full `_transcript`
     // array, so an older turn stays reachable by pin/cursor even once its
-    // row has scrolled out of this list.
+    // row has scrolled out of this list. The cap counts raw ENTRIES, not
+    // grouped rows, so olderTurnsHiddenMessage stays true and the grouping
+    // can only ever reduce the live view count from here.
     const start = Math.max(0, this._transcript.length - RICH_VIEW_MAX_ROWS);
-    return this._transcript.slice(start).map((turn, offset) => {
-      const index = start + offset;
-      const { headline, body } = splitHeadlineBody(stripGlassesBlock(turn.text));
+    return groupTranscript(this._transcript.slice(start)).map((segment) => {
+      const index = start + segment.index;
+      const isTool = segment.kind === "tool";
+      const current = !!cursorUuid && segment.sources.some((t) => t.uuid === cursorUuid);
+      const classes = ["ghost-seg"];
+      // The separator (and the gap) belongs at the END of a logical turn, so
+      // the segments inside one read as continuous.
+      if (segment.last) classes.push("ghost-seg-end");
+      if (current) classes.push("ghost-seg-current");
+      const proseClasses = ["ghost-seg-prose"];
+      if (segment.kind === "question") proseClasses.push("ghost-seg-question");
+      if (segment.kind === "answer") proseClasses.push("ghost-seg-answer");
       return {
-        who: turnWhoLabel(turn),
-        headline,
-        body,
-        bodyVisibility: body.length > 0 ? "visible" : "collapse",
-        rowClass: turn.uuid && turn.uuid === cursorUuid ? "ghost-turn ghost-turn-current" : "ghost-turn",
+        who: segment.who,
+        whoVisibility: segment.first ? "visible" : "collapse",
+        proseText: isTool ? "" : segment.text,
+        proseVisibility: isTool ? "collapse" : "visible",
+        proseClass: proseClasses.join(" "),
+        toolText: isTool ? segment.text : "",
+        toolVisibility: isTool ? "visible" : "collapse",
+        rowClass: classes.join(" "),
         index,
         onRowTap: () => this.openDocFor(index),
-      };
+      } as GhostTurnRow;
     });
+  }
+
+  // ── Rich view scroll position ──────────────────────────────────────────
+  /**
+   * Chris, same field report: the pane opens "almost inverted" — a ScrollView
+   * starts at offset 0, so a long session opened on its OLDEST content and he
+   * had to scroll the whole way down to find the reply he had just read on the
+   * lens. The newest turn is what the pane is for.
+   *
+   * The follow rule is cc-web's (app.js's renderRichView): jump on open, and
+   * afterwards only keep following when the reader is ALREADY at the bottom —
+   * yanking the view down while someone is reading history is the opposite bug.
+   */
+  onRichScrollLoaded(args: { object?: unknown }): void {
+    this.richScroll = (args?.object as ScrollView) ?? null;
+    this.scrollRichToBottom(true);
+  }
+
+  private scrollRichToBottom(force: boolean): void {
+    const view = this.richScroll;
+    if (!view || this.paneId !== "rich") return;
+    if (!force && view.scrollableHeight - view.verticalOffset > AT_BOTTOM_SLACK) return;
+    // The Repeater's new rows are not measured yet on this tick (and on a pane
+    // switch the ScrollView was collapsed a moment ago, so scrollableHeight is
+    // still 0). Re-issue the jump as layout settles rather than guessing one
+    // delay that works on every content size.
+    const jump = (): void => {
+      const target = this.richScroll;
+      if (!target || this.paneId !== "rich") return;
+      try {
+        target.scrollToVerticalOffset(target.scrollableHeight, false);
+      } catch {
+        // A ScrollView that is between layouts throws rather than no-opping;
+        // the next staged attempt below covers it.
+      }
+    };
+    jump();
+    setTimeout(jump, 60);
+    setTimeout(jump, 250);
   }
 
   /** Surfaces the RICH_VIEW_MAX_ROWS cap rather than silently dropping
@@ -751,6 +842,8 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);
     this.notifyDocChange();
     this.loadDocFileIfNeeded();
+    // New turns just landed; follow them down if the reader is already there.
+    this.scrollRichToBottom(false);
   }
 
   /** One line for the cover screen: what Ghost has on the lens right now.

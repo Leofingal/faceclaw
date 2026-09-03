@@ -47,7 +47,7 @@
          glasses' own digest. Tapping a row opens that turn in the Doc
          viewer. See ghost-companion-view-model.ts's own header for why this
          needed a second, separate poll from the glasses' digest one. -->
-    <ScrollView visibility="{{ richPaneVisibility }}">
+    <ScrollView visibility="{{ richPaneVisibility }}" loaded="{{ onRichScrollLoaded }}">
       <StackLayout class="ghost-pane-body">
         <Label text="{{ feedEmptyMessage }}" visibility="{{ feedEmptyVisibility }}"
           class="ghost-empty" textWrap="true" />
@@ -56,16 +56,32 @@
              dropping older history. -->
         <Label text="{{ olderTurnsHiddenMessage }}" visibility="{{ olderTurnsHiddenVisibility }}"
           class="ghost-empty" textWrap="true" />
+        <!--
+          ONE ROW PER SEGMENT OF A LOGICAL TURN, NOT ONE PER TRANSCRIPT ENTRY.
+          That distinction is the whole fix: a Ghost reply arrives as prose,
+          then a tool marker, then more prose, and round 4 gave each of those
+          its own equally-weighted card ("80% tool use, and almost no prose
+          responses" — Chris, on the shipped build). The view model groups
+          them first (transcript-turns.ts's groupTranscript), so consecutive
+          prose is already concatenated and only the FIRST row of a turn shows
+          the speaker; the rest run straight on.
+
+          A row is prose OR a tool marker, never both — the unused Label
+          collapses. That is the same visibility-toggle pattern the rest of
+          this file uses, chosen over a Repeater itemTemplateSelector because
+          it needs no new mechanism to get the identical result.
+        -->
         <Repeater items="{{ turns }}">
           <Repeater.itemsLayout>
             <StackLayout />
           </Repeater.itemsLayout>
           <Repeater.itemTemplate>
             <StackLayout class="{{ rowClass }}" tap="{{ onRowTap }}">
-              <Label text="{{ who }}" class="ghost-turn-who" />
-              <Label text="{{ headline }}" class="ghost-turn-headline" textWrap="true" />
-              <Label text="{{ body }}" visibility="{{ bodyVisibility }}"
-                class="ghost-turn-body" textWrap="true" />
+              <Label text="{{ who }}" visibility="{{ whoVisibility }}" class="ghost-seg-who" />
+              <Label text="{{ proseText }}" visibility="{{ proseVisibility }}"
+                class="{{ proseClass }}" textWrap="true" />
+              <Label text="{{ toolText }}" visibility="{{ toolVisibility }}"
+                class="ghost-seg-tool" textWrap="true" />
             </StackLayout>
           </Repeater.itemTemplate>
         </Repeater>

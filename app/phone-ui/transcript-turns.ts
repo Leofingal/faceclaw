@@ -38,6 +38,9 @@ export type TurnLike = {
   role: "user" | "assistant";
   text: string;
   kind?: string;
+  /** Present on a real GhostTurn; optional here so the pure-logic tests can
+   * build fixtures without one. The Rich-view cursor highlight matches on it. */
+  uuid?: string;
 };
 
 /** One row of Rich view, built from a real transcript turn (not the digest). */
@@ -45,6 +48,16 @@ export function turnWhoLabel(turn: TurnLike): string {
   if (turn.kind === "tool") return "Tool";
   if (turn.kind === "question") return "Ghost";
   if (turn.kind === "answer") return "Chris";
+  return turn.role === "user" ? "Chris" : "Ghost";
+}
+
+/**
+ * Who owns a whole LOGICAL turn — role only, deliberately unlike
+ * turnWhoLabel() above. A logical turn that happens to open with a tool call
+ * is still Ghost speaking; labelling that block "TOOL" is the inversion this
+ * whole grouping pass exists to remove.
+ */
+function blockWhoLabel(turn: TurnLike): string {
   return turn.role === "user" ? "Chris" : "Ghost";
 }
 
@@ -74,6 +87,142 @@ export function splitHeadlineBody(text: string): { headline: string; body: strin
     .filter((l) => l.length > 0)
     .join("\n");
   return { headline, body };
+}
+
+// ── Rich view: grouping segments into logical turns ────────────────────────
+/**
+ * THE BUG THIS EXISTS TO FIX (Chris, live against round 4's own build,
+ * 2026-09-02): *"each of your sends are getting their own box, so your prose
+ * is... listing too much information"* / *"what I see on the screen is 80%
+ * tool use, and almost no prose responses... the Rich view on the companion
+ * app is doing it backward"*.
+ *
+ * The transcript the box returns is NOT one entry per conversational turn.
+ * One Ghost reply is a RUN of entries — prose, then a `kind:'tool'` marker
+ * entry, then more prose, then another marker. (`readTurns()` in cc-web's
+ * `transcript-reader.js` pushes one turn per assistant JSONL message, plus a
+ * separate `uuid + '-t'` turn carrying that message's tool markers.) Round 4
+ * mapped that array 1:1 onto rows and gave every entry the same bordered card
+ * with a bold 16pt headline — so a one-line `Read foo.ts` marker rendered
+ * heavier than the prose around it, and a single reply arrived as a dozen
+ * disconnected boxes.
+ *
+ * cc-web's own rich view already solves this, and its CSS says why
+ * (`apps/claude-code-web/src/public/style.css`, `.rich-tool-lines`): "compact
+ * tool-activity markers between prose — so the rich view reads as a full
+ * transcript (actions + words), muted so prose stays primary." This function
+ * is that behaviour in native terms.
+ *
+ * WHERE THE TURN BOUNDARY COMES FROM — a judgment call, documented because
+ * the payload does NOT carry one. Each entry has only `role`, `kind`, `uuid`
+ * and `ts`; there is no logical-turn id to read. A logical turn is therefore
+ * inferred as **a maximal run of consecutive same-`role` entries**, which is
+ * exactly what one is: Ghost keeps talking (and acting) until Chris says
+ * something. Two deliberate exceptions:
+ *   - a surfaced AskUserQuestion (`kind` 'question' / 'answer') never merges
+ *     into a neighbouring run. cc-web gives those their own tinted card
+ *     because they are a side channel; folding one into the prose above would
+ *     read as Ghost having said it mid-sentence.
+ *   - `uuid` is NOT used to infer boundaries. It looks like it could ('-t'
+ *     suffixes a tool turn), but that only ties a marker to the ONE message
+ *     it came from, not to the reply — so it can't see a turn boundary at all.
+ */
+
+export type RichSegmentKind = "prose" | "tool" | "question" | "answer";
+
+/** One rendered piece of Rich view. A logical turn is a run of these, marked
+ * by `first` (where the speaker label goes) and `last` (where the separator
+ * goes) — everything between reads as one continuous block. */
+export type RichSegment<T extends TurnLike = TurnLike> = {
+  kind: RichSegmentKind;
+  /** "Ghost" / "Chris" — rendered only where `first` is true. */
+  who: string;
+  first: boolean;
+  last: boolean;
+  /** Already concatenated: consecutive prose entries joined by a blank line. */
+  text: string;
+  /** Index, into the array passed in, of the first entry behind this segment. */
+  index: number;
+  /** Every entry behind this segment — the cursor highlight matches on these. */
+  sources: T[];
+};
+
+/** Keep paragraphs, drop the gaps that accumulate at every join. */
+function normalizeProse(text: string): string {
+  return text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function segmentKindOf(turn: TurnLike): RichSegmentKind {
+  if (turn.kind === "tool") return "tool";
+  if (turn.kind === "question") return "question";
+  if (turn.kind === "answer") return "answer";
+  return "prose";
+}
+
+/** Self-contained cards; they never merge with a neighbouring run. */
+function isStandalone(kind: RichSegmentKind): boolean {
+  return kind === "question" || kind === "answer";
+}
+
+export function groupTranscript<T extends TurnLike>(turns: T[]): RichSegment<T>[] {
+  const out: RichSegment<T>[] = [];
+  let blockStart = 0; // index in `out` where the logical turn still open began
+
+  const closeBlock = (): void => {
+    if (blockStart >= out.length) return; // the block produced nothing renderable
+    out[blockStart].first = true;
+    out[out.length - 1].last = true;
+    blockStart = out.length;
+  };
+
+  let prev: T | null = null;
+
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i];
+    const kind = segmentKindOf(turn);
+    // Only ordinary prose carries a <glasses> HUD block; a tool marker or a
+    // question card is authored text that must not be cut at a mention.
+    const text =
+      kind === "prose" ? normalizeProse(stripGlassesBlock(turn.text)) : (turn.text || "").trim();
+
+    if (
+      prev === null ||
+      turn.role !== prev.role ||
+      isStandalone(kind) ||
+      isStandalone(segmentKindOf(prev))
+    ) {
+      closeBlock();
+    }
+    prev = turn;
+
+    // A reply whose entire text WAS the <glasses> block leaves nothing to
+    // render. Drop it rather than opening an empty box — round 4 rendered
+    // those as blank cards, which is part of what made the pane look padded
+    // out with everything except prose.
+    if (!text) continue;
+
+    // Merge into the segment already open when it is the same kind inside the
+    // same logical turn: consecutive prose becomes ONE continuous block, and a
+    // run of action markers becomes one compact run instead of N boxes.
+    const open = out.length > blockStart ? out[out.length - 1] : null;
+    if (open && open.kind === kind && (kind === "prose" || kind === "tool")) {
+      open.text = kind === "prose" ? `${open.text}\n\n${text}` : `${open.text}\n${text}`;
+      open.sources.push(turn);
+      continue;
+    }
+
+    out.push({
+      kind,
+      who: blockWhoLabel(turn),
+      first: false,
+      last: false,
+      text,
+      index: i,
+      sources: [turn],
+    });
+  }
+  closeBlock();
+  return out;
 }
 
 /** Lookup built once per manifest fetch: basename -> path, or null if ambiguous. */
