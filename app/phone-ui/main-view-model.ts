@@ -1077,7 +1077,10 @@ export class MainViewModel extends Observable {
     const notifications = muted
       ? `${muted} notification ${muted === 1 ? "source" : "sources"} muted`
       : "notification sources";
-    return `Display, glasses, app list — and ${notifications}`;
+    // Every category the glasses' own Settings app used to own now lives
+    // behind this row (2026-09-03), so the summary names the surface rather
+    // than trying to list it.
+    return `Every setting — display, voice, assistant, keys, app list, ${notifications}`;
   }
 
   /**

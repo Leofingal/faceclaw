@@ -1027,10 +1027,95 @@ Button.permissions-primary-dimmed {
   background-color: transparent;
 }
 
+/* The container the rendered markdown blocks sit in. `color` and `font-size`
+ * are inheritable in NativeScript, so every .doc-md Label below picks its body
+ * text up from here and only overrides what it actually changes. The explicit
+ * background is the same load-bearing one .ghost-pane-body carries: without it
+ * this pane goes white-on-white after a live theme switch. */
 .ghost-doc-body {
   font-size: 15;
   color: #222222;
+  background-color: #ffffff;
   padding: 14 16 24 16;
+}
+
+/* ── Doc viewer: rendered markdown (2026-09-03) ─────────────────────────────
+ * One Label per parsed block (phone-ui/markdown-render.ts). Block-level
+ * treatment lives here; the inline runs (bold / italic / code / link) are
+ * spans built in ghost-companion-view-model.ts, because a Span's weight and
+ * family cannot be reached from CSS. */
+.doc-md {
+  margin-bottom: 8;
+}
+
+.doc-md-h1 {
+  font-size: 21;
+  margin-top: 14;
+  margin-bottom: 6;
+}
+
+.doc-md-h2 {
+  font-size: 18;
+  margin-top: 14;
+  margin-bottom: 6;
+}
+
+.doc-md-h3 {
+  font-size: 16;
+  margin-top: 12;
+  margin-bottom: 4;
+}
+
+.doc-md-h4 {
+  font-size: 15;
+  margin-top: 12;
+  margin-bottom: 4;
+}
+
+.doc-md-li {
+  margin-bottom: 4;
+}
+
+/* Nesting depth, clamped at three by the parser so a deep list cannot indent
+ * itself off the side of a phone. */
+.doc-md-li-d0 {
+  margin-left: 4;
+}
+
+.doc-md-li-d1 {
+  margin-left: 20;
+}
+
+.doc-md-li-d2 {
+  margin-left: 36;
+}
+
+.doc-md-li-d3 {
+  margin-left: 52;
+}
+
+.doc-md-code {
+  font-family: monospace;
+  font-size: 13;
+  color: #333333;
+  background-color: #f2f2f2;
+  border-radius: 6;
+  padding: 8 10;
+}
+
+.doc-md-quote {
+  border-left-width: 3;
+  border-left-color: #c8c8c8;
+  padding-left: 10;
+  color: #555555;
+}
+
+/* An empty Label doing the job of an <hr>: the block carries no text, so its
+ * height and colour are the whole rule. */
+.doc-md-rule {
+  height: 1;
+  margin: 12 0;
+  background-color: #dddddd;
 }
 
 .ghost-setting {
@@ -1215,4 +1300,39 @@ Button.permissions-primary-dimmed {
 .ns-dark .settings-value,
 .ns-dark .app-order-button {
   color: #8ab0ff;
+}
+
+/* Doc viewer's rendered markdown, dark. Only what actually differs: the body
+ * text colour already comes from .ns-dark .ghost-doc-body above. */
+.ns-dark .ghost-doc-body {
+  background-color: #1c1c1c;
+}
+
+.ns-dark .doc-md-code {
+  color: #d8d8d8;
+  background-color: #262626;
+}
+
+.ns-dark .doc-md-quote {
+  border-left-color: #4a4a4a;
+  color: #b0b0b0;
+}
+
+.ns-dark .doc-md-rule {
+  background-color: #3a3a3a;
+}
+
+/* The app list's own container paints its own background (2026-09-03). The
+ * real cause of "the ghost app rendered on the app grid's background" was the
+ * broken visibility binding fixed in main-page.xml, not a transparent view —
+ * but the two bodies share one grid cell, so whichever is up must own its
+ * backdrop rather than depending on the other being gone. Belt as well as
+ * braces: the same class of bug (a view not painting its own background) is
+ * what the live-theme-switch failure was made of too. */
+.exocortex-home-body {
+  background-color: #ffffff;
+}
+
+.ns-dark .exocortex-home-body {
+  background-color: #1c1c1c;
 }

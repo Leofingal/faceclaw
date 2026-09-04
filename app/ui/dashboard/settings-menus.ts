@@ -24,48 +24,19 @@ import {
 import { TextViewerLayer } from "../../apps/files/text-viewer";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
-import { shell } from "../shell/shell";
 import {
-  anthropicApiKeySetting,
-  assistantAllowProactiveSetting,
-  assistantBackendSetting,
-  assistantBridgeHostSetting,
-  assistantBridgePortSetting,
-  assistantBridgeTokenSetting,
-  assistantModelSetting,
-  assistantSkipConfirmationSetting,
-  batteryDisplayModeSetting,
-  brightnessSetting,
-  displayModeSetting,
-  elevenLabsApiKeySetting,
-  mapboxApiKeySetting,
-  mirrorTouchSetting,
-  openAiApiKeySetting,
-  previewColorSetting,
-  ringConnectionModeSetting,
-  sonioxApiKeySetting,
+  ConfigSettingBoolean,
+  ConfigSettingEnum,
+  ConfigSettingString,
   enumSettingMenuItem,
-  firmwareDebugFlagsSetting,
-  lockScreenEnabledSetting,
-  saveVoiceRecordingsSetting,
-  showBleBandwidthSetting,
-  suspendEvenHubWhenScreenOffSetting,
-  terminalAutoReconnectSetting,
-  terminalLaunchPresetsSetting,
-  terminalWakeOnBellSetting,
   textSettingMenuItem,
-  timeFormatSetting,
   toggleSettingMenuItem,
-  useMicControlSetting,
-  verticalPositionSetting,
-  voiceProviderSetting,
-  screenTimeoutSetting,
-  wakeWordActionSetting,
-  watchCanUnlockSetting,
-  watchCrownClockwiseNextSetting,
-  watchMirrorAssistantSetting,
-  watchRemoteEnabledSetting,
 } from "../dashboard-settings";
+import {
+  settingsCategory,
+  type CatalogEntry,
+  type CatalogSpecialId,
+} from "../settings-catalog";
 import { wearBridge } from "../../native/wear-bridge";
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
@@ -75,113 +46,41 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
   return new SettingsPanelLayer(settingsSections());
 }
 
+/**
+ * THE CATEGORY LIST IS NOT WRITTEN HERE ANY MORE (2026-09-03).
+ *
+ * Which setting belongs to which category now lives in ui/settings-catalog,
+ * because the phone's own Settings page renders the identical tree — that
+ * consolidation is the whole point of the change (Chris: "I want those
+ * settings to be settings so they should be under the gear"), and two
+ * hand-written copies of one list would have drifted the first time a setting
+ * was added. This function is now purely the GLASSES rendering of it: the
+ * catalogue says what, the mapping below says how it draws on a lens.
+ *
+ * The two sections with no settings in them at all — About (bundled docs) and
+ * Quit (disconnect) — stay written out here, since they are glasses-only
+ * screens rather than values the phone could edit.
+ */
 function settingsSections(): SettingsSection[] {
   return [
-    {
-      label: "Display",
-      items: [
-        // Auto (ambient sensor) or an exact level; pushed to the glasses by
-        // the dashboard controller when changed and on each connect.
-        enumSettingMenuItem(brightnessSetting),
-        enumSettingMenuItem(screenTimeoutSetting, {
-          onChange: () => {
-            shell.noteUserActivity();
-          },
-        }),
-        toggleSettingMenuItem(lockScreenEnabledSetting),
-        // Where min-height windows (and the sidebar) sit vertically on the
-        // screen; the dashboard controller repositions surfaces on change.
-        enumSettingMenuItem(verticalPositionSetting),
-        // Band / tall / full-panel; the dashboard controller reflows windows.
-        enumSettingMenuItem(displayModeSetting),
-        // Controls the top-bar battery indicators (icon vs percentage).
-        enumSettingMenuItem(batteryDisplayModeSetting),
-        // Controls the top-bar clock (24-hour vs 12-hour).
-        enumSettingMenuItem(timeFormatSetting),
-        // Opens the modal font picker (face, weight, size) for UI text.
-        uiFontPickerMenuItem(),
-      ],
-    },
-    {
-      label: "Voice",
-      items: [
-        enumSettingMenuItem(wakeWordActionSetting),
-        enumSettingMenuItem(voiceProviderSetting),
-        asrModelMenuItem("moonshine"),
-        asrModelMenuItem("whisper-base-en"),
-      ],
-    },
-    {
-      label: "Assistant",
-      items: [
-        // On-phone LLM loop vs the user's own agent via the bridge plugin.
-        enumSettingMenuItem(assistantBackendSetting),
-        enumSettingMenuItem(assistantModelSetting),
-        localModelMenuItem(),
-        // When on, a wakeword utterance goes straight to the assistant with no
-        // Send/Type menu step.
-        toggleSettingMenuItem(assistantSkipConfirmationSetting),
-        textSettingMenuItem(assistantBridgeHostSetting),
-        textSettingMenuItem(assistantBridgePortSetting),
-        textSettingMenuItem(assistantBridgeTokenSetting),
-        toggleSettingMenuItem(assistantAllowProactiveSetting),
-      ],
-    },
-    {
-      label: "API Keys",
-      items: [
-        textSettingMenuItem(elevenLabsApiKeySetting),
-        textSettingMenuItem(openAiApiKeySetting),
-        textSettingMenuItem(sonioxApiKeySetting),
-        textSettingMenuItem(anthropicApiKeySetting),
-        textSettingMenuItem(mapboxApiKeySetting),
-      ],
-    },
-    {
-      label: "Terminal",
-      // Connections (g2mirror:// strings) are managed inside the Terminal
-      // app's Manage Connections section, not here.
-      items: [
-        terminalFontPickerMenuItem(),
-        textSettingMenuItem(terminalLaunchPresetsSetting),
-        toggleSettingMenuItem(terminalAutoReconnectSetting),
-        toggleSettingMenuItem(terminalWakeOnBellSetting),
-      ],
-    },
-    {
-      label: "Phone display",
-      // The phone app's mirror of the glasses screen and its controls
-      // (app/phone-ui/): all read live by the main page.
-      items: [
-        enumSettingMenuItem(previewColorSetting),
-        toggleSettingMenuItem(mirrorTouchSetting),
-      ],
-    },
+    { label: "Display", items: categoryItems("Display") },
+    { label: "Voice", items: categoryItems("Voice") },
+    { label: "Assistant", items: categoryItems("Assistant") },
+    { label: "API Keys", items: categoryItems("API keys") },
+    // Connections (g2mirror:// strings) are managed inside the Terminal app's
+    // Manage Connections section, not here.
+    { label: "Terminal", items: categoryItems("Terminal") },
+    // The phone app's mirror of the glasses screen and its controls
+    // (app/phone-ui/): all read live by the main page.
+    { label: "Phone display", items: categoryItems("Phone display") },
     {
       label: "Watch",
       // Wear OS remote (wear/); the status line above the items says whether
       // a watch running the companion app is currently reachable.
-      items: [
-        toggleSettingMenuItem(watchRemoteEnabledSetting),
-        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
-        toggleSettingMenuItem(watchCanUnlockSetting),
-        toggleSettingMenuItem(watchMirrorAssistantSetting),
-      ],
+      items: categoryItems("Watch"),
       renderDetail: renderWatchStatus,
     },
-    {
-      label: "Developer",
-      items: [
-        // Whether the phone opens its own BLE link to the R1 ring; the
-        // glasses relay ring gestures either way. Applied at connect time.
-        enumSettingMenuItem(ringConnectionModeSetting),
-        toggleSettingMenuItem(saveVoiceRecordingsSetting),
-        toggleSettingMenuItem(firmwareDebugFlagsSetting),
-        toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
-        toggleSettingMenuItem(useMicControlSetting),
-        toggleSettingMenuItem(showBleBandwidthSetting),
-      ],
-    },
+    { label: "Developer", items: categoryItems("Developer") },
     {
       label: "About",
       // The version/license blurb (renderDetail) draws above the bundled
@@ -208,6 +107,41 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+}
+
+/** One catalogue category, rendered as glasses menu rows in catalogue order. */
+function categoryItems(label: string): MenuItem[] {
+  return settingsCategory(label).entries.map(catalogMenuItem);
+}
+
+/**
+ * How each catalogue entry draws on the lens. The `instanceof` dispatch is
+ * what the three existing helpers were already doing by hand at every call
+ * site; doing it once here is what lets the catalogue stay presentation-free.
+ */
+function catalogMenuItem(entry: CatalogEntry): MenuItem {
+  if (entry.kind === "special") return specialMenuItem(entry.id);
+  const { setting, onChange } = entry;
+  const opts = onChange ? { onChange: () => onChange() } : undefined;
+  if (setting instanceof ConfigSettingBoolean) return toggleSettingMenuItem(setting, opts);
+  if (setting instanceof ConfigSettingEnum) return enumSettingMenuItem(setting, opts);
+  if (setting instanceof ConfigSettingString) return textSettingMenuItem(setting, opts);
+  throw new Error(`settings catalogue: unrenderable setting ${String(setting?.id)}`);
+}
+
+function specialMenuItem(id: CatalogSpecialId): MenuItem {
+  switch (id) {
+    case "ui-font":
+      return uiFontPickerMenuItem();
+    case "terminal-font":
+      return terminalFontPickerMenuItem();
+    case "asr-moonshine":
+      return asrModelMenuItem("moonshine");
+    case "asr-whisper":
+      return asrModelMenuItem("whisper-base-en");
+    case "local-model":
+      return localModelMenuItem();
+  }
 }
 
 const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;

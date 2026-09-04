@@ -67,8 +67,36 @@
         <GridLayout id="exocortexChrome" rows="auto,*" visibility="{{ exocortexChromeVisibility }}">
             <ui:exocortex-header row="0" />
             <GridLayout row="1">
-                <ui:ghost-companion visibility="{{ ghostCompanionVisibility }}"
-                    bindingContext="{{ ghostCompanion }}" />
+                <!--
+                  THE VISIBILITY LIVES ON THIS WRAPPER, NOT ON THE COMPONENT
+                  TAG, AND THAT IS THE WHOLE OF A REAL BUG (2026-09-03).
+
+                  Chris: tapping "Exocortex" from inside Ghost showed the app
+                  list with "the ghost app rendered on it" instead of the
+                  usual clean background — bubbles present and functional,
+                  backdrop wrong.
+
+                  Root cause: `visibility` and `bindingContext` were both
+                  bound on the same <ui:ghost-companion> tag. NativeScript's
+                  component builder applies each attribute as a binding
+                  against the view's OWN bindingContext, and that tag's
+                  bindingContext is overridden to the GhostCompanionViewModel
+                  — which has no `ghostCompanionVisibility` member. The
+                  binding therefore resolved to undefined, `visibility` fell
+                  back to its default ("visible"), and the companion never
+                  collapsed at all. It was simply painted UNDER the app list
+                  for the whole life of the app; you only notice once Ghost's
+                  panes have content to show through the gaps, which is
+                  exactly when he noticed.
+
+                  A plain wrapper fixes it because the wrapper INHERITS
+                  MainViewModel, so the visibility binding resolves where it
+                  was always meant to. Same shape as the home body below,
+                  which never had the bug for the same reason.
+                -->
+                <GridLayout visibility="{{ ghostCompanionVisibility }}">
+                    <ui:ghost-companion bindingContext="{{ ghostCompanion }}" />
+                </GridLayout>
 
                 <!-- THE HOME BODY: the app list, checkbox + reorder +
                      tap-to-launch. Same component the standalone
@@ -76,7 +104,8 @@
                      ExocortexAppsViewModel. The two rows above it are pinned
                      rather than scrolled: both are transient states you want
                      to act on immediately, not list content. -->
-                <GridLayout rows="auto,auto,*" visibility="{{ homeBodyVisibility }}">
+                <GridLayout rows="auto,auto,*" visibility="{{ homeBodyVisibility }}"
+                    class="exocortex-home-body">
                     <!-- Only while looking at the app list with Ghost still
                          focused over there; the way back to the companion. -->
                     <StackLayout row="0" class="home-row" tap="{{ onShowGhostTap }}" visibility="{{ ghostReturnRowVisibility }}">

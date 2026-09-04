@@ -122,8 +122,31 @@
         <Button col="1" text="&#x2715;" tap="{{ onDocUnpinTap }}"
           visibility="{{ docUnpinVisibility }}" class="ghost-doc-close" />
       </GridLayout>
+      <!--
+        RENDERED MARKDOWN, NOT RAW TEXT (2026-09-03). Chris tapped a plain
+        `knowledge/current-state.md` mention in Rich view, it opened here
+        correctly, and then showed the file's markdown source verbatim —
+        headings as "## ...", bullets as "- ...", nothing styled. Same gap
+        cc-web's pinned-preview pane closed in session 0144, in the form a
+        native pane can take: one Label per parsed block, styled by class,
+        with the inline runs carried as a FormattedString. See
+        markdown-render.ts for why marked + DOMPurify is not portable here.
+
+        Not virtualized, same as Rich view's Repeater above — the view model
+        caps the block count and says so in the last row rather than
+        silently truncating.
+      -->
       <ScrollView row="1">
-        <Label text="{{ docText }}" class="ghost-doc-body" textWrap="true" />
+        <StackLayout class="ghost-doc-body">
+          <Repeater items="{{ docBlocks }}">
+            <Repeater.itemsLayout>
+              <StackLayout />
+            </Repeater.itemsLayout>
+            <Repeater.itemTemplate>
+              <Label formattedText="{{ formatted }}" class="{{ blockClass }}" textWrap="true" />
+            </Repeater.itemTemplate>
+          </Repeater>
+        </StackLayout>
       </ScrollView>
     </GridLayout>
 

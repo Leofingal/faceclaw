@@ -1,149 +1,76 @@
 /**
- * Exocortex's own Settings screen on the phone — the design pilot's
- * categorized page (session 0142: Display / Glasses / Notifications /
- * Interface / About), ported onto faceclaw's real settings objects.
+ * Exocortex's Settings screen on the phone — and, as of 2026-09-03, the only
+ * settings surface there is.
  *
- * What it replaces: nothing was deleted. Faceclaw's own Settings app on the
- * GLASSES is untouched, and so is the mirror page's Settings tab. What did not
- * exist before is a phone-side settings surface of Exocortex's own, which is
- * where the notification ignore list and the app-list controls have to live —
- * they are both things you configure once, with a thumb, not through a ring.
+ * Chris, having browsed the live UI to check: "all those things in the
+ * settings function, there's the settings app that is in the menu of apps, in
+ * the exocortex menu. I want those settings to be settings so they should be
+ * under the gear, instead of being a separate app that opens on the glasses"
+ * — then, sharpening it: "they should be all editable on the phone side
+ * without any glasses interaction."
  *
- * Every row here reads and writes the SAME ConfigSetting objects the glasses
- * menu edits, so the two can never disagree; onAnySettingChanged re-reads the
- * page when something is changed from the other side.
+ * So the hand-written Glasses/Display rows this page started with are gone,
+ * replaced by every category in ui/settings-catalog — the same definition the
+ * glasses panel renders from, which is what keeps the two in step now that the
+ * glasses one is unlisted. phone-ui/settings-rows turns each catalogue entry
+ * into a row that WRITES: enums cycle, booleans switch, strings are typed into
+ * here rather than deferring to the glasses' own text-edit layer.
+ *
+ * What is still hand-written below is what has no glasses equivalent at all:
+ * the notification ignore list, the app-list screen, and the gesture
+ * reference.
  */
 import { Frame, Observable } from "@nativescript/core";
 
-import {
-  batteryDisplayModeSetting,
-  brightnessSetting,
-  displayModeSetting,
-  lockScreenEnabledSetting,
-  onAnySettingChanged,
-  screenTimeoutSetting,
-  timeFormatSetting,
-  verticalPositionSetting,
-} from "../ui/dashboard-settings";
-import { setUiFontSize, uiFontSizeLabel, UI_FONT_SIZE_PRESETS } from "../graphics/ui-fonts";
+import { onAnySettingChanged } from "../ui/dashboard-settings";
 import { mutedNotificationSourceCount } from "../native/notification-sources";
 import { ALL_APPS } from "../apps/all-apps";
 import { isAppVisibleInExocortex, isCuratedAppId } from "../native/exocortex-app-list";
+import { buildSettingsRows, type PhoneSettingsRow } from "./settings-rows";
 
 export class ExocortexSettingsViewModel extends Observable {
   private offSettingChanged: (() => void) | null = null;
+  /**
+   * Built once and kept. The rows are Observables in their own right, so a
+   * setting changing re-notifies the one row that shows it — rebuilding this
+   * list instead would tear down and recreate every view on the page, which
+   * among other things makes the API-key fields impossible to type into (see
+   * settings-rows.ts's header).
+   */
+  private readonly _settingsRows: PhoneSettingsRow[] = buildSettingsRows();
 
   constructor() {
     super();
-    this.offSettingChanged = onAnySettingChanged(() => this.refresh());
+    this.attach();
+  }
+
+  /**
+   * Idempotent, because the page reuses its view model across back
+   * navigations: navigatingTo re-attaches what unloaded let go, so a model
+   * that has been disposed once still tracks changes the next time the page
+   * is opened.
+   */
+  attach(): void {
+    if (!this.offSettingChanged) this.offSettingChanged = onAnySettingChanged(() => this.refresh());
+    for (const row of this._settingsRows) row.attach();
   }
 
   dispose(): void {
     this.offSettingChanged?.();
     this.offSettingChanged = null;
+    for (const row of this._settingsRows) row.detach();
+  }
+
+  get settingsRows(): PhoneSettingsRow[] {
+    return this._settingsRows;
   }
 
   /** Re-read every displayed value. Cheap: they are all setting reads. */
   refresh(): void {
-    for (const property of [
-      "brightnessLabel",
-      "screenTimeoutLabel",
-      "verticalPositionLabel",
-      "lockScreenEnabled",
-      "displayModeLabel",
-      "timeFormatLabel",
-      "batteryDisplayLabel",
-      "textSizeLabel",
-      "notificationSourcesSummary",
-      "appListSummary",
-    ]) {
+    for (const row of this._settingsRows) row.refresh();
+    for (const property of ["notificationSourcesSummary", "appListSummary"]) {
       this.notifyPropertyChange(property, (this as unknown as Record<string, unknown>)[property]);
     }
-  }
-
-  // ---- Glasses ----
-
-  get brightnessLabel(): string {
-    return brightnessSetting.displayValue();
-  }
-
-  onBrightnessTap(): void {
-    brightnessSetting.set(brightnessSetting.next());
-    this.refresh();
-  }
-
-  get screenTimeoutLabel(): string {
-    return screenTimeoutSetting.displayValue();
-  }
-
-  onScreenTimeoutTap(): void {
-    screenTimeoutSetting.set(screenTimeoutSetting.next());
-    this.refresh();
-  }
-
-  get verticalPositionLabel(): string {
-    return verticalPositionSetting.displayValue();
-  }
-
-  onVerticalPositionTap(): void {
-    verticalPositionSetting.set(verticalPositionSetting.next());
-    this.refresh();
-  }
-
-  get lockScreenEnabled(): boolean {
-    return lockScreenEnabledSetting.get();
-  }
-
-  onLockScreenChange(args: { object: { checked: boolean } }): void {
-    const checked = Boolean(args?.object?.checked);
-    if (checked === lockScreenEnabledSetting.get()) return;
-    lockScreenEnabledSetting.set(checked);
-  }
-
-  // ---- Display ----
-
-  get displayModeLabel(): string {
-    return displayModeSetting.displayValue();
-  }
-
-  onDisplayModeTap(): void {
-    displayModeSetting.set(displayModeSetting.next());
-    this.refresh();
-  }
-
-  get timeFormatLabel(): string {
-    return timeFormatSetting.displayValue();
-  }
-
-  onTimeFormatTap(): void {
-    timeFormatSetting.set(timeFormatSetting.next());
-    this.refresh();
-  }
-
-  get batteryDisplayLabel(): string {
-    return batteryDisplayModeSetting.displayValue();
-  }
-
-  onBatteryDisplayTap(): void {
-    batteryDisplayModeSetting.set(batteryDisplayModeSetting.next());
-    this.refresh();
-  }
-
-  /**
-   * Text size on the glasses. Cycles the three presets rather than opening a
-   * picker: three sizes is the whole useful range inside the line-height
-   * bounds UI layouts are guaranteed, and a cycle is one thumb tap.
-   */
-  get textSizeLabel(): string {
-    return uiFontSizeLabel();
-  }
-
-  onTextSizeTap(): void {
-    const current = uiFontSizeLabel();
-    const index = UI_FONT_SIZE_PRESETS.findIndex((preset) => preset.label === current);
-    const next = UI_FONT_SIZE_PRESETS[(index + 1) % UI_FONT_SIZE_PRESETS.length]!;
-    setUiFontSize(next.size);
-    this.refresh();
   }
 
   // ---- Notifications ----

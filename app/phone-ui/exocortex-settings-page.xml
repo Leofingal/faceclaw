@@ -1,13 +1,18 @@
 <!--
-  Exocortex's Settings, on the phone. The design pilot's categorized page
-  (session 0142) against faceclaw's real setting objects — the same objects
-  the glasses' own Settings app edits, so the two surfaces cannot drift.
+  Exocortex's Settings, on the phone — and as of 2026-09-03 THE settings
+  surface, not one of two. The separate Settings app that opened on the
+  glasses is unlisted (apps/settings/index.ts), and everything it held is
+  here, editable with a thumb.
 
-  Rows are written out rather than generated from a list: a nested Repeater
-  would buy nothing here (the sections are fixed) and every binding on this
-  page can be checked against the view model by name, which matters when
-  NativeScript resolves bindings at runtime and nobody can put this in front
-  of a phone before it ships.
+  Two halves, deliberately different in kind:
+
+    the catalogue    every real setting, generated from ui/settings-catalog,
+                     which the glasses panel renders from as well. Generated
+                     rather than hand-written precisely so the two cannot
+                     drift now that one of them is the only one reachable.
+    the rest         Notifications, Apps and the gesture reference: phone-only
+                     screens with no glasses equivalent, so they stay written
+                     out.
 -->
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
     <!-- "Exocortex settings", not "Settings": round 3 made Settings itself a
@@ -19,62 +24,63 @@
     <ScrollView>
         <StackLayout class="home-body">
 
-            <Label text="Glasses" class="home-section-title" />
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onBrightnessTap }}">
-                <StackLayout col="0">
-                    <Label text="Brightness" class="home-row-title" />
-                    <Label text="Auto lets the ambient sensor pick the level." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ brightnessLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onScreenTimeoutTap }}">
-                <StackLayout col="0">
-                    <Label text="Screen timeout" class="home-row-title" />
-                    <Label text="How long the display stays on after the last input." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ screenTimeoutLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onVerticalPositionTap }}">
-                <StackLayout col="0">
-                    <Label text="Vertical position" class="home-row-title" />
-                    <Label text="Where the window sits in your field of view." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ verticalPositionLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row">
-                <StackLayout col="0">
-                    <Label text="Lock screen" class="home-row-title" />
-                    <Label text="Lock the glasses when they come off and the phone is locked." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Switch col="1" checked="{{ lockScreenEnabled }}" checkedChange="{{ onLockScreenChange }}" verticalAlignment="center" />
-            </GridLayout>
+            <!--
+              EVERY SETTING, FROM THE SHARED CATALOGUE (2026-09-03).
 
-            <Label text="Display" class="home-section-title" />
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onDisplayModeTap }}">
-                <StackLayout col="0">
-                    <Label text="Screen size" class="home-row-title" />
-                    <Label text="How much of the 640×480 panel the interface uses." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ displayModeLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onTextSizeTap }}">
-                <StackLayout col="0">
-                    <Label text="Text size" class="home-row-title" />
-                    <Label text="Size of the text drawn on the glasses. Larger fits less on a screen." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ textSizeLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onTimeFormatTap }}">
-                <Label col="0" text="Time format" class="home-row-title" verticalAlignment="center" />
-                <Label col="1" text="{{ timeFormatLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
-            <GridLayout columns="*,auto" class="exo-row" tap="{{ onBatteryDisplayTap }}">
-                <StackLayout col="0">
-                    <Label text="Battery display" class="home-row-title" />
-                    <Label text="How the top bar shows phone and glasses battery." class="home-row-meta" textWrap="true" />
-                </StackLayout>
-                <Label col="1" text="{{ batteryDisplayLabel }}" class="settings-value" verticalAlignment="center" />
-            </GridLayout>
+              This used to be a hand-written subset — Glasses and Display —
+              sitting alongside a separate Settings APP that opened on the
+              glasses and owned everything else. Chris, having gone looking:
+              "I want those settings to be settings so they should be under
+              the gear, instead of being a separate app that opens on the
+              glasses... they should be all editable on the phone side
+              without any glasses interaction."
+
+              So the categories now come from ui/settings-catalog, which the
+              glasses panel renders from as well — one definition, so the
+              surface the wearer can actually reach cannot fall behind. The
+              rows below are generated rather than written out (the note this
+              file used to carry about hand-written rows no longer applies: a
+              generated list is what stops the two surfaces drifting, and the
+              page can be checked on a real phone over adb).
+
+              Every row WRITES. An enum cycles on tap, a boolean is a Switch,
+              a string is a TextField you type into here — the earlier round's
+              trap was porting labels while the write path stayed glasses-only.
+            -->
+            <Repeater items="{{ settingsRows }}">
+                <Repeater.itemsLayout>
+                    <StackLayout />
+                </Repeater.itemsLayout>
+                <Repeater.itemTemplate>
+                    <StackLayout>
+                        <!-- Category heading. One template for both kinds of
+                             row, with the unused half collapsed — a Repeater
+                             has only one. -->
+                        <StackLayout visibility="{{ headerVisibility }}">
+                            <Label text="{{ title }}" class="home-section-title" />
+                            <Label text="{{ description }}" class="home-row-meta" textWrap="true" />
+                        </StackLayout>
+
+                        <GridLayout columns="*,auto" class="exo-row"
+                            visibility="{{ rowVisibility }}" tap="{{ onRowTap }}">
+                            <StackLayout col="0">
+                                <Label text="{{ title }}" class="home-row-title" textWrap="true" />
+                                <Label text="{{ description }}" class="home-row-meta" textWrap="true"
+                                    visibility="{{ descriptionVisibility }}" />
+                                <TextField text="{{ textValue }}" hint="{{ textHint }}"
+                                    textChange="{{ onTextChange }}" visibility="{{ textVisibility }}"
+                                    secure="{{ textSecure }}" autocorrect="false"
+                                    autocapitalizationType="none" class="ghost-setting-field" />
+                            </StackLayout>
+                            <Label col="1" text="{{ valueLabel }}" class="settings-value"
+                                visibility="{{ valueVisibility }}" textWrap="true"
+                                verticalAlignment="center" />
+                            <Switch col="1" checked="{{ toggleValue }}" checkedChange="{{ onToggleChange }}"
+                                visibility="{{ toggleVisibility }}" verticalAlignment="center" />
+                        </GridLayout>
+                    </StackLayout>
+                </Repeater.itemTemplate>
+            </Repeater>
 
             <Label text="Notifications" class="home-section-title" />
             <GridLayout columns="*,auto" class="exo-row" tap="{{ onNotificationSourcesTap }}">

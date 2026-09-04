@@ -53,7 +53,6 @@ export const EXOCORTEX_APP_ORDER_KEY = "exocortex.appList.order";
  *   microphones   Subtitles AND Translation AND the voice signature: one
  *                 AppDefinition covering all three (captions-layer.ts,
  *                 translate.ts, speakers.ts).
- *   settings      the only way to change anything from the glasses alone.
  *   weather       the one stock app Chris explicitly asked to KEEP
  *                 ("better form than the one in Even's stock app").
  *
@@ -89,10 +88,17 @@ export const CURATED_APP_IDS: readonly string[] = [
   "exocortex",
   "ghost",
   "microphones",
-  "settings",
   "weather",
 ];
 
+/**
+ * `settings` LEFT THIS LIST ON 2026-09-03, and left the launcher entirely
+ * (apps/settings/index.ts's showInLauncher). It used to be listed as "the only
+ * way to change anything from the glasses alone" — which stopped being true
+ * when every one of its settings became editable on the phone, from the gear,
+ * with no glasses interaction at all. That was Chris's explicit ask, and the
+ * separate glasses-side app was the thing he asked to remove.
+ */
 export function isCuratedAppId(appId: string): boolean {
   return CURATED_APP_IDS.includes(appId);
 }

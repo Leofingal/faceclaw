@@ -9,8 +9,10 @@ export function navigatingTo(args: NavigatedData): void {
     model = new ExocortexSettingsViewModel();
     page.bindingContext = model;
   }
-  // Values can have been changed from the glasses (or from the sub-pages)
-  // while this page sat on the back stack.
+  // Values can have been changed from the sub-pages while this page sat on the
+  // back stack — and `unloaded` released the change listeners, so re-attach
+  // before re-reading rather than only refreshing once and going deaf.
+  model.attach();
   model.refresh();
 }
 

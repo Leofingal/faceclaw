@@ -31,7 +31,13 @@
  *   Settings    Ghost's real settings (host, token, session, auto-follow,
  *               speak), the same ConfigSetting objects the glasses menu edits.
  */
-import { Observable, ScrollView } from "@nativescript/core";
+import { FormattedString, Observable, ScrollView, Span } from "@nativescript/core";
+import {
+  looksLikeMarkdown,
+  parseMarkdownBlocks,
+  preformattedBlocks,
+  type MdBlock,
+} from "./markdown-render";
 import {
   fetchFileManifest,
   fetchFileText,
@@ -94,6 +100,11 @@ const RICH_VIEW_MAX_ROWS = 300;
  * keeps Rich view following new arrivals. Same intent as cc-web's own 40px
  * check, in device-independent pixels against a bigger phone line height. */
 const AT_BOTTOM_SLACK = 80;
+/** Doc viewer's <Repeater> is not virtualized either (same reason Rich view's
+ * row count is capped): one native Label per block, so a 2000-line wiki page
+ * would otherwise mean 2000 live views. The 20000-char fetch cap above already
+ * bounds this loosely; this bounds it exactly. */
+const DOC_MAX_BLOCKS = 400;
 
 /**
  * One row of the Rich view — one SEGMENT of a logical turn, not one transcript
@@ -117,6 +128,46 @@ export type GhostTurnRow = {
   index: number;
   onRowTap: () => void;
 };
+
+/**
+ * One rendered markdown block in the Doc viewer: a styled Label's worth.
+ * `formatted` carries the inline runs (bold / italic / code / link text);
+ * `blockClass` carries the block-level treatment (heading size, code
+ * background, list indent, quote bar) so app.css keeps the styling.
+ */
+export type DocBlockRow = {
+  formatted: FormattedString;
+  blockClass: string;
+};
+
+/** Android's built-in monospace family; there is no bundled mono TTF on the
+ * phone side, and this is the same name the platform resolves for `<tt>`. */
+const MONO_FAMILY = "monospace";
+
+function docBlockRow(block: MdBlock): DocBlockRow {
+  const formatted = new FormattedString();
+  const classes = ["doc-md", `doc-md-${block.kind}`];
+  if (block.kind === "li") {
+    classes.push(`doc-md-li-d${block.depth}`);
+    const marker = new Span();
+    marker.text = `${block.marker ?? "•"}  `;
+    formatted.spans.push(marker);
+  }
+  const heading = block.kind === "h1" || block.kind === "h2" || block.kind === "h3" || block.kind === "h4";
+  for (const run of block.spans) {
+    const span = new Span();
+    span.text = run.text;
+    // A heading's own weight is set here as well as in CSS: a Span with no
+    // fontWeight of its own does not always pick the Label's up on Android,
+    // and a heading that renders at body weight is the whole bug again.
+    if (run.bold || heading) span.fontWeight = "bold";
+    if (run.italic) span.fontStyle = "italic";
+    if (run.code) span.fontFamily = MONO_FAMILY;
+    if (run.link) span.textDecoration = "underline";
+    formatted.spans.push(span);
+  }
+  return { formatted, blockClass: classes.join(" ") };
+}
 
 export class GhostCompanionViewModel extends Observable {
   private _paneIndex = DEFAULT_PANE_INDEX;
@@ -148,6 +199,10 @@ export class GhostCompanionViewModel extends Observable {
   private _docFileText = "";
   private _docFileLoading = false;
   private _docFileError = "";
+  /** Doc viewer's rendered markdown, cached on the source text it was built
+   * from — see buildDocBlocks() for why the poll must not rebuild it. */
+  private _docBlocksSource: string | null = null;
+  private _docBlocksCache: DocBlockRow[] = [];
 
   /** Rich view's ScrollView, handed over by its own `loaded` event — the only
    * way to drive scroll position from here (see scrollRichToBottom). */
@@ -616,6 +671,60 @@ export class GhostCompanionViewModel extends Observable {
     return stripped || turn.text;
   }
 
+  /**
+   * The doc pane's real content, as RENDERED MARKDOWN rather than the raw
+   * source (Chris, 2026-09-03: autolinking opened `knowledge/current-state.md`
+   * in this pane correctly and then "renders as raw unformatted text").
+   *
+   * Same fix cc-web's pinned-preview pane got in session 0144, in the form a
+   * native pane can take: cc-web pipes the text through marked + DOMPurify
+   * into a DOM, and there is no DOM here, so markdown-render.ts parses to
+   * blocks and inline runs and this turns each block into one styled Label.
+   * See that file's header for why the HTML pipeline is not portable.
+   *
+   * A file that is not markdown (a log, a JSON dump, source code) renders as
+   * one preformatted block instead — joining ITS lines into paragraphs is the
+   * one thing that would make it less readable than the raw text it replaces.
+   */
+  get docBlocks(): DocBlockRow[] {
+    const text = this.docText;
+    if (text !== this._docBlocksSource) {
+      this._docBlocksSource = text;
+      this._docBlocksCache = this.buildDocBlocks(text);
+    }
+    return this._docBlocksCache;
+  }
+
+  /**
+   * Cached on the source text, and re-notified only when that text actually
+   * changes. The transcript poll calls notifyDocChange() every 3 seconds; a
+   * Repeater rebuild on every one of those would re-parse the whole file, throw
+   * away and recreate hundreds of native Labels, and lose the reader's scroll
+   * position in a document he is in the middle of.
+   */
+  private buildDocBlocks(text: string): DocBlockRow[] {
+    const fileRef = this.currentFileRef();
+    // THE PREFORMATTED FALLBACK IS FOR FILES ONLY. Caught on the phone before
+    // this shipped: a turn's own prose has no markdown markers in it, so the
+    // content check alone sent every ordinary Ghost reply down the
+    // not-markdown path and rendered it in a monospace code box. A turn is
+    // always prose — parse it. Only a fetched FILE that is genuinely not
+    // markdown (a log, a JSON dump, source) wants its line breaks preserved
+    // verbatim instead of being joined into paragraphs.
+    const showingFile =
+      !!fileRef && !!this._docFileText && !this._docFileLoading && !this._docFileError;
+    const blocks =
+      !showingFile || looksLikeMarkdown(text, fileRef ?? undefined)
+        ? parseMarkdownBlocks(text)
+        : preformattedBlocks(text);
+    const shown = blocks.slice(0, DOC_MAX_BLOCKS);
+    if (blocks.length > shown.length) {
+      const notice = `[${blocks.length - shown.length} more blocks not shown]`;
+      shown.push({ kind: "p", text: notice, spans: [{ text: notice, italic: true }], depth: 0 });
+    }
+    return shown.map((block) => docBlockRow(block));
+  }
+
   get docUnpinVisibility(): "visible" | "collapse" {
     return this._pinnedUuid ? "visible" : "collapse";
   }
@@ -688,6 +797,9 @@ export class GhostCompanionViewModel extends Observable {
   private notifyDocChange(): void {
     this.notifyPropertyChange("docTitle", this.docTitle);
     this.notifyPropertyChange("docText", this.docText);
+    // Only when the text really changed — see buildDocBlocks().
+    const before = this._docBlocksCache;
+    if (this.docBlocks !== before) this.notifyPropertyChange("docBlocks", this._docBlocksCache);
     this.notifyPropertyChange("docUnpinVisibility", this.docUnpinVisibility);
     this.notifyPropertyChange("paneStatus", this.paneStatus);
     this.notifyPropertyChange("paneStatusVisibility", this.paneStatusVisibility);

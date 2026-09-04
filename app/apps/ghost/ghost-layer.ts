@@ -73,6 +73,30 @@ const FEED_LIMIT = 20;
 const TRANSCRIPT_TIMEOUT_MS = 20_000;
 
 /**
+ * AUTO-SEND: how long the confirm screen stays up before sending itself.
+ *
+ * Chris, 2026-09-03, after a night of field testing across quiet office,
+ * unplugged-from-charging, no-pre-roll and rapid back-to-back conditions:
+ * "I think we will be better off if we get rid of the confirm at this point
+ * because that's causing me to occasionally forget to send" — and then, live,
+ * a message he thought he had sent had not gone, which he root-caused himself:
+ * "I think the problem is I didn't hit send twice, which is not really a bug,
+ * is a change request from me." The resolved design, his words: "I think I
+ * like the idea of the auto send after 4 seconds."
+ *
+ * Not full auto-send: the cancel window IS the safety net, so it is counted
+ * down on the meta line and both cancel gestures are named in the hint.
+ *
+ * THE FOUR SECONDS START WHEN THE TRANSCRIPT IS ON THE GLASS, not when the mic
+ * stopped. Cloud STT commits in ~2-4s measured, so a window timed from the
+ * committing tap would routinely leave under a second to read what was heard
+ * and decide — which is not a cancel window, it is a formality. The instruction
+ * says to keep it real and usable; this is what makes it real.
+ */
+const AUTO_SEND_SECONDS = 4;
+const AUTO_SEND_TICK_MS = 1000;
+
+/**
  * A slow-rotating glyph, evaluated fresh at paint time rather than driven by
  * its own timer. Chris, 2026-09-01: wanted this — until now only shown while
  * actively dictating (paintMic, below) — on the ordinary feed screen's meta
@@ -134,6 +158,32 @@ export class GhostLayer implements Layer {
    * once it vanishes, the real last message doesn't read as still-unheard.
    */
   private lastSpokenEphemeralUuid: string | null = null;
+  /**
+   * A Ghost reply that landed WHILE a dictation was in flight, and so was
+   * deliberately not spoken at the time.
+   *
+   * Suppressing speech during a capture is correct and stays (Chris: "don't
+   * speak to me while I'm sending") — the bug was that the reply then fell out
+   * of the speech queue forever, because poll()'s arrival trigger only fires
+   * on the tick where the feed actually GREW. His own diagnosis, 2026-09-03:
+   * "If your response comes while I'm talking, it doesn't get read aloud
+   * because I sent after." So the skip is recorded here and catchUpAfterSend()
+   * settles the debt the moment the send completes: "after I hit send, then it
+   * should bring me to your reply, if I never heard it."
+   */
+  private pendingCatchUpUuid: string | null = null;
+  /**
+   * While a caught-up reply is actually being read, the cursor is pinned to it
+   * BY UUID. `cursor` is an index, and the poll replaces the whole feed every
+   * three seconds — with FEED_LIMIT capping it, one new arrival slides every
+   * index down by one. Without the pin, the screen would quietly drift onto a
+   * neighbouring item halfway through the reply the catch-up just brought him
+   * to, which is a smaller version of the same "where did that go" the whole
+   * mechanism exists to prevent. Released by the speech ending, or by any
+   * deliberate gesture (handleInput / hitTest): if he has taken over, the pin
+   * is not ours to hold.
+   */
+  private catchUpHoldUuid: string | null = null;
 
   // -- tier 3: the full prose reply, on demand ------------------------------
   private proseOpen = false;
@@ -172,6 +222,10 @@ export class GhostLayer implements Layer {
   private capturedParts: string[] = [];
   private refineOk = true;
   private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Ticks the auto-send countdown on the confirm screen; see AUTO_SEND_SECONDS. */
+  private autoSendTimer: ReturnType<typeof setInterval> | null = null;
+  /** Seconds left before the confirm screen sends itself. 0 = not counting. */
+  private autoSendLeft = 0;
 
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
@@ -189,6 +243,7 @@ export class GhostLayer implements Layer {
   onRemoved(): void {
     this.closed = true;
     this.abortCapture();
+    this.cancelAutoSend();
     stopGhostSpeech();
     if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     this.transcriptTimer = null;
@@ -526,7 +581,13 @@ export class GhostLayer implements Layer {
         } else {
           headline = this.heard;
         }
-        hint = `${GESTURE_CLICK} send   ${GESTURE_SCROLL_DOWN} refine   ${GESTURE_SCROLL_UP}${GESTURE_DOUBLE_CLICK} discard`;
+        // AUTO-SEND (2026-09-03). The tap still sends immediately, but it is
+        // no longer REQUIRED — the countdown on the meta line above sends on
+        // its own, and cancel leads the hint because during those four seconds
+        // it is the only thing Chris has to decide. Both discard gestures stay
+        // listed for the same reason they were split out on 2026-09-01:
+        // surfacing both beats assuming he remembers one.
+        hint = `${GESTURE_SCROLL_UP}${GESTURE_DOUBLE_CLICK} cancel   ${GESTURE_CLICK} send now   ${GESTURE_SCROLL_DOWN} refine`;
         break;
       case "failed":
         headline = "Did not catch that.";
@@ -536,8 +597,12 @@ export class GhostLayer implements Layer {
         headline = "Scroll down to speak.";
         break;
     }
+    // The countdown rides the meta line rather than the headline: the headline
+    // is the transcript he has to READ to decide, and pushing it aside with a
+    // timer would cost the very thing the cancel window exists to give him.
+    const surface = this.onApprovalMic() ? "ghost — your own answer" : "ghost — reply";
     this.bodyOverflow = this.paintPage(image, width, height, {
-      meta: this.onApprovalMic() ? "ghost — your own answer" : "ghost — reply",
+      meta: this.autoSendLeft > 0 ? `${surface} — sending in ${this.autoSendLeft}s` : surface,
       headline,
       body,
       hint,
@@ -549,6 +614,8 @@ export class GhostLayer implements Layer {
   // Input
 
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
+    // Any deliberate gesture ends a catch-up hold — see catchUpHoldUuid.
+    this.catchUpHoldUuid = null;
     switch (event.type) {
       case "scroll-up":
         this.step(-1);
@@ -665,9 +732,44 @@ export class GhostLayer implements Layer {
     this.startListening(false);
   }
 
+  /**
+   * Arrive on the confirm screen and start the auto-send countdown. The one
+   * door into "confirming" — three paths reach it (a finished capture, a
+   * finished refine, and a refine whose addition never transcribed) and all
+   * three must arm the timer, so the state change and the timer are one call
+   * rather than three places to remember.
+   */
+  private enterConfirming(): void {
+    this.micState = "confirming";
+    this.cancelAutoSend();
+    this.autoSendLeft = AUTO_SEND_SECONDS;
+    this.autoSendTimer = setInterval(() => {
+      // Any other screen means something already cancelled or committed;
+      // clean up rather than firing into it.
+      if (this.micState !== "confirming" || this.closed) {
+        this.cancelAutoSend();
+        return;
+      }
+      this.autoSendLeft--;
+      if (this.autoSendLeft > 0) {
+        this.requestRender();
+        return;
+      }
+      this.cancelAutoSend();
+      void this.confirmSend();
+    }, AUTO_SEND_TICK_MS);
+  }
+
+  private cancelAutoSend(): void {
+    if (this.autoSendTimer) clearInterval(this.autoSendTimer);
+    this.autoSendTimer = null;
+    this.autoSendLeft = 0;
+  }
+
   /** Drop any capture AND the dictation state it left on the glass. */
   private resetMic(): void {
     this.abortCapture();
+    this.cancelAutoSend();
     this.micState = "idle";
     this.heard = "";
     this.interim = "";
@@ -770,6 +872,7 @@ export class GhostLayer implements Layer {
 
   /** A mirror touch: treated as a plain select, which is what tapping a card means. */
   async hitTest(_x: number, _y: number, _ctx: LayerContext): Promise<boolean> {
+    this.catchUpHoldUuid = null;
     await this.tap();
     return true;
   }
@@ -880,6 +983,9 @@ export class GhostLayer implements Layer {
   private startListening(asAddition: boolean): void {
     // Barge-in: never let the microphone hear our own voice.
     stopGhostSpeech();
+    // Reached from the confirm screen by the refine gesture: speaking again is
+    // as clear a "not yet" as a cancel, so it stops the countdown too.
+    this.cancelAutoSend();
     // No snapshot needed here any more - capturedParts already holds every
     // prior utterance; refineNow() below just pushes onto it.
     this.addingToRaw = asAddition;
@@ -931,7 +1037,7 @@ export class GhostLayer implements Layer {
         this.addingToRaw = false;
         this.heard = this.renderCaptured();
         this.refineOk = false;
-        this.micState = "confirming";
+        this.enterConfirming();
       } else {
         this.micState = "failed";
       }
@@ -983,7 +1089,7 @@ export class GhostLayer implements Layer {
     this.capturedParts = [text];
     this.heard = text;
     this.refineOk = true;
-    this.micState = "confirming";
+    this.enterConfirming();
     this.requestRender();
   }
 
@@ -1030,13 +1136,16 @@ export class GhostLayer implements Layer {
     if (add) this.capturedParts.push(add);
     this.heard = this.renderCaptured();
     this.refineOk = true;
-    this.micState = "confirming";
+    this.enterConfirming();
     this.requestRender();
   }
 
   /** The ONLY place a glasses dictation actually reaches the session. */
   private async confirmSend(): Promise<void> {
     if (this.micState !== "confirming") return;
+    // Whether this is the countdown firing or a tap beating it, the timer's
+    // work is done — and a tap that did not stop it would send twice.
+    this.cancelAutoSend();
     await this.commitText(this.heard, this.pendingRaw);
   }
 
@@ -1075,6 +1184,7 @@ export class GhostLayer implements Layer {
       // A freeform answer is sent as ordinary text, same as any other reply —
       // it just also has to close the prompt it was opened from.
       this.closeApproval(this.items.length - 1);
+      this.catchUpAfterSend();
       return;
     }
     this.cursor = this.items.length - 1;
@@ -1082,6 +1192,49 @@ export class GhostLayer implements Layer {
     this.expanded = false;
     this.proseOpen = false;
     this.bodyScroll = 0;
+    this.catchUpAfterSend();
+    this.requestRender();
+  }
+
+  /**
+   * The send is done — so if a reply arrived while it was in flight and was
+   * never spoken, go to it and read it now.
+   *
+   * Chris's own spec, 2026-09-03: "so don't speak to me while I'm sending, but
+   * after I hit send, then it should bring me to your reply, if I never heard
+   * it." Nothing was ever lost from the transcript (the reply is visible in the
+   * feed either way); what was lost was the one chance the speech trigger got.
+   *
+   * `follow` goes off while the caught-up reply is read and comes back on when
+   * the audio ends. Leaving it ON would let the next poll — which is at most
+   * three seconds away, and is guaranteed to see the box's own echo of the
+   * message just sent as a new arrival — yank the screen off the reply while
+   * it is still being read. Leaving it OFF for good would strand him one item
+   * behind the conversation, which is the same silent-drop shape as the bug
+   * being fixed. Restoring it on the speech's end is the only version that
+   * does neither.
+   */
+  private catchUpAfterSend(): void {
+    const uuid = this.pendingCatchUpUuid;
+    this.pendingCatchUpUuid = null;
+    if (!uuid || this.spokenBodies.has(uuid)) return;
+    // With voice off there is no such thing as "never heard it", and moving
+    // the screen for a reply he can already see would be a surprise, not a fix.
+    if (!ghostSpeakSetting.get()) return;
+    const index = this.items.findIndex((item) => item.uuid === uuid);
+    if (index < 0) return;
+    const item = this.items[index]!;
+    if (item.role === "user") return;
+    this.cursor = index;
+    this.follow = false;
+    this.catchUpHoldUuid = uuid;
+    this.expanded = false;
+    this.proseOpen = false;
+    this.bodyScroll = 0;
+    this.speakBody(item, () => {
+      this.catchUpHoldUuid = null;
+      this.follow = true;
+    });
     this.requestRender();
   }
 
@@ -1112,6 +1265,19 @@ export class GhostLayer implements Layer {
    * a minor one.
    */
   private speakBody(item: GhostItem, onEnd?: () => void): void {
+    // NEVER CHRIS'S OWN WORDS (Chris, 2026-09-03, reproduced twice:
+    // "Definitely when I clicked on mine, to expand it because I gave a long
+    // message, it did start reading to me"). The arrival trigger in poll()
+    // already skipped user turns; the manual tap into tier-2 (tap(), above)
+    // called straight through to here with no such check, so expanding one of
+    // his own messages read it back to him in Ghost's voice. The guard belongs
+    // in this shared helper rather than at one call site: every path that ever
+    // speaks a feed item goes through here, and the rule is about the ITEM,
+    // not about which gesture reached it.
+    if (item.role === "user") {
+      onEnd?.();
+      return;
+    }
     if (!item.uuid || this.spokenBodies.has(item.uuid)) {
       onEnd?.();
       return;
@@ -1212,10 +1378,41 @@ export class GhostLayer implements Layer {
         this.proseOpen = false;
         this.bodyScroll = 0;
       }
+      // A caught-up reply keeps the screen by uuid while it is being read; the
+      // indices under it have just been rewritten by this very poll.
+      if (this.catchUpHoldUuid) {
+        const held = this.items.findIndex((item) => item.uuid === this.catchUpHoldUuid);
+        if (held >= 0) this.cursor = held;
+        else this.catchUpHoldUuid = null;
+      }
       if (this.cursor < 0 || this.cursor >= this.items.length) this.cursor = this.items.length - 1;
     }
     this.status = "";
     this.requestRender();
+
+    // A reply that lands mid-dictation is not spoken now (that is the point of
+    // the onMicSurface() gate below — talking over him while he is composing
+    // would be worse), but it must not be dropped either. Record it; the send's
+    // completion pays it back. See pendingCatchUpUuid, and catchUpAfterSend().
+    //
+    // `newest`, not `current`: while parked on the reply slot the cursor is at
+    // micIndex() === items.length, so this.items[this.cursor] is undefined —
+    // which is precisely why the gate below returns before speaking anything.
+    const newest = this.items[this.items.length - 1];
+    if (
+      grew &&
+      newest &&
+      newest.role !== "user" &&
+      newest.uuid &&
+      // Approval/waiting items are synthetic and vanish on their own; catching
+      // one up after the fact would announce a prompt that no longer exists.
+      newest.kind !== "approval" &&
+      newest.kind !== "waiting" &&
+      !this.spokenBodies.has(newest.uuid) &&
+      this.onMicSurface()
+    ) {
+      this.pendingCatchUpUuid = newest.uuid;
+    }
 
     // Speak an arrival once, keyed on the uuid because indices shift. Only
     // Ghost's turns: reading Chris's own sentence back to him would be absurd,
@@ -1260,6 +1457,10 @@ export class GhostLayer implements Layer {
     this.inApproval = false;
     this.approvalItem = null;
     this.lastSpokenEphemeralUuid = null;
+    // The debt was owed by the old session's feed; the item is not in the new
+    // one, so carrying it over could only ever be a no-op or a wrong match.
+    this.pendingCatchUpUuid = null;
+    this.catchUpHoldUuid = null;
     this.resetMic();
     stopGhostSpeech();
     this.status = "";
