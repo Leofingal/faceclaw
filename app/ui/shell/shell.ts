@@ -64,7 +64,11 @@ import {
  * tap-then-hold with a window menu that ends in Voice input / Close window.
  * Holding an ordinary long-press past the escape threshold opens the shell's
  * own escape menu instead, independent of whatever the app does with either
- * gesture, so the shell keeps working when a window's handler hangs.
+ * gesture, so the shell keeps working when a window's handler hangs. Both
+ * that escape menu and the tap-then-hold window menu are genuinely
+ * unconditional: opening either forces the shell's own overlay stack back to
+ * base first (see openEscapeMenu), so a stuck voice dialog or assistant
+ * conversation can never block the one gesture meant to always work.
  */
 
 export type ShellWindow = {
@@ -708,10 +712,23 @@ class Shell {
     // the shell's escape menu even if the foreground app is wedged. Nothing
     // upstream distinguishes it from long-press for a foregrounding/focus
     // purpose, so it shares that logic rather than duplicating it.
+    //
+    // Genuinely unconditional, same as the escape menu below: force the
+    // shell's own overlay stack back to base first (clearToBase(), the same
+    // call sleep() already uses to force a clean state) rather than trying to
+    // render this window's menu "over" whatever shell overlay is currently
+    // up. That correctly tears down an active voice/assistant overlay via its
+    // own onRemoved -> onClosed teardown (stops the mic, cancels an in-flight
+    // refine) before the window's menu opens. This can't collide with the
+    // window's own menu -- WindowMenuLayer lives on that window's private
+    // LayerStack, a different object from this.stack -- so there is no
+    // menu-over-menu case to avoid here, unlike a hypothetical shell-overlay
+    // stacking. Treated the same as the plain long-press escape menu below on
+    // purpose: this is already a deliberate two-stage gesture (short-then-
+    // long), not an easy one to trigger by accident, so it earns the same
+    // "always gets you a menu" guarantee.
     if (event.type === "short-then-long-press") {
-      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
-        return { shell: true, window: false };
-      }
+      this.stack.clearToBase();
       const window = this.foregroundWindow();
       if (!window) {
         return { shell: true, window: false };
@@ -1245,9 +1262,28 @@ class Shell {
    * seeing the press (see startEscapeMenuTimer). Tap-then-hold no longer
    * routes here; it opens the window's own menu instead (see
    * handleShellInput's short-then-long-press branch).
+   *
+   * Genuinely unconditional: this used to re-check activeVoiceLayer /
+   * stack.isAtBase() here too and silently no-op if either was true -- which
+   * defeated the entire point of a "safety net an unresponsive app can't
+   * block" (confirmed live: a long-press did nothing at all while some other
+   * shell overlay was active). Force the stack back to base instead of
+   * trying to open this menu "over" whatever's currently up: clearToBase()
+   * is the same call sleep() already uses to force a clean state on a much
+   * more casual trigger (idle timeout), and it correctly tears down an
+   * active voice dialog through VoiceInputLayer's own onRemoved -> onClosed
+   * (stops the mic, cancels an in-flight refine, clears activeVoiceLayer)
+   * rather than leaving it orphaned behind the menu. This also means a
+   * held long-press can now cut off an in-progress assistant conversation --
+   * accepted deliberately: it's the same last-resort guarantee sleep()
+   * already makes, just reachable on demand instead of only on a timeout.
+   * Screen-off is still checked: a long-press can, in principle, straddle an
+   * async sleep landing while the 4s timer is pending, and a menu should
+   * never pop open on a dark screen.
    */
   private openEscapeMenu(): void {
-    if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
+    if (!this.screenOn) return;
+    this.stack.clearToBase();
     const foreground = this.foregroundWindow();
     if (!foreground) return;
     const items: MenuItem[] = [];

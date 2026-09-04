@@ -52,7 +52,19 @@ export class TranscribeLayer implements Layer {
       image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
-    image.drawText(font, 24, footerY, `${GESTURE_CLICK} save   ${GESTURE_DOUBLE_CLICK} back`, 110);
+    // "leave", not "back": double-click at this window's root is intercepted
+    // by YieldAtRootLayer (in-process-window.ts) before it ever reaches this
+    // layer's own handleInput below -- it only defocuses to the sidebar
+    // (shell.backOutToHome()), it does not close the window. That's the
+    // established meaning of double-click-at-root everywhere in this
+    // codebase (every in-process app is wrapped the same way; games label
+    // the identical action "leave" on their own pause screens) -- capture
+    // keeps running in the background exactly like a paused game keeps its
+    // board. "back" implied an exit this gesture never performed; "leave"
+    // says what actually happens. To really stop transcription, use the
+    // window's Close window menu (short-then-long-press, or the escape
+    // menu), which does tear the capture down via this window's onClosed.
+    image.drawText(font, 24, footerY, `${GESTURE_CLICK} save   ${GESTURE_DOUBLE_CLICK} leave`, 110);
     return image;
   }
 
@@ -63,6 +75,11 @@ export class TranscribeLayer implements Layer {
       return;
     }
     if (event.type === "double-click") {
+      // Currently unreachable in practice: this window's base layer is
+      // always wrapped in YieldAtRootLayer (transcribe-app.ts), which
+      // intercepts double-click before it reaches here. Left in place as a
+      // harmless fallback for a layer instance ever hosted without that
+      // wrapper (e.g. a future test harness), not as live behavior.
       ctx.stack.pop();
     }
   }
