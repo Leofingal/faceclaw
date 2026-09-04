@@ -170,9 +170,22 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         lastSubmittedFingerprint: "",
       };
       post({ type: "set-tools", windowId: message.windowId, tools: NAVIGATE_TOOLS });
+      // A route survived a prior close (see suspendLiveTracking's doc
+      // comment): resume live tracking and the ETA tick now that the window
+      // -- and the user's attention -- is back. maybeRefreshMap() is left to
+      // the "foreground" message below, since window.foreground is still
+      // false at this point.
+      if (phase === "navigating") {
+        ensureTracking();
+        ensureTickTimer();
+      }
       break;
     case "close-window":
-      stopNavigation("");
+      // Not stopNavigation(): that's an explicit cancel (the "Stop
+      // navigation" menu item, the stop_route tool) and clears the route.
+      // Closing the window should only stop the *live* tracking; see
+      // suspendLiveTracking's own doc comment for why the route survives.
+      suspendLiveTracking();
       window = null;
       break;
     case "input":
@@ -367,6 +380,15 @@ async function maybeReroute(fix: TrackedLocation): Promise<void> {
 }
 
 function ensureTracking(): void {
+  // Guard against a stray restart: an in-flight route search (geocode /
+  // fetchRoute, kicked off by startNavigation or maybeReroute) can resolve
+  // into adoptRoute() -> here after the window has since closed. Without this
+  // check that would silently re-arm the 1s GPS poll with the window gone
+  // and nobody watching -- closing sets `window` back to null (see
+  // close-window below), so checking it here makes "the tracker never runs
+  // without an open window" true by construction, not just true for the
+  // call sites that happen to remember to check phase first.
+  if (!window) return;
   if (!tracker.isRunning()) tracker.start(LOCATION_INTERVAL_MS);
 }
 
@@ -374,6 +396,26 @@ function stopTrackingIfIdle(): void {
   if (phase === "idle" || phase === "arrived") {
     tracker.stop();
     firstFixWaiters = [];
+  }
+}
+
+/**
+ * Stop live GPS polling and the paint tick unconditionally, independent of
+ * `phase` -- this is what the close-window handler below calls. Deliberately
+ * does NOT touch phase/destination/follower/progress: unlike stopNavigation()
+ * (an explicit cancel -- the "Stop navigation" menu item and the stop_route
+ * tool -- which does clear the route), closing the window is not a
+ * cancellation. The route state survives so reopening Navigate mid-route
+ * resumes it directly, without re-geocoding or re-fetching; see the
+ * open-window handler below, which calls ensureTracking()/ensureTickTimer()
+ * again when it finds a route still in progress.
+ */
+function suspendLiveTracking(): void {
+  tracker.stop();
+  firstFixWaiters = [];
+  if (tickTimer !== null) {
+    clearInterval(tickTimer);
+    tickTimer = null;
   }
 }
 
@@ -645,6 +687,15 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
     return;
   }
   if (event.type === "double-click") {
+    // "leave", not "back", in the footer below: this only posts yield-focus,
+    // which backOutToHome()s to the sidebar (worker-window.ts) -- it does not
+    // close this window. Same established meaning as double-click-at-root
+    // everywhere else in this codebase (games call the identical action
+    // "leave" on their own pause screens). A route in progress keeps
+    // tracking live in the background exactly as it would in the
+    // foreground -- that's normal for a nav app, matching phones -- until
+    // the window is actually closed (short-then-long-press or the escape
+    // menu's "Close window"), which is what suspendLiveTracking() reacts to.
     frameTimings.finishFrame(frameId, "discarded: navigate yielded focus");
     post({ type: "yield-focus", windowId: win.windowId });
     return;
@@ -711,7 +762,7 @@ function paintIdle(image: GrayImage): void {
       value: busy ? 220 : 190,
     });
   }
-  drawFooter(image, `${GESTURE_DOUBLE_CLICK} back`);
+  drawFooter(image, `${GESTURE_DOUBLE_CLICK} leave`);
 }
 
 function paintNavigating(image: GrayImage, win: NavWindow): void {
@@ -738,7 +789,7 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
       text: destinationName,
       value: 200,
     });
-    drawFooter(image, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} back`);
+    drawFooter(image, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} leave`);
     return;
   }
 
@@ -775,7 +826,7 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
     image.drawText(smallFont, PANEL_X + 8, win.viewportHeight - 44, statusMessage, 200);
   }
   const modeHint = mapMode === "follow" ? "overview" : "follow";
-  drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, PANEL_X + 8);
+  drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} leave`, PANEL_X + 8);
 }
 
 /** Position chevron, fixed at the map center (heading-up: it always points up). */
