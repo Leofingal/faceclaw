@@ -127,6 +127,23 @@ export type DashboardSnapshot = {
    * nothing is paired, so "Disconnected" would be the wrong label.
    */
   previewMode: boolean;
+  /**
+   * Every open window on the glasses, not just the foreground one — for the
+   * phone's Active Apps list (2026-09-04: a hung Transcribe window had no
+   * in-app way out, and no glasses-side gesture could be relied on to reach
+   * it either; this is the independent, phone-side kill path). Excludes the
+   * pinned home screen (ShellWindow.isHomeScreen — Exocortex itself is the
+   * boot launcher, nothing to close and nothing that would re-open it).
+   * `closeable` is carried through rather than pre-filtered: a few windows
+   * (faceclaw's stock "Apps" grid) are real, open windows that are not
+   * closeable, and the phone list should say so rather than pretend they
+   * don't exist.
+   *
+   * Same live path as foregroundAppId/foregroundAppTitle above: sourced from
+   * shell.getWindows() in snapshot(), re-emitted whenever onWindowsChanged
+   * fires.
+   */
+  openWindows: { windowId: string; appId: string; title: string; closeable: boolean }[];
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -935,6 +952,15 @@ class DashboardController {
       foregroundAppTitle: foregroundApp?.title ?? null,
       fontsMissingWarningVisible: this.fontsMissingWarningVisible,
       previewMode: this.isPreviewDisplayActive(),
+      openWindows: shell
+        .getWindows()
+        .filter((window) => !window.isHomeScreen)
+        .map((window) => ({
+          windowId: window.windowId,
+          appId: window.appId,
+          title: window.title,
+          closeable: window.closeable,
+        })),
     };
   }
 
@@ -2186,6 +2212,23 @@ class DashboardController {
   async launchAppFromPhone(appId: string): Promise<void> {
     shell.wake("window");
     await this.launchApp(appId);
+    this.requestShellRender();
+  }
+
+  /**
+   * Close a window from the phone's Active Apps list — the independent,
+   * always-available kill path (2026-09-04): a hung app on the glasses may
+   * have no working in-app "back", and the glasses' own escape menu is
+   * gated (see openEscapeMenu's comment in shell.ts) in ways this must not
+   * depend on. Same in-process object as launchAppFromPhone above, no new
+   * IPC/BLE round trip; shell.closeWindow() itself already no-ops on an
+   * unknown or non-closeable windowId, so this stays a thin wrapper for
+   * symmetry with the launch path (wake, act, re-render) rather than adding
+   * its own guard.
+   */
+  closeWindowFromPhone(windowId: string): void {
+    shell.wake("window");
+    shell.closeWindow(windowId);
     this.requestShellRender();
   }
 

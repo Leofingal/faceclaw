@@ -1,0 +1,52 @@
+<!--
+  ACTIVE APPS — every window currently open on the glasses, with a Close
+  button. Built 2026-09-04, the morning a hung Transcribe window left no
+  in-app way out and Chris had to disconnect/reconnect the glasses' BLE link
+  to escape it. This list and its Close action are deliberately independent
+  of any glasses-side gesture: dashboardController.closeWindowFromPhone()
+  calls shell.closeWindow() on the same in-process shell object the glasses'
+  own escape menu and window menu already use, so it works whether or not
+  the app itself, or the glasses' own menus, are responding.
+
+  Reached from Settings (settings-hub-page.xml), no glasses interaction
+  required, same standard round 5 set for every other setting.
+
+  LIVE. ActiveAppsViewModel subscribes to dashboardController directly (see
+  its header comment for why this one doesn't reload() on demand like the
+  Apps catalogue page does): a window that closes, from here, from the
+  glasses, or on its own, drops off the list without navigating away and
+  back.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+    <ActionBar title="Active apps" />
+
+    <ScrollView>
+        <StackLayout class="home-body">
+
+            <Label class="home-row-meta" textWrap="true"
+                text="Everything currently open on the glasses. Close ends an app right here — it does not need the glasses' own menu to respond." />
+
+            <Label text="{{ status }}" visibility="{{ statusVisibility }}" class="home-row-meta" textWrap="true" />
+
+            <Label text="Nothing open on the glasses right now." visibility="{{ emptyMessageVisibility }}"
+                class="home-row-meta" textWrap="true" />
+
+            <Repeater items="{{ rows }}">
+                <Repeater.itemsLayout>
+                    <StackLayout />
+                </Repeater.itemsLayout>
+                <Repeater.itemTemplate>
+                    <GridLayout columns="*,auto" class="exo-row">
+                        <StackLayout col="0" marginRight="10">
+                            <Label text="{{ title }}" class="home-row-title" textWrap="true" />
+                            <Label text="{{ meta }}" class="home-row-meta" textWrap="true" />
+                        </StackLayout>
+                        <Button col="1" text="Close" tap="{{ onCloseTap }}" visibility="{{ closeButtonVisibility }}"
+                            class="-primary" verticalAlignment="center" />
+                    </GridLayout>
+                </Repeater.itemTemplate>
+            </Repeater>
+
+        </StackLayout>
+    </ScrollView>
+</Page>

@@ -1084,6 +1084,16 @@ export class MainViewModel extends Observable {
   }
 
   /**
+   * Active Apps — every window open on the glasses, with a Close button per
+   * closeable entry. Built 2026-09-04 after a hung Transcribe window left no
+   * in-app way out; this is the independent, phone-side kill path (see
+   * active-apps-view-model.ts and dashboardController.closeWindowFromPhone).
+   */
+  onActiveAppsTap(): void {
+    Frame.topmost()?.navigate("phone-ui/active-apps-page");
+  }
+
+  /**
    * The lens mirror and the simulated ring/watch pads. Kept for debugging and
    * for driving the glasses when the ring is out of reach; not where the phone
    * lands any more.

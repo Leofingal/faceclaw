@@ -80,6 +80,15 @@
                     <Label text="Settings" class="home-row-title" />
                     <Label text="{{ exocortexSettingsMeta }}" class="home-row-meta" textWrap="true" />
                 </StackLayout>
+                <!-- Built 2026-09-04: a hung Transcribe window had no in-app
+                     way out. This is the independent kill path: reachable
+                     and effective from here with no glasses interaction and
+                     no dependence on the app or the glasses' own menus
+                     responding. See active-apps-page.xml. -->
+                <StackLayout class="home-row" tap="{{ onActiveAppsTap }}">
+                    <Label text="Active apps" class="home-row-title" />
+                    <Label text="Everything open on the glasses right now, with a way to end any of it" class="home-row-meta" textWrap="true" />
+                </StackLayout>
 
                 <!-- The two genuinely phone-native glasses settings. They are
                      still on the mirror page's Settings tab as well; both read
