@@ -26,6 +26,7 @@
     "../app/apps/microphones/name-guess.ts",
     "../app/apps/evenhub/containers.ts",
     "../app/phone-ui/transcript-turns.ts",
-    "../app/phone-ui/markdown-render.ts"
+    "../app/phone-ui/markdown-render.ts",
+    "../app/apps/news/news-deck.ts"
   ]
 }

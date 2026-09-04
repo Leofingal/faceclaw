@@ -6,9 +6,12 @@ import { createGhostAppWindow, GHOST_SURFACE_ID, GHOST_WINDOW_ID } from "./ghost
  * status/notification feed, live approval prompts with scroll-and-tap answers,
  * dictation back into the session, and the full reply on demand.
  *
- * Ported from the EvenHub SDK app it replaces. Deferred from this first pass
- * and tracked rather than dropped: the news deck (the three-depth walk over a
- * pushed brief) and the phone-side companion panel.
+ * Ported from the EvenHub SDK app it replaces. The phone-side companion panel
+ * was built across rounds 1-5. The news deck (the three-depth walk over a
+ * pushed brief) is deliberately NOT part of Ghost at all any more — it
+ * shipped as its own app, `app/apps/news/`, and this app's own feed poll
+ * (ghost-client.ts's fetchFeed) filters `kind: 'news'` items out, so opening
+ * Ghost never surfaces news whether Chris wants it or not.
  */
 const ghostApp: AppDefinition = {
   appId: "ghost",

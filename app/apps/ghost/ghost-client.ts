@@ -142,7 +142,25 @@ export async function fetchFeed(sessionId: string, limit = 20): Promise<FeedResu
     const data = (await response.json()) as any;
     return {
       feed: {
-        items: Array.isArray(data?.items) ? (data.items as GhostItem[]) : [],
+        /*
+         * `kind: 'news'` items are filtered out here, not shown and skipped
+         * further down the pipeline. News is now its own app (app/apps/news/,
+         * fetching from the decoupled /api/news/today route), and this is the
+         * one boundary every consumer of this feed goes through — so this is
+         * "wherever the poll/render logic actually lives" for Ghost's own
+         * pager. A news push PINS the deck onto this same feed server-side
+         * (server.js: POST /api/glasses/:id/news sets briefPins, which
+         * REPLACES the feed entirely while pinned — "one thing on the glass
+         * at a time"), so while a deck is pinned this filter can genuinely
+         * leave Ghost with nothing new to show; that is the honest
+         * degradation, not a bug — Ghost shows its last real state (or "no
+         * answers yet" on a cold boot into an active pin) rather than the
+         * news itself, and the pin naturally clears in an hour or the moment
+         * Chris next speaks to Ghost.
+         */
+        items: Array.isArray(data?.items)
+          ? (data.items as GhostItem[]).filter((item) => item.kind !== "news")
+          : [],
         speak: typeof data?.speak === "boolean" ? data.speak : undefined,
       },
       failure: null,
