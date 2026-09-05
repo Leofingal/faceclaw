@@ -1289,7 +1289,7 @@ class Shell {
     const items: MenuItem[] = [];
     if (foreground.closeable) {
       items.push({
-        label: "Close window",
+        label: "Close this app",
         onSelect: (ctx) => {
           // Pop the menu first (its onRemoved returns focus to the sidebar),
           // then close the window the menu was opened over.

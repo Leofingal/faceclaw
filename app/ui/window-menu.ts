@@ -103,7 +103,7 @@ export function defaultWindowMenuItems(
       },
     },
     {
-      label: "Close window",
+      label: "Close this app",
       onSelect: (ctx) => {
         ctx.stack.pop();
         post({ type: "close-window-request", windowId });

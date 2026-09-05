@@ -157,7 +157,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     });
     if (options.closeable) {
       items.push({
-        label: "Close window",
+        label: "Close this app",
         onSelect: (ctx) => {
           ctx.stack.pop();
           shell.closeWindow(options.windowId);
