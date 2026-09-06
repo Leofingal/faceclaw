@@ -28,6 +28,22 @@ public class FaceclawVoiceController {
     private static final int EXPECTED_PACKET_INTERVAL_MS = 50;
     private static final int LATE_PACKET_INTERVAL_MS = 90;
     private static final int STATS_INTERVAL_MS = 5_000;
+    // Grace window between stop() being triggered and the G2 mic actually
+    // being halted. Without this, stop() dropped any BLE mic packet still in
+    // flight at the moment the capture-ending tap landed -- both by halting
+    // FaceclawBleCommunicator's audio request immediately (stopG2Audio()) and,
+    // more subtly, because queueAudioPacket()/processG2Audio() gated on
+    // `started`, which stop() had already flipped false, so even packets that
+    // arrived a few ms late were silently dropped before stopG2Audio() ever
+    // ran. Confirmed both behaviorally (2026-09-06: "it does better if I fail
+    // to hit send for a second or two") and by this code. This morning's own
+    // logged maxGapMs values ran 120-150ms between real packets, so the window
+    // needs to comfortably clear that; 450ms is a starting point, tuned
+    // against real captures, not a measured optimum -- see
+    // knowledge/staging/exocortex-stt-tail-clip-instruction.md. Scoped to the
+    // G2/BLE path only: the phone mic (activePhoneMic) reads AudioRecord's own
+    // local buffer directly, with no BLE transit hop to race against.
+    private static final long AUDIO_STOP_GRACE_MS = 450;
     // Push-to-talk utterance boundaries come from the button. We re-decode the
     // current audio segment in full for each live partial and emit the complete
     // utterance text (REPLACE, never a delta). The sherpa Moonshine v2 decoder
@@ -112,6 +128,12 @@ public class FaceclawVoiceController {
     // Set once the worker has the glasses mic enabled for this session.
     // Read and written under `lock`, so it flips with `started` atomically.
     private boolean audioStarted;
+    // Wall-clock time (elapsedRealtime) `stop()` flipped `started` false, or 0
+    // when not in the post-stop grace window. Lets queueAudioPacket() and the
+    // G2 audio loop keep accepting/processing packets for AUDIO_STOP_GRACE_MS
+    // after `started` goes false, instead of dropping in-flight BLE audio the
+    // instant the capture-ending tap lands. See withinAudioGrace().
+    private volatile long stopRequestedAtMs;
     // Capture from the phone's own microphone instead of the G2 over BLE
     // (preview-only mode, where no glasses are connected). Latched into
     // activePhoneMic at start() (under `lock`) so a mid-session setter call
@@ -321,12 +343,29 @@ public class FaceclawVoiceController {
 
     public void stop() {
         Thread threadToJoin;
+        boolean wasPhoneMic;
         synchronized (lock) {
             if (!started) {
                 return;
             }
             started = false;
             threadToJoin = workerThread;
+            wasPhoneMic = activePhoneMic;
+        }
+        // Grace window: give any G2 mic packet already crossing the BLE link
+        // a chance to still arrive and get queued/decoded before the audio
+        // request is actually halted and the worker thread is interrupted.
+        // Only meaningful for the G2/BLE path (see AUDIO_STOP_GRACE_MS) and
+        // only when some other thread is waiting on this stop() -- if the
+        // worker thread is calling stop() on itself, sleeping here would just
+        // stall the very loop this is meant to let finish draining.
+        if (!wasPhoneMic && Thread.currentThread() != threadToJoin) {
+            stopRequestedAtMs = SystemClock.elapsedRealtime();
+            try {
+                Thread.sleep(AUDIO_STOP_GRACE_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         stopG2Audio();
         synchronized (audioQueueLock) {
@@ -342,6 +381,7 @@ public class FaceclawVoiceController {
                 }
             }
         }
+        stopRequestedAtMs = 0;
     }
 
     /**
@@ -608,9 +648,25 @@ public class FaceclawVoiceController {
         return currentCommunicator.startG2AudioCapture(this::queueAudioPacket);
     }
 
+    /**
+     * True while the G2 audio pipeline should keep accepting/processing mic
+     * packets: either a capture is actively running, or stop() was called
+     * within the last AUDIO_STOP_GRACE_MS. Gates queueAudioPacket() and the
+     * processG2Audio()/takeAudioPacket() loop so in-flight BLE audio isn't
+     * dropped the instant `started` flips false -- see stop()'s own comment.
+     */
+    private boolean withinAudioGrace() {
+        if (started) {
+            return true;
+        }
+        long requestedAt = stopRequestedAtMs;
+        return requestedAt != 0
+                && SystemClock.elapsedRealtime() - requestedAt < AUDIO_STOP_GRACE_MS;
+    }
+
     private void processG2Audio() {
         short[] pcm = new short[FaceclawLc3Decoder.SAMPLES_PER_PACKET];
-        while (started && !Thread.currentThread().isInterrupted()) {
+        while (withinAudioGrace() && !Thread.currentThread().isInterrupted()) {
             FaceclawLc3Decoder currentDecoder = lc3Decoder;
             if (currentDecoder == null) {
                 return;
@@ -1170,7 +1226,7 @@ public class FaceclawVoiceController {
     }
 
     private void queueAudioPacket(byte[] data, String arm, long arrivalMs) {
-        if (!started || data == null) {
+        if (data == null || !withinAudioGrace()) {
             return;
         }
         if (!"L".equals(arm)) {
@@ -1199,7 +1255,7 @@ public class FaceclawVoiceController {
 
     private AudioPacket takeAudioPacket() {
         synchronized (audioQueueLock) {
-            while (started && audioQueue.isEmpty()) {
+            while (withinAudioGrace() && audioQueue.isEmpty()) {
                 try {
                     audioQueueLock.wait(250);
                     maybeEmitAudioStats(false);

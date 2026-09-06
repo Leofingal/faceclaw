@@ -97,6 +97,22 @@ const AUTO_SEND_SECONDS = 4;
 const AUTO_SEND_TICK_MS = 1000;
 
 /**
+ * Hard backstop on an open "listening" capture. Push-to-talk deliberately
+ * runs with endpointing off (see startListening()'s own comment) -- the tap
+ * IS the end-of-speech signal, so there is no silence-detection fallback if
+ * that tap never lands (a missed gesture, a dropped ring event while
+ * ringConnectionModeSetting is "direct", scrolling away without noticing the
+ * mic was live). Session 0149 traced a real multi-hour stuck capture to
+ * exactly this gap -- and the whole time it runs, it also blocks the
+ * screen-off battery-save suspend (dashboard-controller.ts's
+ * isCaptureHeld() gate), so a stuck capture is a double, continuous drain,
+ * not a background timer. Deliberately generous: far past any real
+ * dictation, short of "hours". Not a measured value -- see
+ * knowledge/staging/exocortex-stuck-recording-battery-drain-return.md.
+ */
+const LISTEN_TIMEOUT_MS = 120_000;
+
+/**
  * A slow-rotating glyph, evaluated fresh at paint time rather than driven by
  * its own timer. Chris, 2026-09-01: wanted this — until now only shown while
  * actively dictating (paintMic, below) — on the ordinary feed screen's meta
@@ -224,6 +240,8 @@ export class GhostLayer implements Layer {
   private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
   /** Ticks the auto-send countdown on the confirm screen; see AUTO_SEND_SECONDS. */
   private autoSendTimer: ReturnType<typeof setInterval> | null = null;
+  /** Hard backstop on an unwatched "listening" capture; see LISTEN_TIMEOUT_MS. */
+  private listenTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   /** Seconds left before the confirm screen sends itself. 0 = not counting. */
   private autoSendLeft = 0;
 
@@ -1000,12 +1018,14 @@ export class GhostLayer implements Layer {
       // decision away from the gesture that means it.
       void this.actions.startVoiceCapture(false);
     }
+    this.armListenTimeout();
     this.requestRender();
   }
 
   /** Tap while listening: stop the mic and wait for the final transcript. */
   private commitCapture(): void {
     if (!this.capturing) return;
+    this.clearListenTimeout();
     this.micState = "sending";
     void this.actions.stopVoiceCapture();
     this.armTranscriptTimeout();
@@ -1013,6 +1033,7 @@ export class GhostLayer implements Layer {
   }
 
   private abortCapture(): void {
+    this.clearListenTimeout();
     if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     this.transcriptTimer = null;
     if (this.capturing) {
@@ -1021,6 +1042,24 @@ export class GhostLayer implements Layer {
     }
     this.addingToRaw = false;
     this.interim = "";
+  }
+
+  /** Restart the LISTEN_TIMEOUT_MS backstop; called on every entry to "listening". */
+  private armListenTimeout(): void {
+    if (this.listenTimeoutTimer) clearTimeout(this.listenTimeoutTimer);
+    this.listenTimeoutTimer = setTimeout(() => {
+      this.listenTimeoutTimer = null;
+      if (this.micState !== "listening") return;
+      // Nobody ended this capture. Commit it the same way a tap would,
+      // rather than leaving the mic (and the screen-off suspend block it
+      // causes) open indefinitely -- see LISTEN_TIMEOUT_MS.
+      this.commitCapture();
+    }, LISTEN_TIMEOUT_MS);
+  }
+
+  private clearListenTimeout(): void {
+    if (this.listenTimeoutTimer) clearTimeout(this.listenTimeoutTimer);
+    this.listenTimeoutTimer = null;
   }
 
   private armTranscriptTimeout(): void {
@@ -1062,6 +1101,7 @@ export class GhostLayer implements Layer {
       return;
     }
     if (this.micState !== "listening" && this.micState !== "sending") return;
+    this.clearListenTimeout();
     if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     this.transcriptTimer = null;
     this.capturing = false;
