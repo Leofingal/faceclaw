@@ -36,7 +36,10 @@ export type PushToTalkOptions = {
   communicator: any;
   /**
    * Capture from the phone's own microphone instead of the G2 over BLE.
-   * Preview-only mode, where no glasses are connected; everything downstream
+   * True in preview-only mode (no glasses connected), or when the wearer has
+   * forced it on while glasses ARE connected (Settings > Developer > Force
+   * phone microphone, forcePhoneMicSetting in dashboard-settings.ts) --
+   * a workaround for an unreliable G2 BLE mic link. Everything downstream
    * (providers, endpointing, verification) works the same on either source.
    */
   usePhoneMic?: boolean;

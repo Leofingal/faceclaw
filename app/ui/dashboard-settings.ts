@@ -403,6 +403,27 @@ export const useMicControlSetting = new ConfigSettingBoolean({
     "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
 });
 
+// Forces voice capture through the phone's own AudioRecord path even while
+// the G2 is connected, instead of only in preview mode (no glasses paired) --
+// see usePhoneMic on FaceclawVoiceController and its use in
+// dashboard-controller.ts's voiceCaptureOptions(). Added as a workaround for
+// the G2's BLE mic link intermittently losing packets, which Whisper doesn't
+// error on -- it hallucinates a fluent, wrong transcript instead (session
+// 2026-09-07, knowledge/staging/exocortex-phone-mic-toggle-instruction.md).
+// Whether this actually reaches a connected Bluetooth/LE Audio device (e.g.
+// hearing aids) instead of the phone's own built-in mic depends on Android's
+// own audio routing and is NOT guaranteed on every device -- see the
+// setPreferredDevice() handling and its comments in
+// FaceclawVoiceController.openPhoneMic().
+export const forcePhoneMicSetting = new ConfigSettingBoolean({
+  id: "force-phone-mic",
+  label: "Force phone microphone",
+  storageKey: "developer.forcePhoneMic",
+  defaultValue: false,
+  description:
+    "Capture voice input from the phone's own microphone (Android's normal audio routing) instead of the G2's BLE mic link, even while the glasses are connected. Useful when the glasses' Bluetooth mic link is dropping packets and transcripts come back fluent but wrong instead of failing cleanly. If a Bluetooth or LE Audio device (hearing aids, a headset) is connected and set as your phone's preferred microphone, Android should route this capture through it automatically, but that isn't guaranteed on every device -- check a transcript's accuracy after turning this on.",
+});
+
 export const showBleBandwidthSetting = new ConfigSettingBoolean({
   id: "show-ble-bandwidth",
   label: "Show BLE bandwidth usage",

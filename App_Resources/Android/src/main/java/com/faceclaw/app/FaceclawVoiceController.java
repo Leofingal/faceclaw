@@ -744,6 +744,18 @@ public class FaceclawVoiceController {
      * Open the phone's own microphone at the pipeline's native format
      * (16 kHz mono PCM16), or null when it cannot start — the permission is
      * missing (SecurityException) or the device refuses the configuration.
+     *
+     * A plain AudioRecord does NOT automatically prefer a connected Bluetooth
+     * LE Audio / hearing-aid input over the phone's built-in mic, even when
+     * that device is marked the system's preferred microphone for calls --
+     * confirmed against Android's own BLE Audio recording guidance (developer
+     * documentation for AudioRecord + BLE Audio, 2026-09-07: "the application
+     * must ... explicitly set it as preferred" via setPreferredDevice(), or
+     * the default input device -- typically the built-in mic -- is used
+     * regardless of what's connected). Without the block below, forcing phone
+     * mic while the hearing aids are connected would silently capture from
+     * the phone's own mic instead: a working toggle that solves nothing. See
+     * knowledge/staging/exocortex-phone-mic-toggle-instruction.md.
      */
     private android.media.AudioRecord openPhoneMic() {
         android.media.AudioRecord record = null;
@@ -763,6 +775,18 @@ public class FaceclawVoiceController {
                 record.release();
                 return null;
             }
+            android.media.AudioDeviceInfo preferredInput = findPreferredBleAudioInput();
+            if (preferredInput != null) {
+                boolean accepted = record.setPreferredDevice(preferredInput);
+                Log.i(TAG, "phone mic: requesting preferred input device type="
+                        + describeAudioDeviceType(preferredInput.getType())
+                        + " name=" + preferredInput.getProductName()
+                        + " accepted=" + accepted);
+            } else {
+                Log.i(TAG, "phone mic: no BLE/hearing-aid input device found among "
+                        + "GET_DEVICES_INPUTS; falling back to Android's default input "
+                        + "routing (likely the built-in mic)");
+            }
             record.startRecording();
             if (record.getRecordingState() != android.media.AudioRecord.RECORDSTATE_RECORDING) {
                 record.release();
@@ -779,6 +803,59 @@ public class FaceclawVoiceController {
     }
 
     /**
+     * Look for a connected Bluetooth LE Audio or hearing-aid input device to
+     * hand to AudioRecord.setPreferredDevice() -- see the caller's comment
+     * for why this is required at all. TYPE_HEARING_AID (API 28) is the
+     * classic-Bluetooth ASHA hearing-aid profile; TYPE_BLE_HEADSET (API 31)
+     * is how Android exposes general LE Audio input devices, which is also
+     * the type LE Audio hearing aids (the HAP profile) are expected to
+     * surface as on current Android versions -- NOT independently confirmed
+     * against Chris's actual hearing aids, since that requires a real device
+     * with them connected (see the return doc). Referencing these constants
+     * is safe on the app's minSdk 24: they're compile-time int fields, not
+     * calls, so an old OS that never returns a device of that type just never
+     * matches -- no version guard needed.
+     */
+    private android.media.AudioDeviceInfo findPreferredBleAudioInput() {
+        android.media.AudioManager audioManager =
+                (android.media.AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager == null) {
+            return null;
+        }
+        android.media.AudioDeviceInfo[] inputs;
+        try {
+            inputs = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
+        } catch (Throwable t) {
+            Log.w(TAG, "phone mic: could not enumerate input devices", t);
+            return null;
+        }
+        android.media.AudioDeviceInfo hearingAid = null;
+        android.media.AudioDeviceInfo bleHeadset = null;
+        for (android.media.AudioDeviceInfo device : inputs) {
+            int type = device.getType();
+            if (type == android.media.AudioDeviceInfo.TYPE_HEARING_AID) {
+                hearingAid = device;
+            } else if (type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET) {
+                bleHeadset = device;
+            }
+        }
+        // Prefer the dedicated hearing-aid type over the general BLE Audio
+        // type when both are somehow present.
+        return hearingAid != null ? hearingAid : bleHeadset;
+    }
+
+    /** Human-readable label for logcat; falls back to the raw int for any type not named here. */
+    private static String describeAudioDeviceType(int type) {
+        if (type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC) return "BUILTIN_MIC";
+        if (type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) return "BLUETOOTH_SCO";
+        if (type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET) return "BLE_HEADSET";
+        if (type == android.media.AudioDeviceInfo.TYPE_HEARING_AID) return "HEARING_AID";
+        if (type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET) return "WIRED_HEADSET";
+        if (type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET) return "USB_HEADSET";
+        return "TYPE_" + type;
+    }
+
+    /**
      * Phone-mic capture loop: no LC3 decode, no arm bookkeeping, no frame
      * metadata — AudioRecord already delivers the pipeline's PCM format. The
      * blocking read returns every chunk (50 ms), which bounds how long a
@@ -786,6 +863,7 @@ public class FaceclawVoiceController {
      */
     private void processPhoneAudio(android.media.AudioRecord record) {
         short[] pcm = new short[PHONE_MIC_CHUNK_SAMPLES];
+        boolean loggedRoutedDevice = false;
         while (started && !Thread.currentThread().isInterrupted()) {
             int read = record.read(pcm, 0, pcm.length);
             if (read < 0) {
@@ -794,6 +872,22 @@ public class FaceclawVoiceController {
             }
             if (read == 0) {
                 continue;
+            }
+            if (!loggedRoutedDevice) {
+                // AudioRecord.getRoutedDevice() reports the device actually in
+                // use, populated once real audio has started flowing (may be
+                // null on the very first call right after startRecording()).
+                // This is the ground-truth check for the hearing-aid routing
+                // question: setPreferredDevice() above is only a request, and
+                // per Android's own docs "the user can manually override this
+                // preference in device settings" -- so this line, not the
+                // request log in openPhoneMic(), is what a real device test
+                // must grep for. Logged once per capture, not every chunk.
+                loggedRoutedDevice = true;
+                android.media.AudioDeviceInfo routed = record.getRoutedDevice();
+                Log.i(TAG, "phone mic capture active; routedDevice=" + (routed == null
+                        ? "unknown (not yet reported)"
+                        : describeAudioDeviceType(routed.getType()) + " " + routed.getProductName()));
             }
             decodedSamples += read;
             processPcmChunk(pcm, read, 0, 0, false);

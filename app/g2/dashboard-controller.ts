@@ -65,7 +65,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, forcePhoneMicSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -1814,14 +1814,18 @@ class DashboardController {
   }
 
   /**
-   * Provider and key settings for a capture on the given connection; a null
-   * communicator means preview-only mode, where the phone's own microphone
-   * stands in for the G2 mic.
+   * Provider and key settings for a capture on the given connection. The
+   * phone's own microphone stands in for the G2 mic either when there's no
+   * communicator at all (preview-only mode, no glasses connected) or when
+   * Settings > Developer > Force phone microphone (forcePhoneMicSetting) is
+   * on -- an explicit override for using the glasses while their BLE mic
+   * link is unreliable. See forcePhoneMicSetting's own comment for the
+   * caveat on whether this actually reaches a Bluetooth/LE Audio device.
    */
   private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge | null) {
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
-      usePhoneMic: communicator === null,
+      usePhoneMic: communicator === null || forcePhoneMicSetting.get(),
       provider: voiceProviderSetting.get(),
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
