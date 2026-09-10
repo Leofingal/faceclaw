@@ -1,0 +1,125 @@
+<!--
+  HEALTH - the phone graph view.
+
+  Min/max/average for each of the five measured types (heart rate, blood
+  oxygen, HRV, steps, sleep), by hour within a day and by day over a week, a
+  month or three months, from whatever history the local store has accumulated.
+
+  Reached from Settings (settings-hub-page.xml), the same route as Active apps
+  and every other round-5 setting.
+
+  TWO LAYOUTS, ONE PAGE. Compact (the Fold 7 shut, and any window under 600dp)
+  stacks the chart over the readout. Expanded (the Fold open, a tablet, or any
+  ordinary phone - see fold-state.ts on why width alone does not demote a
+  non-folding phone) puts the readout in a fixed side column and gives the
+  chart the rest. Both bodies share one grid cell rather than being separate
+  pages: unfolding the phone is not a navigation the user performed, and a page
+  swap would leave a back-stack entry behind a screen they never chose to
+  leave. That is the same reasoning main-page.xml already uses for its three
+  bodies, and the same fold signal decides all of them.
+
+  THE LAYOUT LINE AT THE BOTTOM IS NOT DEBUG LEFTOVER. It prints the width, the
+  posture and the resulting display class, so a screenshot of this page is
+  evidence about the fold question rather than an assertion about it. The Fold-7
+  responsive behaviour has been an open item since the emulator dispatch and
+  this is the first surface actually exercising it.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd"
+    navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+
+    <ActionBar title="Health" />
+
+    <ScrollView>
+        <StackLayout class="home-body">
+
+            <!-- What is being plotted, and the sample-data badge. The badge is
+                 driven by a marker file the fixture seeder writes, so it can
+                 never be true of a real sync's data. -->
+            <GridLayout rows="auto,auto" columns="*,auto">
+                <Label row="0" col="0" text="{{ headline }}" class="home-card-title" />
+                <Label row="1" col="0" text="{{ subhead }}" class="home-row-meta" />
+                <Label row="0" rowSpan="2" col="1" text="Sample data"
+                    visibility="{{ sampleBadgeVisibility }}"
+                    class="health-badge" verticalAlignment="center" />
+            </GridLayout>
+
+            <!-- Metric selector. -->
+            <ScrollView orientation="horizontal" class="health-chip-scroll">
+                <StackLayout orientation="horizontal">
+                    <Repeater items="{{ metricChips }}">
+                        <Repeater.itemsLayout>
+                            <StackLayout orientation="horizontal" />
+                        </Repeater.itemsLayout>
+                        <Repeater.itemTemplate>
+                            <Label text="{{ label }}" tap="{{ onTap }}" class="{{ chipClass }}" />
+                        </Repeater.itemTemplate>
+                    </Repeater>
+                </StackLayout>
+            </ScrollView>
+
+            <!-- Range selector, which is also the by-hour/by-day switch: "Day"
+                 is the only range fine enough for hourly buckets to mean
+                 anything, so one control does both rather than two that can
+                 contradict each other. -->
+            <ScrollView orientation="horizontal" class="health-chip-scroll">
+                <StackLayout orientation="horizontal">
+                    <Repeater items="{{ rangeChips }}">
+                        <Repeater.itemsLayout>
+                            <StackLayout orientation="horizontal" />
+                        </Repeater.itemsLayout>
+                        <Repeater.itemTemplate>
+                            <Label text="{{ label }}" tap="{{ onTap }}" class="{{ chipClass }}" />
+                        </Repeater.itemTemplate>
+                    </Repeater>
+                </StackLayout>
+            </ScrollView>
+
+            <!-- COMPACT: chart over readout. -->
+            <StackLayout visibility="{{ compactVisibility }}">
+                <Image src="{{ chartImage }}" height="{{ chartHeight }}" stretch="aspectFit"
+                    layoutChanged="{{ onChartLayoutChanged }}"
+                    class="health-chart" horizontalAlignment="stretch" />
+                <Label text="{{ sleepCaptionText }}" visibility="{{ sleepCaptionVisibility }}"
+                    class="home-row-meta" textWrap="true" />
+                <Repeater items="{{ statRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <GridLayout columns="*,auto" class="health-stat-row">
+                            <Label col="0" text="{{ label }}" class="health-stat-label" />
+                            <Label col="1" text="{{ value }}" class="health-stat-value" />
+                        </GridLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+
+            <!-- EXPANDED: chart beside a fixed readout column. -->
+            <GridLayout rows="auto" columns="*,300" visibility="{{ expandedVisibility }}">
+                <StackLayout col="0">
+                    <Image src="{{ chartImage }}" height="{{ chartHeight }}" stretch="aspectFit"
+                        layoutChanged="{{ onChartLayoutChanged }}"
+                        class="health-chart" horizontalAlignment="stretch" />
+                    <Label text="{{ sleepCaptionText }}" visibility="{{ sleepCaptionVisibility }}"
+                        class="home-row-meta" textWrap="true" />
+                </StackLayout>
+                <StackLayout col="1" class="health-stat-panel">
+                    <Repeater items="{{ statRows }}">
+                        <Repeater.itemsLayout>
+                            <StackLayout />
+                        </Repeater.itemsLayout>
+                        <Repeater.itemTemplate>
+                            <GridLayout columns="*,auto" class="health-stat-row">
+                                <Label col="0" text="{{ label }}" class="health-stat-label" />
+                                <Label col="1" text="{{ value }}" class="health-stat-value" />
+                            </GridLayout>
+                        </Repeater.itemTemplate>
+                    </Repeater>
+                </StackLayout>
+            </GridLayout>
+
+            <Label text="{{ layoutMeta }}" class="health-layout-meta" textWrap="true" />
+
+        </StackLayout>
+    </ScrollView>
+</Page>

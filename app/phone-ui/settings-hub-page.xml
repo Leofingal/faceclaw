@@ -89,6 +89,13 @@
                     <Label text="Active apps" class="home-row-title" />
                     <Label text="Everything open on the glasses right now, with a way to end any of it" class="home-row-meta" textWrap="true" />
                 </StackLayout>
+                <!-- The graph half of the ring health feature. The glance
+                     lives on the glasses (the Health app in the run); the
+                     history needs a screen, so it is here rather than there. -->
+                <StackLayout class="home-row" tap="{{ onHealthTap }}">
+                    <Label text="Health" class="home-row-title" />
+                    <Label text="Heart rate, blood oxygen, HRV, steps and sleep - by hour and by day" class="home-row-meta" textWrap="true" />
+                </StackLayout>
 
                 <!-- The two genuinely phone-native glasses settings. They are
                      still on the mirror page's Settings tab as well; both read

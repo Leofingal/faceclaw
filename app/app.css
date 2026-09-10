@@ -1336,3 +1336,107 @@ Button.permissions-primary-dimmed {
 .ns-dark .exocortex-home-body {
   background-color: #1c1c1c;
 }
+
+/* ------------------------------------------------------------------------
+ * HEALTH (phone-ui/health-page.xml)
+ *
+ * The chart is a grayscale bitmap produced by the same GrayImage renderer the
+ * glasses use, so it arrives as light-on-black whatever the phone theme is.
+ * Rather than fight that, the chart gets an explicit dark plate in BOTH
+ * themes - it reads as an instrument panel inset into the page, which is the
+ * one place a fixed dark surface is defensible in a light-themed app. The
+ * chrome around it (chips, stat rows) follows the theme normally.
+ */
+
+.health-chart {
+  background-color: #101010;
+  border-radius: 10;
+  margin: 10 0 6 0;
+}
+
+.health-chip {
+  font-size: 13;
+  color: #444444;
+  background-color: #f0f0f0;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 14;
+  padding: 6 12;
+  margin: 2 6 2 0;
+}
+
+.health-chip-on {
+  color: #ffffff;
+  background-color: #222222;
+  border-color: #222222;
+}
+
+.health-chip-scroll {
+  margin-top: 4;
+}
+
+.health-stat-row {
+  padding: 7 2;
+}
+
+.health-stat-label {
+  font-size: 13;
+  color: #666666;
+}
+
+.health-stat-value {
+  font-size: 15;
+  font-weight: bold;
+  color: #222222;
+}
+
+.health-stat-panel {
+  margin-left: 16;
+}
+
+.health-badge {
+  font-size: 11;
+  color: #8a6d00;
+  background-color: #fff3cd;
+  border-color: #ffe08a;
+  border-width: 1;
+  border-radius: 8;
+  padding: 3 8;
+}
+
+/* Not debug leftover - see health-page.xml's header. */
+.health-layout-meta {
+  font-size: 11;
+  color: #999999;
+  margin-top: 14;
+}
+
+.ns-dark .health-chip {
+  color: #cccccc;
+  background-color: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.ns-dark .health-chip-on {
+  color: #111111;
+  background-color: #e8e8e8;
+  border-color: #e8e8e8;
+}
+
+.ns-dark .health-stat-label {
+  color: #999999;
+}
+
+.ns-dark .health-stat-value {
+  color: #f0f0f0;
+}
+
+.ns-dark .health-badge {
+  color: #ffd97a;
+  background-color: #3a3320;
+  border-color: #5a4c1f;
+}
+
+.ns-dark .health-layout-meta {
+  color: #777777;
+}

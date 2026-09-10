@@ -9,6 +9,7 @@ import terminalApp from "./terminal";
 import filesApp from "./files";
 import musicApp from "./music";
 import nightscoutApp from "./nightscout";
+import healthApp from "./health";
 import transcribeApp from "./transcribe";
 import microphonesApp from "./microphones";
 import notificationsApp from "./notifications";
@@ -45,6 +46,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   filesApp,
   musicApp,
   nightscoutApp,
+  healthApp,
   transcribeApp,
   microphonesApp,
   notificationsApp,

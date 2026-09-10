@@ -1094,6 +1094,15 @@ export class MainViewModel extends Observable {
   }
 
   /**
+   * The health graphs: min/max/average per metric, by hour and by day, over
+   * whatever history the local store holds. The glasses' own Health app is the
+   * one-screen glance; this is the part that needs a phone to be worth having.
+   */
+  onHealthTap(): void {
+    Frame.topmost()?.navigate("phone-ui/health-page");
+  }
+
+  /**
    * The lens mirror and the simulated ring/watch pads. Kept for debugging and
    * for driving the glasses when the ring is out of reach; not where the phone
    * lands any more.
