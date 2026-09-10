@@ -43,6 +43,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
     private static final long CFW_CLEANUP_WAIT_MS = 4_000;
+    /**
+     * Cap on decoded ring health pages held in memory. A full backlog sync is
+     * ~40 pages, so this holds several syncs; oldest is dropped first. This is a
+     * holding area for a later health feature, not storage.
+     */
+    private static final int RING_HEALTH_MAX_RECORDS = 256;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -78,6 +84,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean leftConnected;
     private boolean ringConnected;
     private boolean ringNotificationsReady;
+    // R1 health-data protocol (RingProtocol). The reassembler and the outbound
+    // queue are both guarded by `lock`. Page ACKs are queued rather than written
+    // inline because notifications arrive on the GATT callback thread and
+    // bleManager.writeFrames() blocks waiting for onCharacteristicWrite, which
+    // that same thread has to deliver — writing there would deadlock until the
+    // write timeout. The worker loop drains the queue instead.
+    private final RingProtocol.Reassembler ringReassembler = new RingProtocol.Reassembler();
+    private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
+    private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
+    /**
+     * The phone-side sequence counter. One counter shared by BOTH ring channels
+     * (measured: 78 phone-to-ring writes in the reference capture step by
+     * exactly +1 regardless of channel, restarting at 1 on a new connection).
+     */
+    private int ringSeq;
+    private int ringNonce;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
@@ -1255,6 +1277,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     continue;
                 }
 
+                // Page ACKs queued from the GATT callback thread are written
+                // here, on the only thread allowed to block on a GATT write.
+                flushRingOutbound();
+
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
@@ -1430,6 +1456,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void handleDirectRingNotification(String characteristicUuid, byte[] data) {
+        if (handleRingHealthNotification(characteristicUuid, data)) {
+            return;
+        }
         FaceclawRingEventDecoder.DirectRingEvent decoded = FaceclawRingEventDecoder.decode(data);
         if (decoded == null) {
             Log.d(TAG, "direct ring notify ignored: characteristicUuid=" + characteristicUuid + " raw=" + hex(data));
@@ -1446,6 +1475,108 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int frameId = FrameTimings.getInstance().startFrame("input:ring:" + decoded.label);
         FrameTimings.getInstance().log(frameId, "input event decoded from direct ring notification");
         emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * The R1 health-data protocol branch. Returns true when the value belonged
+     * to that protocol and must not fall through to the gesture decoder.
+     *
+     * <p>Runs on the GATT callback thread, so it only ever queues writes.
+     *
+     * <p>Restricted to R1_NOTIFY_CHAR_UUID because that is the notify
+     * characteristic (ATT handle 0x0017) the reference capture shows this
+     * protocol on; gesture traffic on the other notify characteristic is left
+     * strictly alone rather than being offered to the reassembler.
+     */
+    private boolean handleRingHealthNotification(String characteristicUuid, byte[] data) {
+        if (!BleProtocol.R1_NOTIFY_CHAR_UUID.equals(characteristicUuid)) {
+            return false;
+        }
+
+        RingProtocol.Intake intake;
+        synchronized (lock) {
+            intake = ringReassembler.accept(data);
+        }
+        if (!intake.consumed) {
+            return false;
+        }
+
+        long arrivalMs = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            lastIncomingAtMs = arrivalMs;
+        }
+        if (intake.note != null) {
+            logLine("ring frame: " + intake.note);
+        }
+        RingProtocol.Frame frame = intake.frame;
+        if (frame == null) {
+            return true;
+        }
+        if (!frame.crcOk) {
+            // Never act on a frame whose CRC failed: the payload offsets below
+            // are only meaningful for an intact frame.
+            logLine("ring frame CRC mismatch " + frame.describe());
+            return true;
+        }
+
+        // Route on the CHAN byte, not on the shape of the payload.
+        if (frame.chan != RingProtocol.CHAN_HEALTH) {
+            Log.d(TAG, "ring device frame " + frame.describe());
+            return true;
+        }
+
+        if (frame.kind == RingProtocol.KIND_RSP) {
+            Log.d(TAG, "ring health rsp " + frame.describe());
+            return true;
+        }
+        if (frame.kind != RingProtocol.KIND_DATA) {
+            Log.d(TAG, "ring health frame " + frame.describe());
+            return true;
+        }
+
+        RingProtocol.HealthRecord record = null;
+        try {
+            record = RingProtocol.decode(frame, System.currentTimeMillis());
+        } catch (Throwable t) {
+            logLine("ring health decode error " + frame.describe() + ": " + safeMessage(t));
+        }
+        if (record == null) {
+            logLine("ring health page undecoded " + frame.describe());
+        } else {
+            synchronized (lock) {
+                if (ringHealthRecords.size() >= RING_HEALTH_MAX_RECORDS) {
+                    ringHealthRecords.remove(0);
+                }
+                ringHealthRecords.add(record);
+            }
+            logLine("ring health " + record.summary());
+        }
+
+        // Acknowledge the page regardless of whether we could decode it: the
+        // ACK is what keeps the ring sending, and a decode gap must not stall
+        // the rest of the transfer.
+        queueRingPageAck(frame);
+        return true;
+    }
+
+    private void queueRingPageAck(RingProtocol.Frame page) {
+        byte[] ack;
+        synchronized (lock) {
+            if (!ringNotificationsReady) {
+                return;
+            }
+            ack = RingProtocol.buildPageAck(
+                nextRingSeqLocked(),
+                nextRingNonceLocked(),
+                page.cmdHi,
+                page.cmdLo,
+                page.seq
+            );
+            ringOutbound.add(ack);
+        }
+        // The worker loop does the actual write; wake it so the ACK is not held
+        // for a whole idle tick.
         interruptibleSleep.interrupt();
     }
 
@@ -1477,6 +1608,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 ringNotificationsReady = false;
                 if (!connected) {
                     ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+                    // Half-received fragments and unsent ACKs do not survive the
+                    // link; the sequence counter restarts on the next connect.
+                    ringReassembler.reset();
+                    ringOutbound.clear();
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
                 return;
@@ -1683,8 +1818,100 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringConnected = true;
             ringNotificationsReady = true;
             ringReconnectAfterMs = 0;
+            // The ring's sequence counter restarts with the connection.
+            ringSeq = 0;
+            ringNonce = 0;
+            ringReassembler.reset();
+            ringOutbound.clear();
         }
         logLine("direct ring ready phoneNotify=" + phoneNotify + " dataNotify=" + dataNotify);
+
+        if (dataNotify) {
+            requestRingHealth();
+        }
+    }
+
+    /**
+     * Pull the five health record types. Each request is a bare 17-byte frame
+     * carrying only a nonce; the ring answers with an RSP on the same sequence
+     * number and then pushes one or more DATA pages, which arrive through
+     * handleRingHealthNotification.
+     *
+     * <p>Runs on the worker thread (from connectRing), which is the only thread
+     * allowed to call the blocking write path.
+     */
+    private void requestRingHealth() {
+        for (int command : RingProtocol.HEALTH_COMMANDS) {
+            byte[] frame;
+            synchronized (lock) {
+                frame = RingProtocol.buildHealthRequest(command, nextRingSeqLocked(), nextRingNonceLocked());
+            }
+            if (!writeRingFrame(frame, "health request")) {
+                return;
+            }
+        }
+        logLine("ring health: requested " + RingProtocol.HEALTH_COMMANDS.length + " record types");
+    }
+
+    /** Write one already-built ring frame. Worker-thread only (blocking). */
+    private boolean writeRingFrame(byte[] frame, String what) {
+        try {
+            boolean ok = bleManager.writeFrames(
+                ringAddress,
+                BleProtocol.R1_WRITE_CHAR_UUID,
+                Collections.singletonList(frame),
+                ConnectionOptions.WRITE_TYPE,
+                ConnectionOptions.WRITE_TIMEOUT_MS
+            );
+            if (!ok) {
+                logLine("ring " + what + " write failed");
+            }
+            return ok;
+        } catch (Throwable t) {
+            logLine("ring " + what + " write error: " + safeMessage(t));
+            return false;
+        }
+    }
+
+    /**
+     * Drain queued ring frames (page ACKs). Worker-thread only. Returns true
+     * when anything was written.
+     */
+    private boolean flushRingOutbound() {
+        boolean wroteAny = false;
+        while (true) {
+            byte[] frame;
+            synchronized (lock) {
+                if (!ringNotificationsReady || ringOutbound.isEmpty()) {
+                    return wroteAny;
+                }
+                frame = ringOutbound.poll();
+            }
+            if (frame == null) {
+                return wroteAny;
+            }
+            wroteAny |= writeRingFrame(frame, "page ack");
+        }
+    }
+
+    private int nextRingSeqLocked() {
+        ringSeq = (ringSeq + 1) & 0xff;
+        if (ringSeq == 0) {
+            ringSeq = 1;
+        }
+        return ringSeq;
+    }
+
+    private int nextRingNonceLocked() {
+        ringNonce = (ringNonce + 1) & 0xffff;
+        return ringNonce;
+    }
+
+    /** Snapshot of everything the ring has pushed this session. */
+    public List<RingProtocol.HealthRecord> getRingHealthRecords() {
+        synchronized (lock) {
+            return new ArrayList<>(ringHealthRecords);
+        }
     }
 
     private boolean enableRingNotification(String characteristicUuid) {
