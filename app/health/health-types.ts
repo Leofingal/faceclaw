@@ -97,6 +97,26 @@ export type SleepSegment = {
   halfMinutes: number;
 };
 
+/**
+ * One night's stage breakdown, in seconds, positioned on the day axis.
+ *
+ * This is what the diverging nightly sleep chart plots (week / month / 3
+ * months). It is a separate shape from `RollupPoint` because a night is not a
+ * rollup of anything - it has four named parts that stack, three up and one
+ * down, and flattening it to a single `sum` is exactly the information the
+ * redesigned chart exists to stop throwing away.
+ */
+export type SleepNight = {
+  /** Local midnight of the day the session is attributed to (the wake-up day). */
+  startMs: number;
+  /** False when no session was recorded for this day - drawn as a gap. */
+  hasData: boolean;
+  deepSec: number;
+  remSec: number;
+  lightSec: number;
+  wakeSec: number;
+};
+
 /** A min/max/avg/sum rollup over some window. `count` is buckets contributing. */
 export type Rollup = {
   min: number;
@@ -153,6 +173,40 @@ export const METRIC_UNITS: Readonly<Record<SeriesMetric, string>> = {
   hrv: "ms",
   steps: "",
   sleep: "h",
+};
+
+/**
+ * The same two maps over SampleMetric rather than SeriesMetric.
+ *
+ * These exist because the two enums differ at both ends: the phone GRAPHS
+ * sleep (which is not a sample metric) and the glasses drill-down walks
+ * calories (which is not a series metric, because the phone never got a
+ * calories chart). A screen that iterates the sample metrics needs a label for
+ * all five, so it gets its own map instead of special-casing the missing one.
+ */
+export const SAMPLE_METRIC_LABELS: Readonly<Record<SampleMetric, string>> = {
+  heartRate: "Heart rate",
+  spo2: "Blood oxygen",
+  hrv: "HRV",
+  steps: "Steps",
+  calories: "Calories",
+};
+
+export const SAMPLE_METRIC_UNITS: Readonly<Record<SampleMetric, string>> = {
+  heartRate: "bpm",
+  spo2: "%",
+  hrv: "ms",
+  steps: "",
+  calories: "kcal",
+};
+
+/** The short form the glance uses, where a column is ~300px wide. */
+export const SAMPLE_METRIC_SHORT_LABELS: Readonly<Record<SampleMetric, string>> = {
+  heartRate: "HR",
+  spo2: "SpO2",
+  hrv: "HRV",
+  steps: "Steps",
+  calories: "Calories",
 };
 
 /** Local midnight of the day containing `ms`. */

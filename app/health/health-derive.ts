@@ -15,6 +15,7 @@ import {
   type Rollup,
   type RollupPoint,
   type SampleMetric,
+  type SleepNight,
   type SleepSession,
   isCumulative,
   rollupOf,
@@ -123,6 +124,13 @@ export type DailySummary = {
   calories: number;
   heartRate: MetricSummary;
   spo2: MetricSummary;
+  /**
+   * ⚠ ADDED 2026-09-10. The first pass left HRV off the glance because Chris's
+   * original spec listed steps/calories/HR/SpO2/sleep and nothing else, and the
+   * return doc flagged the absence as deliberate rather than an oversight. He
+   * revised the spec on review: HRV gets a line alongside the others.
+   */
+  hrv: MetricSummary;
   sleep: SleepSummary | null;
 };
 
@@ -166,6 +174,7 @@ export function dailySummary(
     calories: Math.round(sumOf(inDay, "calories")),
     heartRate: summarise(inDay, "heartRate"),
     spo2: summarise(inDay, "spo2"),
+    hrv: summarise(inDay, "hrv"),
     sleep: night ? sleepSummary(night) : null,
   };
 }
@@ -239,6 +248,77 @@ export function sleepSummary(session: SleepSession): SleepSummary {
     })),
     timeResolved: session.timeResolved,
   };
+}
+
+/**
+ * One stage's seconds, from the summary's own bands.
+ *
+ * Both surfaces label a stage lane with its duration, and both must take that
+ * number from the record's NAMED per-stage fields (which `sleepSummary` already
+ * resolved into `stageBands`) rather than by summing the hypnogram's blocks.
+ * The two should agree; when they do not it is the segment array that is
+ * suspect, because summing blocks depends on the stage-id mapping and the named
+ * fields do not. See `sleep-stages.ts`.
+ */
+export function stageSeconds(stage: SleepStageName, summary: SleepSummary): number {
+  return summary.stageBands.find((band) => band.stage === stage)?.seconds ?? 0;
+}
+
+/**
+ * One entry per day in the window, carrying that night's four stage totals.
+ *
+ * Built for the diverging nightly chart (deep/REM/light stacked up, awake
+ * down). Like `rollupSeries`, the grid is laid out first and then filled, so a
+ * night with no record comes back as `hasData: false` at its real position
+ * rather than shifting every later night one column left.
+ *
+ * Two sessions attributed to the same day are SUMMED rather than the longest
+ * winning. That differs from `dailySummary`, which picks the longest because it
+ * is answering "how did you sleep last night" with one headline number; here
+ * the column is the day's total time in each stage, and dropping a nap would
+ * make the bar disagree with the sleep total shown beside it.
+ */
+export function sleepNights(
+  sessions: readonly SleepSession[],
+  startMs: number,
+  endMs: number,
+): SleepNight[] {
+  const byDay = new Map<number, SleepNight>();
+  for (const session of sessions) {
+    if (session.dayStartMs < startMs || session.dayStartMs >= endMs) continue;
+    const entry = byDay.get(session.dayStartMs) ?? {
+      startMs: session.dayStartMs,
+      hasData: true,
+      deepSec: 0,
+      remSec: 0,
+      lightSec: 0,
+      wakeSec: 0,
+    };
+    entry.deepSec += Math.max(0, session.deepSec);
+    entry.remSec += Math.max(0, session.remSec);
+    entry.lightSec += Math.max(0, session.lightSec);
+    entry.wakeSec += Math.max(0, session.wakeSec);
+    byDay.set(session.dayStartMs, entry);
+  }
+
+  const nights: SleepNight[] = [];
+  let cursor = startOfLocalDay(startMs);
+  let guard = 0;
+  while (cursor < endMs && guard < 4000) {
+    guard += 1;
+    nights.push(
+      byDay.get(cursor) ?? {
+        startMs: cursor,
+        hasData: false,
+        deepSec: 0,
+        remSec: 0,
+        lightSec: 0,
+        wakeSec: 0,
+      },
+    );
+    cursor = nextBucketStart(cursor, "day");
+  }
+  return nights;
 }
 
 /**

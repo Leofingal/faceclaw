@@ -33,6 +33,9 @@
     "../app/health/health-store.ts",
     "../app/health/health-ingest.ts",
     "../app/health/health-fixtures.ts",
-    "../app/health/sleep-stages.ts"
+    "../app/health/sleep-stages.ts",
+    "../app/health/health-chart.ts",
+    "../app/health/health-glance.ts",
+    "../app/health/health-phone-chart.ts"
   ]
 }
