@@ -68,11 +68,28 @@ function activeCommunicator(): any {
   }
 }
 
-function anchorToMs(anchorUnixSeconds: number): number | null {
-  // The decoder hands this out already normalised: our own live pull decoded
-  // 1789099200, which is exactly local midnight read as a plain Unix epoch.
-  // No timezone correction belongs here.
-  return anchorUnixSeconds === UNKNOWN_TIME ? null : anchorUnixSeconds * 1000;
+/**
+ * The ring timestamps in a frame 4 hours ahead of real time, and that is our
+ * own doing: the handshake sets its clock to `now + 14400s`, because that is
+ * what a real Even write carries (verified against six of them). Even's app
+ * evidently subtracts the same offset on the way back out. We were not, so
+ * every hourly sample landed 4 hours in the future.
+ *
+ * MEASURED, not theorised. Stored samples read 09:00/10:00/11:00 local while
+ * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
+ * is exactly right for a ring that had just reported the current hour.
+ *
+ * ⚠ This constant is PAIRED with the offset in `sendRingHandshake()`. They
+ * must move together. Both are hardcoded to EDT, which is a pre-existing quirk
+ * of the protocol work, not something introduced here — it will need revisiting
+ * at the next DST change.
+ */
+const RING_CLOCK_OFFSET_MS = 14400 * 1000;
+
+function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): number | null {
+  if (anchorUnixSeconds === UNKNOWN_TIME) return null;
+  const ms = anchorUnixSeconds * 1000;
+  return applyClockOffset ? ms - RING_CLOCK_OFFSET_MS : ms;
 }
 
 function toWire(record: any): WireRecord | null {
@@ -91,7 +108,7 @@ function toWire(record: any): WireRecord | null {
         min: Number(group.min),
       });
     }
-    return { kind: "hourly", metric, anchorMs: anchorToMs(Number(record.anchorUnixSeconds)), groups };
+    return { kind: "hourly", metric, anchorMs: anchorToMs(Number(record.anchorUnixSeconds), true), groups };
   }
 
   if (cmdHi === CMD_STEPS) {
@@ -112,7 +129,15 @@ function toWire(record: any): WireRecord | null {
         totalCalories: Number(bucket.calorieLike3),
       });
     }
-    return { kind: "steps", anchorMs: anchorToMs(Number(record.anchorUnixSeconds)), buckets };
+    // NOT offset-corrected, deliberately. convertSteps() floors this to the
+    // local day, which absorbs the 4h shift and lands on the right date -
+    // verified against the live store, where the steps day anchor read as
+    // midnight today while every hourly sample was 4h out. Subtracting here
+    // would push the day boundary back to 8pm the previous evening and move
+    // the total onto the wrong date. If the ring's own day genuinely runs on
+    // its skewed clock, that is a separate question and needs evidence, not a
+    // guess - see the steps bucket-index note in the protocol docs.
+    return { kind: "steps", anchorMs: anchorToMs(Number(record.anchorUnixSeconds), false), buckets };
   }
 
   if (cmdHi === CMD_SLEEP) {
