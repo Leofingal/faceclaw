@@ -45,11 +45,68 @@ export function isFixtureData(): boolean {
   return readMarker() !== null;
 }
 
+/** Written by `health-live.ts` the first time real ring data lands. */
+const LIVE_FILE = "live-marker.json";
+
+function livePath(): string {
+  return `${knownFolders.documents().getFolder("health").path}/${LIVE_FILE}`;
+}
+
+/** True once this install has ever stored a record decoded off the ring. */
+export function hasLiveData(): boolean {
+  try {
+    return File.exists(livePath());
+  } catch {
+    return false;
+  }
+}
+
+/** Record that real data has been stored. Called by the live ingest path. */
+export function markLiveData(): void {
+  try {
+    File.fromPath(livePath()).writeTextSync(JSON.stringify({ firstAtMs: Date.now() }));
+  } catch (error) {
+    console.warn("health live marker write failed", error);
+  }
+}
+
+/**
+ * Delete every stored sample, session and rollup, and the fixture badge with
+ * them. Called before the first genuine ingest.
+ *
+ * `clearFixtureMarker()` is not enough on its own and never was: dropping the
+ * badge while leaving 45 days of generated samples in the store produces
+ * exactly the artefact this file's header warns about — plausible numbers with
+ * no provenance, now unlabelled. Real data gets a clean store or none.
+ */
+export function purgeFixtureData(): void {
+  if (!isFixtureData()) return;
+  try {
+    const folder = knownFolders.documents().getFolder("health");
+    for (const entity of folder.getEntitiesSync()) {
+      const name = entity.name;
+      const isStoreFile =
+        (name.startsWith("samples-") && name.endsWith(".jsonl")) ||
+        name === "sleep.jsonl" ||
+        name === "rollups.json";
+      if (isStoreFile) File.fromPath(entity.path).removeSync();
+    }
+  } catch (error) {
+    console.warn("health fixture purge failed", error);
+  }
+  clearFixtureMarker();
+}
+
 /**
  * Seed sample data if none is present, or if the generator has changed since
  * the last seed. A no-op once seeded, so it is safe to call on every launch.
+ *
+ * Refuses outright once real ring data has ever been stored — otherwise a
+ * version bump to the generator would inject fixtures back on top of a real
+ * history, which is worse than an empty screen.
  */
 export function seedFixturesIfNeeded(days = 45): boolean {
+  if (hasLiveData()) return false;
   const marker = readMarker();
   if (marker && marker.version === FIXTURE_VERSION && marker.days >= days) return false;
   return seedFixtures(days);

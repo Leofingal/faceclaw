@@ -35,6 +35,7 @@ import {
   type GlanceData,
 } from "../../health/health-glance";
 import { healthStore } from "../../health/health-store-files";
+import { syncLiveRecords } from "../../health/health-live";
 import { isFixtureData, seedFixturesIfNeeded } from "../../health/health-seed";
 import {
   DAY_MS,
@@ -64,8 +65,11 @@ class HealthLayer implements Layer {
   constructor(private readonly requestRender: () => void) {}
 
   start(): void {
-    // Without hardware there is nothing to show; seeding makes the glance
-    // demonstrable and stamps the marker that keeps it labelled as sample data.
+    // Live data first: if the ring has been pulled this session, this stores it
+    // and wipes any fixtures out of the way. Only if that leaves us with
+    // nothing does seeding fill the screen, and seeding refuses outright once
+    // real data has ever landed.
+    syncLiveRecords();
     seedFixturesIfNeeded();
     this.reload();
     this.timer = setInterval(() => this.reload(), REFRESH_INTERVAL_MS);
@@ -84,6 +88,10 @@ class HealthLayer implements Layer {
 
   private reload(): void {
     if (this.removed) return;
+    // Cheap on every tick: a no-op when the communicator has nothing new, and
+    // the store dedupes when it does, so a 30-minute pull shows up here within
+    // one refresh instead of waiting for the app to be reopened.
+    syncLiveRecords();
     try {
       const store = healthStore();
       const today = startOfLocalDay(Date.now());
