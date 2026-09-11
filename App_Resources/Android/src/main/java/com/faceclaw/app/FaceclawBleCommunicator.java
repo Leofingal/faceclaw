@@ -1820,11 +1820,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void connectRing() {
         logLine("connecting direct ring " + ringAddress);
-        if (!bleManager.connect(ringAddress, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
+        // autoConnect=true (see FaceclawBleManager.connect's 3-arg overload) -
+        // matches what Even's own app does for this device specifically.
+        // Direct connect (false, the default used for the glasses) was
+        // measured tonight dying ~5s into an otherwise-idle ring connection,
+        // repeatedly, with nothing else competing for it.
+        if (!bleManager.connect(ringAddress, ConnectionOptions.RING_CONNECT_TIMEOUT_MS, true)) {
             throw new IllegalStateException("connect failed: " + ringAddress);
         }
 
-        bleManager.requestConnectionPriority(ringAddress, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+        // Deliberately NOT requesting CONNECTION_PRIORITY_HIGH here (2026-09-11).
+        // Even's own app never requests any priority for the ring at all - it
+        // logs no requestConnectionPriority/onConnectionUpdated call anywhere -
+        // and just runs on whatever Android's default (BALANCED) parameters are.
+        // HIGH negotiated interval=12 (15ms) / timeout=500 (5000ms) here, and a
+        // live test tonight found the ring-only connection reliably dying at
+        // 5.5-5.7s, matching that 5000ms supervision timeout almost exactly,
+        // on every attempt, with nothing else competing for the ring. If the
+        // ring's firmware occasionally needs more than 5s of headroom after a
+        // burst of writes, HIGH priority's short timeout would kill the link
+        // while Even's default (longer) one wouldn't - untested but the timing
+        // match is exact, not approximate. Leaving default priority for the
+        // ring only; the glasses' own HIGH-priority request above is untouched.
         bleManager.requestMtu(ringAddress, ConnectionOptions.RING_DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
 
         if (!bleManager.discoverServices(ringAddress, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
@@ -1915,11 +1932,32 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * be) - but nothing says a stale value is harmless either, so this
      * always sends the true current time.
      */
+    /**
+     * Round 2 (2026-09-11, ~00:55 EDT): compared this handshake against a
+     * fresh HCI-snoop capture of Even's own app completing a real successful
+     * sync minutes earlier. Two real findings from that comparison:
+     * - The 00:0A payload (the "app identity?" blob) is byte-for-byte
+     *   identical between that capture and one from two nights before - a
+     *   true fixed constant, not a rotating per-session token. Rules out the
+     *   "stale identity token" theory tried first.
+     * - Even's real sequence also sends battery (00:01), firmware version
+     *   (00:02), and device id (00:0B) - none of which round 1 ever sent -
+     *   interleaved with the health requests, not just once upfront. Notably
+     *   the firmware-version query lands immediately before Even's own first
+     *   successful health request in the real trace. `06:02`, which round 1
+     *   did send, never appears anywhere in that real successful sync -
+     *   dropped here since there's now real evidence it isn't needed and it
+     *   was never more than a guess to begin with.
+     * This round adds 00:01/00:02/00:0B up front rather than interleaved
+     * (interleaving would need restructuring requestRingHealth() too - a
+     * bigger change deferred until this simpler version is shown to help or
+     * not).
+     */
     private void sendRingHandshake() {
         long liveClockSeconds = (System.currentTimeMillis() / 1000L) + 14400L; // EDT skew, see above
         byte[] clock = le32(liveClockSeconds);
 
-        int seq1, nonce1, seq2, nonce2, seq3, nonce3, seq4, nonce4, seq5, nonce5;
+        int seq1, nonce1, seq2, nonce2, seq3, nonce3, seq4, nonce4, seq5, nonce5, seq6, nonce6, seq7, nonce7;
         synchronized (lock) {
             seq1 = nextRingSeqLocked();
             nonce1 = nextRingNonceLocked();
@@ -1931,6 +1969,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             nonce4 = nextRingNonceLocked();
             seq5 = nextRingSeqLocked();
             nonce5 = nextRingNonceLocked();
+            seq6 = nextRingSeqLocked();
+            nonce6 = nextRingNonceLocked();
+            seq7 = nextRingSeqLocked();
+            nonce7 = nextRingNonceLocked();
         }
 
         byte[][] frames = {
@@ -1938,19 +1980,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 concatBytes(le16(nonce1), new byte[] {0x3f, 0x01, 0x01})),
             RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x0e, seq2,
                 concatBytes(le16(nonce2), clock, new byte[] {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})),
-            RingProtocol.buildFrame(RingProtocol.CHAN_HEALTH, RingProtocol.KIND_DATA, 0x06, 0x02, seq3,
-                concatBytes(le16(nonce3), new byte[] {0x35, 0x07})),
-            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seq4,
-                concatBytes(le16(nonce4), parseHex("f8f53d235ac4ceaa073885cc"))),
-            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x05, seq5,
-                concatBytes(le16(nonce5), new byte[] {0x10, (byte) 0xff}, clock)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x05, seq3,
+                concatBytes(le16(nonce3), new byte[] {0x10, (byte) 0xff}, clock)),
+            // Battery, firmware version, device id - all bare nonce-only REQs,
+            // same shape as the health requests. New this round.
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x01, seq4,
+                le16(nonce4)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x02, seq5,
+                le16(nonce5)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0b, seq6,
+                le16(nonce6)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seq7,
+                concatBytes(le16(nonce7), parseHex("f8f53d235ac4ceaa073885cc"))),
         };
         for (byte[] frame : frames) {
             if (!writeRingFrame(frame, "handshake")) {
                 return;
             }
         }
-        logLine("ring health: sent device-channel handshake (5 frames)");
+        logLine("ring health: sent device-channel handshake (" + frames.length + " frames)");
     }
 
     private static byte[] parseHex(String hex) {
