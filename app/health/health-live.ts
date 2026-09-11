@@ -39,7 +39,8 @@ import {
 } from "./health-ingest";
 import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
-import type { SleepSegment } from "./health-types";
+import { startOfLocalDay, type SleepSegment } from "./health-types";
+import { File, knownFolders } from "@nativescript/core";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
 const UNKNOWN_TIME = -1;
@@ -92,6 +93,86 @@ function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): numbe
   return applyClockOffset ? ms - RING_CLOCK_OFFSET_MS : ms;
 }
 
+/**
+ * Per-day step-bucket ledger.
+ *
+ * **Why this has to exist.** The ring does not resend the whole day: a pull
+ * delivers only the buckets new since the last successful one, the same
+ * watermark model every other record type uses. Measured 2026-09-11:
+ * 25 buckets / 222 steps, then 3 / 0, then 2 / 0, then 2 / 70. A cumulative
+ * day total cannot go 222 → 0 → 70.
+ *
+ * `convertSteps()` sums the buckets it is handed and emits that as the day's
+ * total, which was right for the offline captures it was written against —
+ * there, one sync carried everything. Live, it means each pull overwrites the
+ * day with just that pull's increment, so the step count reads as "since the
+ * last pull" and lurches downward. So this keeps the day's buckets and hands
+ * `convertSteps()` the accumulated set, leaving that function pure.
+ *
+ * **Merge is overwrite-by-index, not addition.** A bucket is a time window's
+ * own total, so a window redelivered later carries a larger value, not an
+ * increment to add — addition would double-count every open window. The index
+ * is still uncracked as a *time*, but it works as an *identity*, which is all
+ * a merge needs. Every merge is logged, so if the ring turns out to send
+ * per-bucket deltas after all, that shows up as a total that stops growing
+ * rather than as a silently wrong number.
+ */
+type StepBucketLedger = {
+  dayStartMs: number;
+  buckets: { [index: string]: { steps: number; active: number; total: number } };
+};
+
+function ledgerPath(): string {
+  return `${knownFolders.documents().getFolder("health").path}/steps-ledger.json`;
+}
+
+function readLedger(): StepBucketLedger | null {
+  try {
+    if (!File.exists(ledgerPath())) return null;
+    const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as StepBucketLedger;
+    return typeof parsed?.dayStartMs === "number" && parsed.buckets ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLedger(ledger: StepBucketLedger): void {
+  try {
+    File.fromPath(ledgerPath()).writeTextSync(JSON.stringify(ledger));
+  } catch (error) {
+    console.warn("health live: steps ledger write failed", error);
+  }
+}
+
+/** Merge this pull's buckets into the day's ledger and return the full set. */
+function accumulateStepBuckets(
+  dayStartMs: number,
+  delivered: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[],
+): { index: number; steps: number; activeCalories: number; totalCalories: number }[] {
+  const held = readLedger();
+  const ledger: StepBucketLedger =
+    held && held.dayStartMs === dayStartMs ? held : { dayStartMs, buckets: {} };
+  for (const bucket of delivered) {
+    ledger.buckets[String(bucket.index)] = {
+      steps: bucket.steps,
+      active: bucket.activeCalories,
+      total: bucket.totalCalories,
+    };
+  }
+  writeLedger(ledger);
+  const merged = Object.keys(ledger.buckets).map((key) => ({
+    index: Number(key),
+    steps: ledger.buckets[key]!.steps,
+    activeCalories: ledger.buckets[key]!.active,
+    totalCalories: ledger.buckets[key]!.total,
+  }));
+  const sum = merged.reduce((acc, b) => acc + b.steps, 0);
+  console.log(
+    `health live: steps ledger +${delivered.length} delivered -> ${merged.length} buckets held, ${sum} steps today`,
+  );
+  return merged;
+}
+
 function toWire(record: any): WireRecord | null {
   const cmdHi = Number(record.cmdHi);
 
@@ -137,7 +218,11 @@ function toWire(record: any): WireRecord | null {
     // the total onto the wrong date. If the ring's own day genuinely runs on
     // its skewed clock, that is a separate question and needs evidence, not a
     // guess - see the steps bucket-index note in the protocol docs.
-    return { kind: "steps", anchorMs: anchorToMs(Number(record.anchorUnixSeconds), false), buckets };
+    const anchorMs = anchorToMs(Number(record.anchorUnixSeconds), false);
+    if (anchorMs === null) return { kind: "steps", anchorMs: null, buckets };
+    // Hand convertSteps() the whole day, not just this pull's increment.
+    const accumulated = accumulateStepBuckets(startOfLocalDay(anchorMs), buckets);
+    return { kind: "steps", anchorMs, buckets: accumulated };
   }
 
   if (cmdHi === CMD_SLEEP) {
