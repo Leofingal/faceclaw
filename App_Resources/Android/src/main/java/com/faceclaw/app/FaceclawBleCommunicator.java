@@ -126,6 +126,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * delay it - it is actively worse than waste, so this is throttled.
      */
     private long ringHealthLastRequestedAtMs;
+    /**
+     * Set by {@link #requestRingHealthNow()} from whatever thread the UI is on;
+     * cleared by the worker loop, which is the only thread allowed to run the
+     * pull. Guarded by {@code lock}.
+     */
+    private boolean ringHealthPullRequested;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
@@ -1307,6 +1313,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 // here, on the only thread allowed to block on a GATT write.
                 flushRingOutbound();
 
+                // An on-demand pull asked for from the UI thread runs here for
+                // the same reason: requestRingHealth() blocks on GATT writes and
+                // on its own RSP/DATA waits, which only this thread may do.
+                runRequestedRingHealthPull();
+
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
@@ -1932,6 +1943,63 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * from the ring itself - just a sane default.
      */
     private static final long RING_HEALTH_MIN_PULL_INTERVAL_MS = 30L * 60L * 1000L;
+
+    /**
+     * Floor for a pull the user actually asked for by opening the health app,
+     * as opposed to the automatic one above.
+     *
+     * <p>Deliberately much shorter than the automatic interval but <b>not
+     * zero</b>. The 30-minute figure is conservative because an automatic pull
+     * is speculative — nobody is waiting for it, so there is no reason to spend
+     * a request. Opening the health app is the opposite: it is an explicit ask,
+     * and the response-driven {@link #requestRingHealth()} now waits for each
+     * type's DATA and ACKs its pages before advancing, which is what made the
+     * backlog-discard race survivable in the first place. A floor still has to
+     * exist, because the discard risk documented on {@code requestRingHealth()}
+     * is real and open/close/open would otherwise hammer the ring.
+     */
+    private static final long RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS = 60L * 1000L;
+
+    /**
+     * Ask for a health pull as soon as the worker thread can run one. Safe to
+     * call from any thread; returns immediately without blocking.
+     *
+     * <p>Called when the health app opens, so a glance shows something current
+     * rather than whatever the last automatic pull happened to catch. Subject
+     * to {@link #RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS}; a request inside that
+     * window is dropped rather than queued, because a stale duplicate pull has
+     * no value and every pull carries the discard risk.
+     */
+    public void requestRingHealthNow() {
+        synchronized (lock) {
+            ringHealthPullRequested = true;
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /** Worker-thread side of {@link #requestRingHealthNow()}. */
+    private void runRequestedRingHealthPull() {
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            if (!ringHealthPullRequested) {
+                return;
+            }
+            ringHealthPullRequested = false;
+            if (!ringConnected || !ringNotificationsReady) {
+                logLine("ring health: on-demand pull skipped, ring not ready");
+                return;
+            }
+            if (ringHealthLastRequestedAtMs != 0
+                    && now - ringHealthLastRequestedAtMs < RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS) {
+                logLine("ring health: on-demand pull skipped, last one was "
+                    + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago");
+                return;
+            }
+            ringHealthLastRequestedAtMs = now;
+        }
+        logLine("ring health: on-demand pull requested");
+        requestRingHealth();
+    }
 
     /**
      * Device-channel prelude the ring requires before it will answer any

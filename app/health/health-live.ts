@@ -206,3 +206,45 @@ export function syncLiveRecords(): LiveSyncResult {
   );
   return { seen: size, samplesWritten, sleepWritten, skipped };
 }
+
+/**
+ * Ask the ring for a fresh pull now, rather than waiting out the automatic
+ * 30-minute cycle. Returns immediately; the pull itself takes ~15s on the
+ * communicator's worker thread and lands through the next `syncLiveRecords()`.
+ *
+ * Throttled communicator-side to one a minute — see
+ * `requestRingHealthNow()`. Calling it on every open is fine.
+ */
+export function requestFreshPull(): void {
+  const communicator = activeCommunicator();
+  if (!communicator) return;
+  try {
+    communicator.requestRingHealthNow();
+  } catch (error) {
+    console.warn("health live: on-demand pull request failed", error);
+  }
+}
+
+/**
+ * Keep decoded records reaching disk whether or not a surface is open.
+ *
+ * Without this, records live only in the communicator's memory until the
+ * health app or phone page is opened, so a pull that lands while both are
+ * closed is lost if the process restarts first. The store dedupes, so this is
+ * a no-op whenever there is nothing new.
+ *
+ * Called once from `app.ts`. Idempotent.
+ */
+const BACKGROUND_SYNC_INTERVAL_MS = 60 * 1000;
+let backgroundSyncTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startLiveHealthSync(): void {
+  if (backgroundSyncTimer) return;
+  backgroundSyncTimer = setInterval(() => {
+    try {
+      syncLiveRecords();
+    } catch (error) {
+      console.warn("health live: background sync failed", error);
+    }
+  }, BACKGROUND_SYNC_INTERVAL_MS);
+}

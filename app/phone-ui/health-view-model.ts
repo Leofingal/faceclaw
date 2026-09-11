@@ -60,7 +60,7 @@ import {
 } from "../health/health-derive";
 import { stageLabel } from "../health/sleep-stages";
 import { healthStore } from "../health/health-store-files";
-import { syncLiveRecords } from "../health/health-live";
+import { requestFreshPull, syncLiveRecords } from "../health/health-live";
 import { isFixtureData, seedFixturesIfNeeded } from "../health/health-seed";
 import {
   DAY_MS,
@@ -127,6 +127,7 @@ export class HealthViewModel extends Observable {
     // Live data first, so the purge happens before anything renders and
     // seeding is skipped entirely once real records exist. See health-live.ts.
     syncLiveRecords();
+    requestFreshPull();
     seedFixturesIfNeeded();
     refreshFoldTracking();
     this.displayClassValue = displayClass(foldSnapshot());

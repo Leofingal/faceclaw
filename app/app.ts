@@ -8,9 +8,16 @@ import { Application } from '@nativescript/core'
 import { registerShareIntentHandler } from './native/share-intents'
 import { installNativeUserAgent } from './util/http'
 import { resyncSystemAppearance } from './native/system-appearance'
+import { startLiveHealthSync } from './health/health-live'
 
 installNativeUserAgent()
 registerShareIntentHandler()
+
+// Ring health records live only in the communicator's memory until something
+// stores them. Both health surfaces store on open, but a pull that lands while
+// they are closed would be lost if the process restarted first, so this keeps
+// them reaching disk regardless. No-op when there is nothing new.
+startLiveHealthSync()
 
 // Live system dark/light switches while the app is running were confirmed
 // (Chris, both directions, 2026-09-02) to leave the Ghost companion's Terminal

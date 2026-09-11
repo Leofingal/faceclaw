@@ -35,7 +35,7 @@ import {
   type GlanceData,
 } from "../../health/health-glance";
 import { healthStore } from "../../health/health-store-files";
-import { syncLiveRecords } from "../../health/health-live";
+import { requestFreshPull, syncLiveRecords } from "../../health/health-live";
 import { isFixtureData, seedFixturesIfNeeded } from "../../health/health-seed";
 import {
   DAY_MS,
@@ -70,6 +70,10 @@ class HealthLayer implements Layer {
     // nothing does seeding fill the screen, and seeding refuses outright once
     // real data has ever landed.
     syncLiveRecords();
+    // Ask for something current rather than showing whatever the last
+    // automatic 30-minute pull happened to catch. Returns immediately; the
+    // pull takes ~15s and lands via the refresh tick below.
+    requestFreshPull();
     seedFixturesIfNeeded();
     this.reload();
     this.timer = setInterval(() => this.reload(), REFRESH_INTERVAL_MS);
