@@ -9,12 +9,19 @@
  *
  * Three things worth knowing:
  *
- * 1. **It pulls, it does not subscribe.** `getRingHealthRecords()` returns the
- *    communicator's in-memory accumulation for the current process. There is no
- *    push event for health records, so both surfaces call this when they open
- *    and on their existing refresh tick. The store dedupes, so re-reading the
- *    same records is free — see `HealthStore.ingestSamples`, which was written
- *    for exactly this re-read pattern.
+ * 1. **It pulls, it does not subscribe, and it CONSUMES.** There is no push
+ *    event for health records, so both surfaces call this when they open and on
+ *    their existing refresh tick. `takeRingHealthBatch()` hands over what the
+ *    communicator is holding together with a watermark, and once the store
+ *    write has succeeded `clearRingHealthRecordsBelow()` hands that much back
+ *    as consumed. Cut and paste, not copy paste.
+ *
+ *    It used to be a pure copy, and nothing ever cleared the Java-side list, so
+ *    every 60s tick re-processed the whole session's history. Measured
+ *    2026-09-12: `samples-2026-09.jsonl` grew 22,505 -> 28,552 lines in eight
+ *    hours, the buffer climbing 12 -> 24 records and samples-written-per-cycle
+ *    8 -> 14. The store's dedupe kept the DATA right the whole time; it was the
+ *    work and the file that grew without bound.
  *
  * 2. **Fixtures are purged, not just unlabelled, before the first real write.**
  *    `clearFixtureMarker()` only drops the badge; the 45 days of generated
@@ -400,17 +407,41 @@ const EMPTY: LiveSyncResult = { seen: 0, samplesWritten: 0, sleepWritten: 0, ski
  * absent communicator (no glasses process, preview build) is a no-op rather
  * than an error.
  */
+/**
+ * Tell the communicator the snapshot is durably stored and may be dropped.
+ *
+ * Deliberately swallows its own failure: a clear that does not happen costs a
+ * little growth, and there is nothing useful to do about it here. The bias runs
+ * one way throughout - under-clearing is cheap, over-clearing loses data.
+ */
+function consumeUpTo(communicator: any, watermark: number): void {
+  try {
+    const dropped = Number(communicator.clearRingHealthRecordsBelow(watermark));
+    if (dropped > 0) {
+      console.log(`health live: consumed ${dropped} records (watermark ${watermark})`);
+    }
+  } catch (error) {
+    console.warn("health live: could not clear consumed records", error);
+  }
+}
+
 export function syncLiveRecords(): LiveSyncResult {
   const communicator = activeCommunicator();
   if (!communicator) return EMPTY;
 
-  let records: any;
+  let batch: any;
   try {
-    records = communicator.getRingHealthRecords();
+    batch = communicator.takeRingHealthBatch();
   } catch (error) {
     console.warn("health live: could not read ring records", error);
     return EMPTY;
   }
+  if (!batch) return EMPTY;
+  const records = batch.getRecords();
+  // Identifies exactly this snapshot. Anything the ring pushes from here on is
+  // numbered above it and therefore cannot be cleared by this pass - which is
+  // what keeps a page landing mid-ingest from being dropped.
+  const watermark = Number(batch.getWatermark());
   if (!records || !records.size || records.size() === 0) return EMPTY;
 
   const wire: WireRecord[] = [];
@@ -437,6 +468,14 @@ export function syncLiveRecords(): LiveSyncResult {
   const samplesWritten = store.ingestSamples(samples);
   const sleepWritten = store.ingestSleep(sleep);
   if (samplesWritten > 0 || sleepWritten > 0) markLiveData();
+
+  // ONLY here. Both store writes have returned, so the records are durable.
+  // If either threw, or the process died above this line, nothing is cleared
+  // and the same records arrive again next tick - which costs one repeated
+  // ingest (a no-op, the store refuses identical re-writes) instead of losing
+  // a night. Note `samplesWritten === 0` is NOT a failure: it means the store
+  // already held all of it, which is the steady state this change creates.
+  consumeUpTo(communicator, watermark);
 
   console.log(
     `health live: ${size} records -> ${samplesWritten} samples, ${sleepWritten} sleep` +

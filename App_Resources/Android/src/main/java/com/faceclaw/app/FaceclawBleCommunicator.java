@@ -95,6 +95,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
     private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
     /**
+     * Total records ever appended to {@link #ringHealthRecords}, including every
+     * one already consumed or evicted. Never reset.
+     *
+     * <p>This is the identity behind the ingest watermark. Record N is the Nth
+     * ever decoded this session, so a consumer that has durably stored
+     * everything below some N can ask for exactly that much to be dropped
+     * without racing the pages still arriving above it - see
+     * {@link #takeRingHealthBatch()} and
+     * {@link #clearRingHealthRecordsBelow(long)}. A plain "clear the list"
+     * could not do that: a page landing between the read and the clear would be
+     * thrown away having never been ingested. Guarded by {@code lock}.
+     */
+    private long ringHealthTotalAdded;
+    /**
      * The phone-side sequence counter. One counter shared by BOTH ring channels
      * (measured: 78 phone-to-ring writes in the reference capture step by
      * exactly +1 regardless of channel, restarting at 1 on a new connection).
@@ -1599,9 +1613,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         } else {
             synchronized (lock) {
                 if (ringHealthRecords.size() >= RING_HEALTH_MAX_RECORDS) {
+                    // This was silent. An eviction here drops a record that
+                    // nothing has ingested yet - real data lost inside the
+                    // phone, with no trace anywhere. Say so. With the consume
+                    // path in place the buffer should never reach this size;
+                    // if this line ever appears, the consumer has stopped.
+                    logLine("ring health: buffer FULL at " + RING_HEALTH_MAX_RECORDS
+                        + " - dropping the oldest UNINGESTED record");
                     ringHealthRecords.remove(0);
                 }
                 ringHealthRecords.add(record);
+                ringHealthTotalAdded++;
             }
             logLine("ring health " + record.summary());
         }
@@ -2441,7 +2463,84 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return ringNonce;
     }
 
-    /** Snapshot of everything the ring has pushed this session. */
+    /**
+     * A snapshot of the health buffer together with the watermark identifying
+     * it.
+     *
+     * <p>The two have to come out under ONE lock. Reading the list and the
+     * count separately would let a page land in between, and the consumer would
+     * then clear a record nothing had ingested - the exact failure the
+     * watermark exists to prevent.
+     */
+    public static final class RingHealthBatch {
+        private final List<RingProtocol.HealthRecord> records;
+        private final long watermark;
+
+        RingHealthBatch(List<RingProtocol.HealthRecord> records, long watermark) {
+            this.records = records;
+            this.watermark = watermark;
+        }
+
+        public List<RingProtocol.HealthRecord> getRecords() {
+            return records;
+        }
+
+        /** Total-ever-added at the instant of the snapshot. */
+        public long getWatermark() {
+            return watermark;
+        }
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed and not yet been consumed,
+     * with the watermark needed to hand it back as consumed.
+     */
+    public RingHealthBatch takeRingHealthBatch() {
+        synchronized (lock) {
+            return new RingHealthBatch(new ArrayList<>(ringHealthRecords), ringHealthTotalAdded);
+        }
+    }
+
+    /**
+     * Drop every held record whose identity is below {@code watermark} - that
+     * is, everything the caller has durably stored.
+     *
+     * <p>"Cut and paste instead of copy paste. If you didn't receive the pull
+     * then it should not delete yet." Call this ONLY after the store write has
+     * succeeded; a caller that dies before calling it simply sees the same
+     * records again, which is a no-op at the store.
+     *
+     * <p>Records that arrived after the snapshot sit above the watermark and
+     * are left alone, so a page landing during an ingest is never lost. If the
+     * buffer evicted its oldest in the meantime (see
+     * {@link #RING_HEALTH_MAX_RECORDS}) the arithmetic accounts for it via
+     * {@code ringHealthTotalAdded} rather than clearing the wrong end.
+     *
+     * @return how many records were actually removed.
+     */
+    public int clearRingHealthRecordsBelow(long watermark) {
+        synchronized (lock) {
+            long firstHeldIndex = ringHealthTotalAdded - ringHealthRecords.size();
+            long toRemove = watermark - firstHeldIndex;
+            if (toRemove <= 0) {
+                return 0;
+            }
+            if (toRemove > ringHealthRecords.size()) {
+                toRemove = ringHealthRecords.size();
+            }
+            ringHealthRecords.subList(0, (int) toRemove).clear();
+            return (int) toRemove;
+        }
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed this session, WITHOUT
+     * consuming it.
+     *
+     * <p>Kept for callers that only want to look. The ingest path must use
+     * {@link #takeRingHealthBatch()} instead - a pure copy is what let the
+     * buffer grow unbounded and every tick re-process the whole session.
+     */
     public List<RingProtocol.HealthRecord> getRingHealthRecords() {
         synchronized (lock) {
             return new ArrayList<>(ringHealthRecords);
