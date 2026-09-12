@@ -248,7 +248,10 @@ const glanceData = {
   hourly,
   stageBands: lastNight ? hypnogram(lastNight) : [],
   nowMs: NOW,
-  fixture: true,
+  // The badge the glasses footer draws. It must follow the DATA, or a real
+  // render comes out stamped "Sample data" and the preview lies about the one
+  // thing it exists to show.
+  fixture: !real,
 };
 
 // --- PNG out ---------------------------------------------------------------
