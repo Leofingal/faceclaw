@@ -106,6 +106,35 @@ function ringClockOffsetMs(atMs: number): number {
   return new Date(atMs).getTimezoneOffset() * 60 * 1000;
 }
 
+/**
+ * Sleep timestamps need TWICE the correction the hourly samples need.
+ *
+ * ⚠ EMPIRICAL, AND THE MECHANISM IS UNEXPLAINED. Do not read a story into the
+ * factor of 2. The last time this file invented a tidy explanation for a ring
+ * clock quirk ("the ring stores naive local time") it was falsified the next
+ * day, which is why the hourly comment above ends with "the measurement rules".
+ * The same applies here, more so: nothing about a sleep record is known to
+ * differ from an hourly one in how it is stamped, and yet the correction does.
+ *
+ * The evidence, 2026-09-12, the first real sleep record off the hardware:
+ * `start_ts` decodes raw to 10:21:01 EDT. Chris confirmed the true window two
+ * independent ways - he slept "straight through from around 1:30 AM to 9:30 AM",
+ * and separately reported seeing only the first block with "another 4 or so
+ * hours after that". Under -4h the block is 06:21 -> 09:25, which puts the
+ * missing time BEFORE it and contradicts what the device showed. Under -8h it
+ * is 02:21 -> 05:25, leaving 05:25 -> 09:30 (4h05m) missing AFTER it, which is
+ * what he saw.
+ *
+ * Expressed as twice `ringClockOffsetMs` rather than a fresh 28800 so the
+ * November DST change moves the hourly correction and this one together. Like
+ * the hourly path it is evaluated at the RAW instant, so within ~8h of a DST
+ * switch it can pick the wrong side by an hour - the same caveat, deliberately
+ * kept identical rather than special-cased here.
+ */
+function sleepClockOffsetMs(atMs: number): number {
+  return 2 * ringClockOffsetMs(atMs);
+}
+
 function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
   const ms = anchorUnixSeconds * 1000;
@@ -322,10 +351,22 @@ function toWire(record: any): WireRecord | null {
       // the same raw 0-3 ring id, deliberately unresolved here (see sleep-stages.ts).
       segments.push({ stageId: Number(segment.stage), halfMinutes: Number(segment.halfMinutes) });
     }
+    const startTs = Number(record.startTs);
+    const endTs = Number(record.endTs);
+    const correction = sleepClockOffsetMs(startTs * 1000);
+    // The assertion log for the -8h correction. One sleep record a night makes
+    // this cheap, and a wrong clock frame is otherwise invisible until someone
+    // reads a chart and disbelieves it.
+    console.log(
+      `health live: sleep raw ${new Date(startTs * 1000).toString()} -> corrected ` +
+        `${new Date(startTs * 1000 - correction).toString()} .. ` +
+        `${new Date(endTs * 1000 - correction).toString()} (-${correction / 3600000}h)`,
+    );
     return {
       kind: "sleep",
-      startTs: Number(record.startTs),
-      endTs: Number(record.endTs),
+      startTs,
+      endTs,
+      clockCorrectionMs: correction,
       totalSec: Number(record.totalTime),
       wakeSec: Number(record.wakeTime),
       remSec: Number(record.remTime),

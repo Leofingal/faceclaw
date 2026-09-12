@@ -240,6 +240,71 @@ test("a sleep session is stored with its time marked unresolved", () => {
   assert.equal(result.sleep[0].dayStartMs, startOfLocalDay(Date.now()));
 });
 
+// The first real sleep record off the hardware, 2026-09-12, verbatim from
+// `files/health/sleep.jsonl` under com.faceclaw.app. It is here as a FROZEN
+// known-good: the -8h correction was derived from Chris confirming the window
+// two independent ways, and a future change that quietly makes it -4h again
+// (or 0h, which is what shipped first) should fail a test rather than wait to
+// be noticed in a chart.
+const REAL_SLEEP_RECORD = {
+  kind: "sleep",
+  startTs: 1789222861,
+  endTs: 1789233931,
+  totalSec: 10440,
+  wakeSec: 630,
+  remSec: 1620,
+  lightSec: 5880,
+  deepSec: 2940,
+  segments: [
+    { stageId: 0, halfMinutes: 21 },
+    { stageId: 2, halfMinutes: 42 },
+    { stageId: 3, halfMinutes: 36 },
+    { stageId: 2, halfMinutes: 40 },
+    { stageId: 1, halfMinutes: 36 },
+    { stageId: 2, halfMinutes: 42 },
+    { stageId: 3, halfMinutes: 62 },
+    { stageId: 2, halfMinutes: 46 },
+    { stageId: 1, halfMinutes: 18 },
+    { stageId: 2, halfMinutes: 26 },
+  ],
+  receivedAtMs: 1789234000000,
+};
+
+test("a clock correction promotes a sleep session to a real placement", () => {
+  const rawStartMs = REAL_SLEEP_RECORD.startTs * 1000;
+  // Twice the hourly ring-clock offset, computed the way health-live.ts
+  // computes it - so this says what the RULE is rather than restating a
+  // constant that would rot at the November DST change.
+  const correction = 2 * new Date(rawStartMs).getTimezoneOffset() * 60 * 1000;
+
+  const result = convertRecords([{ ...REAL_SLEEP_RECORD, clockCorrectionMs: correction }]);
+  assert.equal(result.sleep.length, 1);
+  const night = result.sleep[0];
+
+  assert.equal(night.timeResolved, true, "a corrected session is placed, not unresolved");
+  assert.equal(night.startMs, rawStartMs - correction);
+  assert.equal(night.endMs, REAL_SLEEP_RECORD.endTs * 1000 - correction);
+  // The wake-up day, not the day it happened to be received on.
+  assert.equal(night.dayStartMs, startOfLocalDay(night.endMs));
+  // The correction must move where the night sits, never how long it was.
+  assert.equal(night.endMs - night.startMs, 11070 * 1000);
+  assert.equal(night.totalSec, 10440);
+});
+
+test("the real 2026-09-12 record decodes to the window Chris confirmed", (t) => {
+  // EDT only: the known-good is a wall-clock reading and the assertion is
+  // meaningless in another zone. Skipped rather than weakened elsewhere.
+  if (new Date(REAL_SLEEP_RECORD.startTs * 1000).getTimezoneOffset() !== 240) {
+    t.skip("not EDT");
+    return;
+  }
+  const result = convertRecords([{ ...REAL_SLEEP_RECORD, clockCorrectionMs: 8 * 3600 * 1000 }]);
+  const night = result.sleep[0];
+  const local = (ms) => new Date(ms).toLocaleString("sv-SE", { timeZone: "America/New_York" });
+  assert.equal(local(night.startMs), "2026-09-12 02:21:01");
+  assert.equal(local(night.endMs), "2026-09-12 05:25:31");
+});
+
 // ---------------------------------------------------------------------------
 // Sleep
 

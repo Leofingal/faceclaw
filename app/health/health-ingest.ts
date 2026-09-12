@@ -13,6 +13,13 @@
  *
  * ## WHERE THE LIVE WIRING GOES - the follow-up, in full
  *
+ * ⚠ HISTORICAL. This section is the plan, and it has since been built:
+ * `health-live.ts` is the caller. One detail of it is now WRONG - the live path
+ * must NOT use `getRingHealthRecords()`, which is a pure copy and left the
+ * Java-side buffer growing forever. It uses `takeRingHealthBatch()` and hands
+ * the records back with `clearRingHealthRecordsBelow()` once the store write
+ * has succeeded. Kept below for the reasoning, not as instructions.
+ *
  * `FaceclawBleCommunicator` already accumulates decoded records into a capped
  * in-memory list with a `getRingHealthRecords()` getter (implement-return,
  * section 2). The bridge already exposes the native object to TypeScript:
@@ -73,7 +80,19 @@ export type WireStepsRecord = {
 /** `RingProtocol.SleepRecord` (`06:01`). */
 export type WireSleepRecord = {
   kind: "sleep";
-  /** Ring-relative seconds - NOT Unix time. See `convertSleep`. */
+  /**
+   * The ring's own `start_ts`/`end_ts`, in seconds.
+   *
+   * These were documented here as "ring-relative seconds - NOT Unix time",
+   * because nothing in the offline capture proved otherwise. The first real
+   * record off the hardware (2026-09-12) falsified that: `start_ts` decodes to
+   * a plain Unix timestamp kept on the RING'S clock, which runs ahead of real
+   * time. `clockCorrectionMs` is how a caller says by how much.
+   *
+   * Left as raw seconds here rather than corrected upstream so a caller with
+   * no correction to offer (an offline capture, a fixture) still gets the old,
+   * honestly-unresolved behaviour instead of a confidently wrong date.
+   */
   startTs: number;
   endTs: number;
   totalSec: number;
@@ -84,6 +103,14 @@ export type WireSleepRecord = {
   segments: readonly SleepSegment[];
   /** Wall-clock ms the record was received; the only real time in it. */
   receivedAtMs: number;
+  /**
+   * How far AHEAD of real wall-clock time `startTs`/`endTs` run, in ms, or
+   * omitted when the caller cannot say. Supplying it is what promotes the
+   * session from `timeResolved: false` to a real placement - see
+   * `convertSleep`. The value itself is the producer's problem, not this
+   * module's: see `sleepClockCorrectionMs` in `health-live.ts`.
+   */
+  clockCorrectionMs?: number;
 };
 
 export type WireRecord = WireHourlyRecord | WireStepsRecord | WireSleepRecord;
@@ -214,34 +241,56 @@ function convertSteps(record: WireStepsRecord, result: ConversionResult): void {
  * fields that might have carried one were not cracked. Even's own app gets
  * this wrong - one exported row is stamped 1979.
  *
- * ⚠ FLAGGED GUESS. The session is attributed to the local day it was RECEIVED
- * on, and `timeResolved` is set false to say so. That is a guess, and it is
- * made rather than avoided because "last night's sleep" is half of what the
- * glasses glance is for, and a record with no day at all cannot appear there.
- * It is right whenever the ring is synced the same day it is worn, which is
- * the normal case, and wrong for a backlog session pulled days later - which
- * is why the UI never prints a date for an unresolved session, only "last
- * night", and shows the unresolved marker.
+ * RESOLVED, 2026-09-12, by the first real record off the hardware rather than
+ * by cracking `pay[3:9]`: `start_ts` is already a Unix timestamp, just kept on
+ * the ring's own clock. A caller that knows how far that clock runs ahead
+ * passes `clockCorrectionMs` and gets a genuinely placed session.
  *
- * The clean fix is upstream: decode `pay[3:9]` or `pay[9:13]`, one of which
- * the decode expects carries the session date. Then set `timeResolved` true
- * and take the day from there.
+ * ⚠ THE OLD FLAGGED GUESS SURVIVES for callers that do NOT pass it (offline
+ * captures, fixtures): the session is attributed to the local day it was
+ * RECEIVED on and `timeResolved` is false to say so. That guess is made rather
+ * than avoided because "last night's sleep" is half of what the glasses glance
+ * is for, and a record with no day at all cannot appear there. It is right
+ * whenever the ring is synced the same day it is worn and wrong for a backlog
+ * session pulled days later - which is why the UI never prints a date for an
+ * unresolved session, only "last night", and shows the unresolved marker.
  */
 function convertSleep(record: WireSleepRecord, result: ConversionResult): void {
   const durationSec = Math.max(0, record.endTs - record.startTs);
-  result.sleep.push({
-    dayStartMs: startOfLocalDay(record.receivedAtMs),
-    // Relative seconds are kept as-is so the pair still describes the night's
-    // length and ordering; `timeResolved` is what says not to read them as
-    // wall-clock time.
-    startMs: record.startTs * 1000,
-    endMs: (record.startTs + durationSec) * 1000,
+  const common = {
     totalSec: record.totalSec,
     wakeSec: record.wakeSec,
     remSec: record.remSec,
     lightSec: record.lightSec,
     deepSec: record.deepSec,
     segments: record.segments,
+  };
+
+  if (typeof record.clockCorrectionMs === "number") {
+    const startMs = record.startTs * 1000 - record.clockCorrectionMs;
+    const endMs = (record.startTs + durationSec) * 1000 - record.clockCorrectionMs;
+    result.sleep.push({
+      // The WAKE-UP day, which is what `dailySummary` looks a night up by, and
+      // what the old receivedAtMs guess was approximating. Taken from the end
+      // of the session so a night that starts before midnight still belongs to
+      // the morning it ends on.
+      dayStartMs: startOfLocalDay(endMs),
+      startMs,
+      endMs,
+      ...common,
+      timeResolved: true,
+    });
+    return;
+  }
+
+  result.sleep.push({
+    dayStartMs: startOfLocalDay(record.receivedAtMs),
+    // Raw seconds are kept as-is so the pair still describes the night's
+    // length and ordering; `timeResolved` is what says not to read them as
+    // wall-clock time.
+    startMs: record.startTs * 1000,
+    endMs: (record.startTs + durationSec) * 1000,
+    ...common,
     timeResolved: false,
   });
 }
