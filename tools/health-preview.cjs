@@ -41,7 +41,23 @@
  * ## Use
  *
  *     npx tsc -p tests/tsconfig.json      # or: npm test
- *     node tools/health-preview.cjs [--out DIR] [--big]
+ *     node tools/health-preview.cjs [--out DIR] [--big] [--real DIR]
+ *
+ * ## --real: the same surfaces, on data pulled off the phone
+ *
+ * `--real DIR` reads a `sleep.jsonl` (and, if present, a `samples-*.jsonl`)
+ * copied out of `files/health/` under `com.faceclaw.app` and renders the sleep
+ * surfaces from THAT instead of from fixtures. Nothing about the drawing
+ * changes - it is the same `drawGlancePage` and `renderPhoneChart` - so the
+ * question it answers is only ever "what does the real data look like in the
+ * layout we already have", never "should the layout be different".
+ *
+ * A stored session written by a pre-correction build carries
+ * `timeResolved: false` and RAW ring seconds. Those are run back through the
+ * shipping `convertRecords()` with the real clock correction, so the preview
+ * shows what the phone will store after the fix rather than a hand-placed
+ * guess. A session already marked resolved is used as-is and not corrected
+ * twice.
  */
 
 const fs = require("node:fs");
@@ -87,6 +103,8 @@ const {
   formatDuration,
 } = require(path.join(BUILD, "health/health-derive.js"));
 const { drawGlancePage, GLANCE_PAGES } = require(path.join(BUILD, "health/health-glance.js"));
+const { convertRecords } = require(path.join(BUILD, "health/health-ingest.js"));
+const { HealthStore } = require(path.join(BUILD, "health/health-store.js"));
 const { renderPhoneChart } = require(path.join(BUILD, "health/health-phone-chart.js"));
 const { stageLabel } = require(path.join(BUILD, "health/sleep-stages.js"));
 const { DAY_MS, SAMPLE_METRICS, startOfLocalDay } = require(path.join(BUILD, "health/health-types.js"));
@@ -95,6 +113,8 @@ const UPNG = require("upng-js");
 // --- arguments -------------------------------------------------------------
 const args = process.argv.slice(2);
 const big = args.includes("--big");
+const realIndex = args.indexOf("--real");
+const REAL_DIR = realIndex >= 0 && args[realIndex + 1] ? path.resolve(args[realIndex + 1]) : null;
 const outIndex = args.indexOf("--out");
 const OUT = path.resolve(
   outIndex >= 0 && args[outIndex + 1] ? args[outIndex + 1] : path.join(ROOT, "preview"),
@@ -105,12 +125,107 @@ const small = getFont(big ? "terminus16" : "terminus12");
 const large = getFont(big ? "terminus32" : "terminus24");
 const fonts = { small, large };
 
+// --- real data, when asked for ---------------------------------------------
+/**
+ * `HealthStorageBackend` over a plain directory.
+ *
+ * Reading the pulled files THROUGH the real store, rather than parsing them
+ * here, is the same rule the rest of this tool follows. The on-disk sample line
+ * is a compact seven-key shape (`{m,t,s,n,x,a,u}`) that only `health-store.ts`
+ * knows how to read; a hand-rolled parser for it in a preview script is exactly
+ * the kind of second implementation that drifts. Read-only - `append`/`write`
+ * throw rather than quietly doing nothing, so a preview can never mutate a
+ * pulled copy of real data.
+ */
+class DirBackend {
+  constructor(dir) {
+    this.dir = dir;
+  }
+  exists(name) {
+    return fs.existsSync(path.join(this.dir, name));
+  }
+  read(name) {
+    return this.exists(name) ? fs.readFileSync(path.join(this.dir, name), "utf8") : null;
+  }
+  append() {
+    throw new Error("health-preview is read-only");
+  }
+  write() {
+    throw new Error("health-preview is read-only");
+  }
+  list() {
+    return fs.readdirSync(this.dir);
+  }
+}
+
+/**
+ * Put a stored session in the frame the corrected build will store it in.
+ *
+ * The correction is NOT applied here by hand - the record is turned back into
+ * the wire shape and pushed through the real `convertRecords()`, so if that
+ * function is wrong the preview is wrong in exactly the same way the phone is,
+ * which is the only useful behaviour for a check like this.
+ */
+function resolveStoredSleep(stored) {
+  if (stored.timeResolved) return stored;
+  const startTs = Math.round(stored.startMs / 1000);
+  const endTs = Math.round(stored.endMs / 1000);
+  const correction = 2 * new Date(stored.startMs).getTimezoneOffset() * 60 * 1000;
+  const { sleep } = convertRecords([
+    {
+      kind: "sleep",
+      startTs,
+      endTs,
+      totalSec: stored.totalSec,
+      wakeSec: stored.wakeSec,
+      remSec: stored.remSec,
+      lightSec: stored.lightSec,
+      deepSec: stored.deepSec,
+      segments: stored.segments,
+      receivedAtMs: stored.startMs,
+      clockCorrectionMs: correction,
+    },
+  ]);
+  return sleep[0];
+}
+
+function loadReal(dir) {
+  const store = new HealthStore(new DirBackend(dir));
+  const sleep = store.sleepSessions().map(resolveStoredSleep);
+  if (sleep.length === 0) {
+    console.error(`No sleep sessions in ${dir}/sleep.jsonl`);
+    process.exit(1);
+  }
+  // Pin the clock to mid-afternoon of the most recent night's WAKE-UP day, so
+  // "today" is the day that night belongs to and the glance reads like a real
+  // one rather than an empty day.
+  const latest = sleep.reduce((a, b) => (b.dayStartMs > a.dayStartMs ? b : a));
+  const nowMs = latest.dayStartMs + 15 * 3600 * 1000 + 20 * 60 * 1000;
+  // A bounded window, not (0, MAX): samplesInRange walks a shard per MONTH, so
+  // an open range asks it to name a few million files and it returns nothing.
+  // A quarter back covers every view this tool renders.
+  const samples = store.samplesInRange(nowMs - 120 * DAY_MS, nowMs + DAY_MS);
+  console.log(`real data: ${sleep.length} sleep session(s), ${samples.length} samples`);
+  for (const night of sleep) {
+    console.log(
+      `  night ${new Date(night.startMs).toString()}\n` +
+        `     -> ${new Date(night.endMs).toString()}` +
+        `  total ${night.totalSec}s wake ${night.wakeSec}s` +
+        `  timeResolved=${night.timeResolved}`,
+    );
+  }
+  return { samples, sleep, nowMs };
+}
+
 // --- data ------------------------------------------------------------------
 // A fixed clock so a preview is reproducible and its date caption is stable.
 // Mid-afternoon, so "today so far" is a partial day like a real glance.
-const NOW = new Date(2026, 8, 10, 15, 20, 0).getTime();
+const real = REAL_DIR ? loadReal(REAL_DIR) : null;
+const NOW = real ? real.nowMs : new Date(2026, 8, 10, 15, 20, 0).getTime();
 const TODAY = startOfLocalDay(NOW);
-const fixtures = buildFixtures({ days: 95, nowMs: NOW, seed: 0x5eed });
+const fixtures = real
+  ? { samples: real.samples, sleep: real.sleep }
+  : buildFixtures({ days: 95, nowMs: NOW, seed: 0x5eed });
 
 const todaySamples = fixtures.samples.filter(
   (sample) => sample.startMs >= TODAY && sample.startMs < TODAY + DAY_MS,
@@ -149,7 +264,7 @@ function writePng(name, image) {
     rgba[i * 4 + 2] = value;
     rgba[i * 4 + 3] = 255;
   }
-  const file = path.join(OUT, `${name}${big ? "-big" : ""}.png`);
+  const file = path.join(OUT, `${REAL_DIR ? "real-" : ""}${name}${big ? "-big" : ""}.png`);
   fs.writeFileSync(file, Buffer.from(UPNG.encode([rgba.buffer], baked.width, baked.height, 0)));
 
   // A blank canvas would otherwise be a silent pass, and a page that drew
