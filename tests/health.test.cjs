@@ -34,7 +34,12 @@ const {
   STAGE_MAPPING_CONFIRMED,
   stageNameForId,
 } = require("../.test-build/app/health/sleep-stages.js");
-const { startOfLocalDay, DAY_MS, HOUR_MS } = require("../.test-build/app/health/health-types.js");
+const {
+  startOfLocalDay,
+  DAY_MS,
+  HOUR_MS,
+  TEN_MINUTES_MS,
+} = require("../.test-build/app/health/health-types.js");
 
 /** An in-memory backend that also records how each file was touched. */
 function memoryBackend() {
@@ -175,7 +180,11 @@ test("an anchored hourly page dates each group from the anchor", () => {
   assert.equal(result.samples[1].startMs, anchor + 5 * HOUR_MS);
 });
 
-test("steps store the proven daily total and refuse to place the buckets", () => {
+// The index is cracked (2026-09-12): bucket i starts at anchor + i * 10 minutes.
+// This test previously asserted the opposite - one day-span total, buckets
+// deliberately discarded - which was the honest call while the index was only
+// trusted as an identity. It is now the placement contract.
+test("steps place each bucket at anchor + index * ten minutes", () => {
   const anchor = startOfLocalDay(Date.now());
   const result = convertRecords([
     {
@@ -183,16 +192,32 @@ test("steps store the proven daily total and refuse to place the buckets", () =>
       anchorMs: anchor,
       buckets: [
         { index: 0, steps: 100, activeCalories: 4, totalCalories: 15 },
-        // The 130+ jump the decode found and did not crack.
         { index: 130, steps: 260, activeCalories: 9, totalCalories: 21 },
       ],
     },
   ]);
   const steps = result.samples.filter((entry) => entry.metric === "steps");
-  assert.equal(steps.length, 1, "one day-resolution total, not two buckets");
-  assert.equal(steps[0].total, 360);
-  assert.equal(steps[0].spanMs, DAY_MS);
-  assert.ok(result.skipped.some((entry) => /bucket index/.test(entry.why)));
+  assert.equal(steps.length, 2, "one sample per bucket, not one day total");
+  assert.equal(steps[0].startMs, anchor);
+  assert.equal(steps[0].total, 100);
+  assert.equal(steps[0].spanMs, TEN_MINUTES_MS);
+  assert.equal(steps[1].startMs, anchor + 130 * TEN_MINUTES_MS);
+  assert.equal(steps[1].total, 260);
+
+  // The day total is now `sum` and ONLY `sum` - `max`/`avg` are per-bucket.
+  // Every reader was checked against this on 2026-09-12.
+  assert.equal(
+    steps.reduce((acc, entry) => acc + entry.total, 0),
+    360,
+  );
+
+  const calories = result.samples.filter((entry) => entry.metric === "calories");
+  assert.equal(calories.length, 2);
+  assert.equal(calories[1].startMs, anchor + 130 * TEN_MINUTES_MS);
+  assert.equal(calories[1].total, 21);
+
+  // Nothing is declined any more - the buckets are placed, not discarded.
+  assert.equal(result.skipped.length, 0);
 });
 
 test("a sleep session is stored with its time marked unresolved", () => {

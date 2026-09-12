@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
@@ -2020,9 +2021,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * verbatim, not derived. Do not change them without new evidence.
      *
      * <p>The other two (00:0E clock-set, 00:05 day-anchor) need a live
-     * value: both carry the current Unix time offset by +14400s (4h), which
-     * is what a real Even write carries. Verified 2026-09-11 against six
-     * separate real Even clock-set writes.
+     * value: both carry the current Unix time offset by the local UTC offset,
+     * which in EDT is +14400s (4h) - and +14400s is what a real Even write
+     * carries. Verified 2026-09-11 against six separate real Even clock-set
+     * writes. As of 2026-09-12 the offset is COMPUTED from the device time
+     * zone rather than hardcoded, which is identical in EDT and stays correct
+     * across a DST change; see the comment in {@code sendRingHandshake()}.
      *
      * <p><b>Skew trap - read before "correcting" this number.</b> Earlier on
      * 2026-09-11 this was changed to +28800s (8h) and that was wrong. The
@@ -2064,7 +2068,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * not).
      */
     private void sendRingHandshake() {
-        long liveClockSeconds = (System.currentTimeMillis() / 1000L) + 14400L; // +4h, see the skew trap above
+        // +14400s was hardcoded here because every capture behind this work was
+        // taken in EDT, where 14400s happens to be the magnitude of the UTC
+        // offset - so the constant was right by coincidence of season, not by
+        // derivation, and would have gone an hour wrong at the next DST change.
+        // This computes it instead: identical in EDT, correct year-round.
+        //
+        // ⚠ MIND THE SIGN. The ring's clock runs AHEAD of real time by the
+        // magnitude of a west-of-UTC offset, so the quantity wanted here is
+        // NEGATIVE `TimeZone.getOffset()`, which is itself negative west of UTC
+        // (-14400000ms in EDT). Getting this backwards sets the ring's clock 8h
+        // wrong rather than 0h wrong. Measured 2026-09-12: the un-negated form
+        // logged -14400 and the ring then returned step buckets dated 8h out.
+        //
+        // Note this is the OPPOSITE of the "ring stores naive local time"
+        // hypothesis, which predicts `epoch + utc_offset` = epoch - 14400. The
+        // measured, working value is epoch + 14400. The hypothesis is therefore
+        // NOT confirmed by this code; what is preserved here is the behaviour
+        // verified against six real Even clock-set writes.
+        //
+        // ⚠ PAIRED with `ringClockOffsetMs()` in `app/health/health-live.ts`,
+        // which subtracts the same quantity on the way back out. These two must
+        // move together; both now compute the value rather than hardcoding EDT.
+        long nowMs = System.currentTimeMillis();
+        long clockOffsetSeconds = -TimeZone.getDefault().getOffset(nowMs) / 1000L;
+        long liveClockSeconds = (nowMs / 1000L) + clockOffsetSeconds;
+        // Asserted at every handshake: in EDT this must read 14400. The clock write
+        // is the part of this protocol that took two sessions to get working, so a
+        // changed value here is the one way a working pull silently breaks.
+        Log.i(TAG, "ring handshake clock offset seconds = " + clockOffsetSeconds
+                + " (tz " + TimeZone.getDefault().getID() + ")");
         byte[] clock = le32(liveClockSeconds);
 
         int seq1, nonce1, seq2, nonce2, seq3, nonce3, seq4, nonce4, seq5, nonce5, seq6, nonce6, seq7, nonce7;

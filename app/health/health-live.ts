@@ -80,17 +80,36 @@ function activeCommunicator(): any {
  * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
  * is exactly right for a ring that had just reported the current hour.
  *
- * ⚠ This constant is PAIRED with the offset in `sendRingHandshake()`. They
- * must move together. Both are hardcoded to EDT, which is a pre-existing quirk
- * of the protocol work, not something introduced here — it will need revisiting
- * at the next DST change.
+ * ⚠ This value is PAIRED with the offset in `sendRingHandshake()`. They must
+ * move together.
+ *
+ * Both were hardcoded to 14400. As of 2026-09-12 both COMPUTE it: 14400 was
+ * only ever right because every capture behind this work was taken in EDT,
+ * where 14400s is the magnitude of the UTC offset. Computing it is identical
+ * today and survives DST.
+ *
+ * ⚠ MIND THE SIGN. The quantity is "how far AHEAD of real time the ring's clock
+ * runs", which is the magnitude of a west-of-UTC offset — positive 14400 in
+ * EDT. `getTimezoneOffset()` is already minutes WEST of UTC (+240 in EDT), so
+ * it is used as-is, NOT negated. Java's `TimeZone.getOffset()` uses the
+ * opposite convention and is negated there; the two agree on +14400.
+ *
+ * Worth recording because the first cut of this change got the sign backwards
+ * on both sides at once — consistently, so they stayed "paired", and still
+ * wrong by 8 hours. Only the handshake's own assertion log caught it.
+ *
+ * Note this direction is the OPPOSITE of the "ring stores naive local time"
+ * hypothesis (which predicts `epoch + utc_offset`, i.e. 4h behind). Measured
+ * behaviour is 4h ahead. The hypothesis is unconfirmed; the measurement rules.
  */
-const RING_CLOCK_OFFSET_MS = 14400 * 1000;
+function ringClockOffsetMs(atMs: number): number {
+  return new Date(atMs).getTimezoneOffset() * 60 * 1000;
+}
 
 function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
   const ms = anchorUnixSeconds * 1000;
-  return applyClockOffset ? ms - RING_CLOCK_OFFSET_MS : ms;
+  return applyClockOffset ? ms - ringClockOffsetMs(ms) : ms;
 }
 
 /**
@@ -109,18 +128,44 @@ function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): numbe
  * last pull" and lurches downward. So this keeps the day's buckets and hands
  * `convertSteps()` the accumulated set, leaving that function pure.
  *
- * **Merge is overwrite-by-index, not addition.** A bucket is a time window's
- * own total, so a window redelivered later carries a larger value, not an
- * increment to add — addition would double-count every open window. The index
- * is still uncracked as a *time*, but it works as an *identity*, which is all
- * a merge needs. Every merge is logged, so if the ring turns out to send
- * per-bucket deltas after all, that shows up as a total that stops growing
- * rather than as a silently wrong number.
+ * **Merge is max-by-index, not addition and not last-write-wins.** A bucket is
+ * a time window's own total, so a window redelivered later carries a larger
+ * value, not an increment to add — addition would double-count every open
+ * window. Taking the max rather than the last value makes the merge
+ * ORDER-INDEPENDENT, which matters because a single sync pass merges several
+ * records that overlap: measured 2026-09-12, four steps records in one pass
+ * agreed on every bucket's step count but disagreed on its calorie fields, so
+ * last-write-wins made the day's calorie total ping-pong 643 ↔ 671 forever,
+ * appending two lines to the sample shard every cycle. Max is consistent with
+ * the documented model (a window's total only grows as it fills) and settles.
+ *
+ * **The ledger holds MANY days, not one.** It used to hold exactly one, and
+ * kept it only while the incoming day matched — so the moment a record from
+ * another ring-day arrived, the whole accumulated day was discarded and
+ * rebuilt from that one pull. With `syncLiveRecords()` re-processing the
+ * communicator's entire record history every 60s, that produced a repeating
+ * cycle of partial sums, each written to the store as a genuine day total
+ * (measured: a 12-state cycle, repeated 132 times, 22k lines in a day).
+ * Holding every day makes the replay idempotent instead of destructive — and
+ * no theory about WHY records replay is needed for that to hold.
+ *
+ * The day key is `startOfLocalDay(corrected anchor)`, which is the ring's own
+ * day start, not calendar midnight — the ring's day begins at 20:00 local
+ * because its clock runs 4h fast. That is fine: the key is an identity, and
+ * the per-bucket timestamps carry the real wall-clock placement.
  */
+type StepDayBuckets = { [index: string]: { steps: number; active: number; total: number } };
+
 type StepBucketLedger = {
-  dayStartMs: number;
-  buckets: { [index: string]: { steps: number; active: number; total: number } };
+  /** `dayStartMs` (as a string key) -> that day's buckets. */
+  days: { [dayStartMs: string]: StepDayBuckets };
 };
+
+/** The pre-2026-09-12 single-day shape, migrated on read rather than dropped. */
+type LegacyStepBucketLedger = { dayStartMs: number; buckets: StepDayBuckets };
+
+/** How many ring-days to keep. Enough for a weekly chart, bounded on disk. */
+const LEDGER_DAYS_KEPT = 7;
 
 function ledgerPath(): string {
   return `${knownFolders.documents().getFolder("health").path}/steps-ledger.json`;
@@ -129,11 +174,26 @@ function ledgerPath(): string {
 function readLedger(): StepBucketLedger | null {
   try {
     if (!File.exists(ledgerPath())) return null;
-    const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as StepBucketLedger;
-    return typeof parsed?.dayStartMs === "number" && parsed.buckets ? parsed : null;
+    const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as
+      | StepBucketLedger
+      | LegacyStepBucketLedger;
+    if (parsed && (parsed as StepBucketLedger).days) return parsed as StepBucketLedger;
+    // Migrate the single-day shape in place rather than discarding it: the file
+    // on Chris's phone holds real step data that the ring may not re-deliver.
+    const legacy = parsed as LegacyStepBucketLedger;
+    if (typeof legacy?.dayStartMs === "number" && legacy.buckets) {
+      return { days: { [String(legacy.dayStartMs)]: legacy.buckets } };
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+/** Keep the ledger bounded. Newest `LEDGER_DAYS_KEPT` days survive. */
+function pruneLedger(ledger: StepBucketLedger): void {
+  const keys = Object.keys(ledger.days).sort((a, b) => Number(b) - Number(a));
+  for (const key of keys.slice(LEDGER_DAYS_KEPT)) delete ledger.days[key];
 }
 
 function writeLedger(ledger: StepBucketLedger): void {
@@ -144,31 +204,38 @@ function writeLedger(ledger: StepBucketLedger): void {
   }
 }
 
-/** Merge this pull's buckets into the day's ledger and return the full set. */
+/** Merge this pull's buckets into that ring-day's ledger and return its full set. */
 function accumulateStepBuckets(
   dayStartMs: number,
   delivered: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[],
 ): { index: number; steps: number; activeCalories: number; totalCalories: number }[] {
-  const held = readLedger();
-  const ledger: StepBucketLedger =
-    held && held.dayStartMs === dayStartMs ? held : { dayStartMs, buckets: {} };
+  const ledger: StepBucketLedger = readLedger() ?? { days: {} };
+  const dayKey = String(dayStartMs);
+  const day: StepDayBuckets = ledger.days[dayKey] ?? {};
+  ledger.days[dayKey] = day;
   for (const bucket of delivered) {
-    ledger.buckets[String(bucket.index)] = {
-      steps: bucket.steps,
-      active: bucket.activeCalories,
-      total: bucket.totalCalories,
+    const existing = day[String(bucket.index)];
+    // Max, not overwrite — see the type's header. Keeps the merge order-independent.
+    day[String(bucket.index)] = {
+      steps: Math.max(existing?.steps ?? 0, bucket.steps),
+      active: Math.max(existing?.active ?? 0, bucket.activeCalories),
+      total: Math.max(existing?.total ?? 0, bucket.totalCalories),
     };
   }
+  pruneLedger(ledger);
   writeLedger(ledger);
-  const merged = Object.keys(ledger.buckets).map((key) => ({
+  const merged = Object.keys(day).map((key) => ({
     index: Number(key),
-    steps: ledger.buckets[key]!.steps,
-    activeCalories: ledger.buckets[key]!.active,
-    totalCalories: ledger.buckets[key]!.total,
+    steps: day[key]!.steps,
+    activeCalories: day[key]!.active,
+    totalCalories: day[key]!.total,
   }));
-  const sum = merged.reduce((acc, b) => acc + b.steps, 0);
+  const steps = merged.reduce((acc, b) => acc + b.steps, 0);
+  const calories = merged.reduce((acc, b) => acc + b.totalCalories, 0);
   console.log(
-    `health live: steps ledger +${delivered.length} delivered -> ${merged.length} buckets held, ${sum} steps today`,
+    `health live: steps ledger +${delivered.length} delivered -> ${merged.length} buckets held ` +
+      `for ring-day ${new Date(dayStartMs).toISOString()}, ${steps} steps / ${calories} cal, ` +
+      `${Object.keys(ledger.days).length} days in ledger`,
   );
   return merged;
 }
@@ -210,15 +277,27 @@ function toWire(record: any): WireRecord | null {
         totalCalories: Number(bucket.calorieLike3),
       });
     }
-    // NOT offset-corrected, deliberately. convertSteps() floors this to the
-    // local day, which absorbs the 4h shift and lands on the right date -
-    // verified against the live store, where the steps day anchor read as
-    // midnight today while every hourly sample was 4h out. Subtracting here
-    // would push the day boundary back to 8pm the previous evening and move
-    // the total onto the wrong date. If the ring's own day genuinely runs on
-    // its skewed clock, that is a separate question and needs evidence, not a
-    // guess - see the steps bucket-index note in the protocol docs.
-    const anchorMs = anchorToMs(Number(record.anchorUnixSeconds), false);
+    // Offset-corrected like every other record type, as of 2026-09-12.
+    //
+    // This used to pass `false`, and the reasoning was that flooring the raw
+    // anchor to the local day "absorbed" the 4h shift and landed on the right
+    // date, where subtracting would push the day boundary back to 20:00 the
+    // previous evening. That was solving the wrong problem. The anchor was
+    // being asked to carry the DATE LABEL for a single day-blob sample, so it
+    // had to be bent until the label came out right.
+    //
+    // With the bucket index cracked (bucket i starts at anchor + i*10min), the
+    // anchor no longer carries a date at all — it is the true start instant of
+    // bucket 0, and each bucket now dates itself. So the anchor must simply be
+    // correct, and correct means offset-corrected: measured 2026-09-12 00:36,
+    // the raw anchor read 00:00 today while the record's own 25 buckets place
+    // the series start at 20:00 the previous evening, which is exactly the 4h.
+    //
+    // The ring's day really does begin at 20:00 local, because its clock runs
+    // 4h fast and its day starts at ITS midnight. A ring-day therefore straddles
+    // two calendar days, and the buckets land on whichever real day they fall
+    // in — which is the point.
+    const anchorMs = anchorToMs(Number(record.anchorUnixSeconds), true);
     if (anchorMs === null) return { kind: "steps", anchorMs: null, buckets };
     // Hand convertSteps() the whole day, not just this pull's increment.
     const accumulated = accumulateStepBuckets(startOfLocalDay(anchorMs), buckets);

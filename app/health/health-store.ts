@@ -134,6 +134,24 @@ export class HealthStore {
    * is already held is a no-op on disk, which matters because the live poller
    * re-requests the current hour every 30 minutes and would otherwise append a
    * duplicate line each time.
+   *
+   * ## This no-op is real, and it is the ONLY place it needs to be
+   *
+   * Re-checked 2026-09-12 while chasing a shard that reached 22k lines in a
+   * day. The suspicion was that identical re-writes were being appended; they
+   * were not. `sameSample` below compares every stored field, `spanMs` is part
+   * of the key, and an unchanged sample never reaches `append`.
+   *
+   * What was actually appending was a genuinely CHANGING value: the steps
+   * ledger merged overlapping records with last-write-wins, and those records
+   * disagreed about each bucket's calorie fields, so one day's calorie total
+   * ping-ponged 643 <-> 671 and wrote two new lines every sync cycle. An
+   * append-only store recording a value that really does flip-flop is correct
+   * behaviour; the fix belonged upstream, in `health-live.ts`' merge, and is
+   * there now (max-by-index, order-independent).
+   *
+   * So: do NOT add a second dedupe layer at a caller or in the file backend.
+   * If the shard grows again, the value is changing and the question is why.
    */
   ingestSamples(samples: readonly HealthSample[]): number {
     const byShard = new Map<string, HealthSample[]>();

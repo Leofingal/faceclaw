@@ -40,8 +40,8 @@
  */
 
 import {
-  DAY_MS,
   HOUR_MS,
+  TEN_MINUTES_MS,
   type HealthSample,
   type SleepSession,
   type SleepSegment,
@@ -141,64 +141,67 @@ function convertHourly(record: WireHourlyRecord, result: ConversionResult): void
 }
 
 /**
- * Steps and calories, at DAY resolution - which is all the wire honestly
- * supports today.
+ * Steps and calories, at TEN-MINUTE resolution.
  *
- * The decode proved the record's per-bucket step values sum to exactly the
- * day's real total (it matched the export's total for the capture day, and
- * that total was unique across the whole 34-day export). What it explicitly
- * did NOT crack is which wall-clock window each bucket covers: the bucket
- * index runs 0-34 and then jumps to 130-132, the distribution does not line up
- * with the export's ten-minute rows at any base time or bucket width tried,
- * and the note is emphatic that the index is not a plain counter.
+ * ## The index is cracked (2026-09-12)
  *
- * So the proven quantity - the daily total - is what gets stored, as one
- * day-span sample. Per-bucket detail is deliberately discarded rather than
- * spread evenly across the day, which would produce an hour-by-hour step chart
- * that looks real and is fiction.
+ * This used to emit one day-span sample holding the day's total, because the
+ * bucket index was only trusted as an identity, not as a time. It now resolves:
+ * **bucket `i` starts at `anchor + i * 10 minutes`**, with the anchor read
+ * offset-corrected like every other record type.
  *
- * WHEN THE INDEX IS CRACKED this is the only function that changes: emit
- * ten-minute samples with `startMs` from the resolved index and everything
- * downstream - store, rollups, both charts - already handles them, because the
- * fixtures exercise exactly that shape today.
+ * Confirmed twice. The decisive check: a live ledger held 25 contiguous buckets
+ * (1-25) under a corrected anchor of 20:00, while the file's mtime was 00:18
+ * local - and `20:00 + 25 * 10min` is 00:10-00:20, which is the window that was
+ * actually being filled. The older "index runs 0-34 then jumps to 130-132"
+ * observation came from an offline capture spanning more than one ring-day;
+ * indices are per-record and contiguous within one.
+ *
+ * ## What this changes downstream
+ *
+ * The day total is no longer readable off any field of a day's rollup - it is
+ * `sum`, and only `sum`, because `count` is now ~144 rather than 1. Checked on
+ * 2026-09-12: every steps/calories reader already uses the summing path
+ * (`dailySummary` -> `sumOf` -> `sample.total`; `rollupSeries` -> `rollupOf` ->
+ * `sum`; the phone view model's steps branch reads `point.sum`), so nothing had
+ * to change for this. Do not add a reader that takes `max` or `avg` for a step
+ * total.
+ *
+ * A ring-day starts at 20:00 local (the ring's clock runs 4h fast, so its
+ * midnight is our 20:00), which means one record's buckets straddle two
+ * calendar days. That is correct and is the reason the day figure moves when
+ * this lands: the evening buckets stop being filed under tomorrow.
  */
 function convertSteps(record: WireStepsRecord, result: ConversionResult): void {
   if (record.anchorMs === null) {
     result.skipped.push({
       what: `steps page, ${record.buckets.length} buckets`,
-      why: "no day anchor - cannot date the total",
+      why: "no anchor - cannot date the buckets",
     });
     return;
   }
-  let steps = 0;
-  let calories = 0;
+  const anchorMs = record.anchorMs;
   for (const bucket of record.buckets) {
-    steps += bucket.steps;
-    calories += bucket.totalCalories;
+    const startMs = anchorMs + bucket.index * TEN_MINUTES_MS;
+    result.samples.push({
+      metric: "steps",
+      startMs,
+      spanMs: TEN_MINUTES_MS,
+      min: bucket.steps,
+      max: bucket.steps,
+      avg: bucket.steps,
+      total: bucket.steps,
+    });
+    result.samples.push({
+      metric: "calories",
+      startMs,
+      spanMs: TEN_MINUTES_MS,
+      min: bucket.totalCalories,
+      max: bucket.totalCalories,
+      avg: bucket.totalCalories,
+      total: bucket.totalCalories,
+    });
   }
-  const dayStart = startOfLocalDay(record.anchorMs);
-  result.samples.push({
-    metric: "steps",
-    startMs: dayStart,
-    spanMs: DAY_MS,
-    min: steps,
-    max: steps,
-    avg: steps,
-    total: steps,
-  });
-  result.samples.push({
-    metric: "calories",
-    startMs: dayStart,
-    spanMs: DAY_MS,
-    min: calories,
-    max: calories,
-    avg: calories,
-    total: calories,
-  });
-  result.skipped.push({
-    what: `${record.buckets.length} step buckets`,
-    why: "bucket index -> wall clock is not decoded; only the daily total is proven",
-  });
 }
 
 /**
