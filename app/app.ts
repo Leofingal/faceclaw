@@ -8,7 +8,7 @@ import { Application } from '@nativescript/core'
 import { registerShareIntentHandler } from './native/share-intents'
 import { installNativeUserAgent } from './util/http'
 import { resyncSystemAppearance } from './native/system-appearance'
-import { startLiveHealthSync } from './health/health-live'
+import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
 
 installNativeUserAgent()
 registerShareIntentHandler()
@@ -18,6 +18,11 @@ registerShareIntentHandler()
 // they are closed would be lost if the process restarted first, so this keeps
 // them reaching disk regardless. No-op when there is nothing new.
 startLiveHealthSync()
+
+// Collect from the ring on a wall-clock cadence (:01 and :31). Without this
+// nothing drives a pull on a timer at all - only onRingReady() on reconnect -
+// so a ring that stays connected is never read.
+startAlignedRingPull()
 
 // Live system dark/light switches while the app is running were confirmed
 // (Chris, both directions, 2026-09-02) to leave the Ghost companion's Terminal

@@ -1973,8 +1973,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * repeated pull attempts against the race condition documented on
      * {@link #requestRingHealth()}. Not tuned against any real constraint
      * from the ring itself - just a sane default.
+     *
+     * <p><b>Reduced 30min -> 5min on 2026-09-12, and its JOB CHANGED.</b> The
+     * 30-minute figure was always meant as a CADENCE - how often to collect -
+     * but it was implemented here as a floor, which is a different thing. The
+     * result was that a connected, stable ring pulled <em>never</em>: nothing
+     * drives a pull on a timer, only {@code onRingReady()} on reconnect, so the
+     * floor was the only clock in the system and it gated a pull that had
+     * nothing to trigger it.
+     *
+     * <p>The cadence now lives where it belongs, on a wall-clock-aligned tick
+     * (:01 and :31) in {@code health-live.ts}. What remains here is purely an
+     * ANTI-SPAM floor: stop a burst of reconnects turning into a burst of
+     * requests against the race documented on {@link #requestRingHealth()}.
+     * That job needs 5 minutes, not 30.
      */
-    private static final long RING_HEALTH_MIN_PULL_INTERVAL_MS = 30L * 60L * 1000L;
+    private static final long RING_HEALTH_MIN_PULL_INTERVAL_MS = 5L * 60L * 1000L;
 
     /**
      * Floor for a pull the user actually asked for by opening the health app,
@@ -1993,7 +2007,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS = 60L * 1000L;
 
     /**
-     * How many times a pull that ABORTED may be resumed inside the 30-minute
+     * How many times a pull that ABORTED may be resumed inside the anti-spam
      * floor before it goes back to waiting that floor out.
      *
      * <p>The floor exists to stop SPECULATIVE repeat pulls, because a request
@@ -2079,7 +2093,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             } else {
                 ringHealthAbortedRetries = 0;
                 logLine("ring health: aborted pull retry budget spent, back to the "
-                    + (RING_HEALTH_MIN_PULL_INTERVAL_MS / 60000L) + "-minute floor");
+                    + (RING_HEALTH_MIN_PULL_INTERVAL_MS / 60000L) + "-minute anti-spam floor");
             }
         }
     }

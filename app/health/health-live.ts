@@ -525,3 +525,58 @@ export function startLiveHealthSync(): void {
     }
   }, BACKGROUND_SYNC_INTERVAL_MS);
 }
+
+/**
+ * Pull the ring on a wall-clock-aligned cadence: :01 and :31, every hour.
+ *
+ * Chris, 2026-09-12: *"I think we should be polling the ring on the 30 minute
+ * cycle (that was my intent, not a floor honestly)."* The 30-minute value in
+ * `RING_HEALTH_MIN_PULL_INTERVAL_MS` was always meant as a collection rhythm
+ * and got built as a throttle, so a connected, stable ring pulled never —
+ * nothing in the system drives a pull on a timer at all.
+ *
+ * Two reasons this is aligned to the wall clock rather than a plain interval:
+ *
+ * 1. **The ring's own step buckets close on 10-minute boundaries.** Pulling on
+ *    the boundary collects a just-closed bucket instead of a half-formed one.
+ * 2. **An elapsed timer drifts.** A pull at :07 sets the next at :37, then :07,
+ *    wandering away from the boundary it is supposed to track. Re-arming
+ *    against the clock each time cannot drift.
+ *
+ * The **one-minute offset is deliberate**: firing exactly at :00 risks catching
+ * the ring before it has finalised that bucket.
+ *
+ * This only *requests* a pull. The communicator still applies its own anti-spam
+ * floor, so an extra call here can never hammer the ring.
+ */
+const ALIGNED_PULL_MINUTES = [1, 31];
+let alignedPullTimer: ReturnType<typeof setTimeout> | null = null;
+
+function msUntilNextAlignedPull(now: Date): number {
+  const minutes = now.getMinutes();
+  const withinHour = ALIGNED_PULL_MINUTES.filter((m) => m > minutes);
+  // Next slot this hour, or the first slot of the next hour.
+  const target = withinHour.length ? withinHour[0] : ALIGNED_PULL_MINUTES[0] + 60;
+  const msIntoMinute = now.getSeconds() * 1000 + now.getMilliseconds();
+  return (target - minutes) * 60 * 1000 - msIntoMinute;
+}
+
+export function startAlignedRingPull(): void {
+  if (alignedPullTimer) return;
+  const arm = () => {
+    const delay = msUntilNextAlignedPull(new Date());
+    alignedPullTimer = setTimeout(() => {
+      alignedPullTimer = null;
+      try {
+        requestFreshPull();
+      } catch (error) {
+        console.warn("health live: aligned ring pull failed", error);
+      }
+      arm();                        // re-arm against the clock, never the elapsed time
+    }, delay);
+  };
+  arm();
+}
+
+/** Exported for tests — the scheduling arithmetic, with no timer attached. */
+export const __alignedPullInternals = { msUntilNextAlignedPull, ALIGNED_PULL_MINUTES };
