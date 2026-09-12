@@ -178,11 +178,19 @@ function readLedger(): StepBucketLedger | null {
       | StepBucketLedger
       | LegacyStepBucketLedger;
     if (parsed && (parsed as StepBucketLedger).days) return parsed as StepBucketLedger;
-    // Migrate the single-day shape in place rather than discarding it: the file
-    // on Chris's phone holds real step data that the ring may not re-deliver.
+    // Migrate the single-day shape rather than discarding it: the file on the
+    // phone holds real step data the ring may not re-deliver.
+    //
+    // ⚠ RE-KEY IT. The legacy `dayStartMs` was `startOfLocalDay(RAW anchor)`,
+    // computed before the anchor was offset-corrected, so carrying it across
+    // verbatim files the day 4h too late — under a key the corrected code will
+    // never write to again. The accumulated buckets would sit there stranded
+    // while the same ring-day restarted empty beside them. Measured doing
+    // exactly that on 2026-09-12: a ledger with "2 days" that were one day.
     const legacy = parsed as LegacyStepBucketLedger;
     if (typeof legacy?.dayStartMs === "number" && legacy.buckets) {
-      return { days: { [String(legacy.dayStartMs)]: legacy.buckets } };
+      const corrected = legacy.dayStartMs - ringClockOffsetMs(legacy.dayStartMs);
+      return { days: { [String(startOfLocalDay(corrected))]: legacy.buckets } };
     }
     return null;
   } catch {
