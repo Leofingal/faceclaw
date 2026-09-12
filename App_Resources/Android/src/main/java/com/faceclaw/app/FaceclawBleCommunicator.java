@@ -147,6 +147,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * pull. Guarded by {@code lock}.
      */
     private boolean ringHealthPullRequested;
+    /**
+     * Aborted-pull retries spent since the last pull that COMPLETED its
+     * sequence. Guarded by {@code lock}. See
+     * {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
+     */
+    private int ringHealthAbortedRetries;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
@@ -1332,6 +1338,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 // the same reason: requestRingHealth() blocks on GATT writes and
                 // on its own RSP/DATA waits, which only this thread may do.
                 runRequestedRingHealthPull();
+                // An aborted pull is unfinished business, not a speculative
+                // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
+                // immediately unless a pull actually failed to complete.
+                resumeAbortedRingHealthPull();
 
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
@@ -1940,14 +1950,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             long now = SystemClock.elapsedRealtime();
             boolean dueForHealthPull;
             synchronized (lock) {
-                dueForHealthPull = ringHealthLastRequestedAtMs == 0
-                    || now - ringHealthLastRequestedAtMs >= RING_HEALTH_MIN_PULL_INTERVAL_MS;
+                dueForHealthPull = ringHealthPullDueLocked(now);
                 if (dueForHealthPull) {
                     ringHealthLastRequestedAtMs = now;
                 }
             }
             if (dueForHealthPull) {
-                requestRingHealth();
+                runRingHealthPull();
             } else {
                 logLine("ring health: pull skipped, last one was "
                     + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago");
@@ -1984,6 +1993,40 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS = 60L * 1000L;
 
     /**
+     * How many times a pull that ABORTED may be resumed inside the 30-minute
+     * floor before it goes back to waiting that floor out.
+     *
+     * <p>The floor exists to stop SPECULATIVE repeat pulls, because a request
+     * that loses its race can permanently consume backlog - see
+     * {@link #requestRingHealth()}. Resuming a pull that never got a single
+     * answer is a different thing: nothing was ever in flight to be lost.
+     *
+     * <p>Measured 2026-09-12: the 09:33 pull got {@code no RSP} for 0x1, 0x4
+     * and 0x2 and then died on {@code write error: IllegalStateException: Not
+     * connected}. Every attempt after it was refused by the 30-minute floor, so
+     * the rest of that night's data was simply never requested again - the
+     * night's second sleep block went with it. The floor was protecting against
+     * the wrong thing.
+     *
+     * <p>Bounded and non-looping on purpose: the budget is spent whether or not
+     * the retries help, and a pull that completes resets it. Worst case is two
+     * extra attempts, then silence until the floor expires.
+     *
+     * <p>⚠ UNTESTED, and worth knowing before trusting this: whether an aborted
+     * pull's data is still on the ring at all, or was discarded when the ring
+     * RSP'd (it did not RSP here, which is the reason to think it survives).
+     * Nobody knows. The retry costs little if the data is gone.
+     */
+    private static final int RING_HEALTH_ABORTED_RETRY_LIMIT = 2;
+
+    /**
+     * Gap before an aborted pull may be resumed. Short, but not zero - a link
+     * that just failed a write needs time to come back, and a tight loop
+     * against a dead connection helps nobody.
+     */
+    private static final long RING_HEALTH_ABORTED_RETRY_GAP_MS = 60L * 1000L;
+
+    /**
      * Ask for a health pull as soon as the worker thread can run one. Safe to
      * call from any thread; returns immediately without blocking.
      *
@@ -1998,6 +2041,73 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringHealthPullRequested = true;
         }
         interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Whether an automatic pull may run now. Caller must hold {@code lock}.
+     *
+     * <p>Two ways to be due: the ordinary 30-minute floor has expired, or the
+     * last pull ABORTED and still has retry budget. The second is not a
+     * speculative repeat - see {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
+     */
+    private boolean ringHealthPullDueLocked(long now) {
+        if (ringHealthLastRequestedAtMs == 0) {
+            return true;
+        }
+        long since = now - ringHealthLastRequestedAtMs;
+        if (since >= RING_HEALTH_MIN_PULL_INTERVAL_MS) {
+            return true;
+        }
+        return ringHealthAbortedRetries > 0 && since >= RING_HEALTH_ABORTED_RETRY_GAP_MS;
+    }
+
+    /**
+     * Run a pull and account for whether it finished. The ONLY place
+     * {@link #requestRingHealth()} may be called from, so that every path
+     * shares one definition of "aborted".
+     */
+    private void runRingHealthPull() {
+        boolean completed = requestRingHealth();
+        synchronized (lock) {
+            if (completed) {
+                ringHealthAbortedRetries = 0;
+            } else if (ringHealthAbortedRetries < RING_HEALTH_ABORTED_RETRY_LIMIT) {
+                ringHealthAbortedRetries++;
+                logLine("ring health: aborted pull may resume in "
+                    + (RING_HEALTH_ABORTED_RETRY_GAP_MS / 1000L) + "s (retry "
+                    + ringHealthAbortedRetries + "/" + RING_HEALTH_ABORTED_RETRY_LIMIT + ")");
+            } else {
+                ringHealthAbortedRetries = 0;
+                logLine("ring health: aborted pull retry budget spent, back to the "
+                    + (RING_HEALTH_MIN_PULL_INTERVAL_MS / 60000L) + "-minute floor");
+            }
+        }
+    }
+
+    /**
+     * Worker-thread tick that resumes a pull which ABORTED.
+     *
+     * <p>Distinct from {@link #runRequestedRingHealthPull()}: nobody asked for
+     * this one. It exists because the automatic pull otherwise only fires from
+     * the ring-ready path, so an abort that is not followed by a reconnect
+     * would never be retried at all.
+     */
+    private void resumeAbortedRingHealthPull() {
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            if (ringHealthAbortedRetries == 0) {
+                return;
+            }
+            if (!ringConnected || !ringNotificationsReady) {
+                return;
+            }
+            if (now - ringHealthLastRequestedAtMs < RING_HEALTH_ABORTED_RETRY_GAP_MS) {
+                return;
+            }
+            ringHealthLastRequestedAtMs = now;
+        }
+        logLine("ring health: resuming an aborted pull");
+        runRingHealthPull();
     }
 
     /** Worker-thread side of {@link #requestRingHealthNow()}. */
@@ -2021,7 +2131,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringHealthLastRequestedAtMs = now;
         }
         logLine("ring health: on-demand pull requested");
-        requestRingHealth();
+        runRingHealthPull();
     }
 
     /**
@@ -2304,8 +2414,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * called explicitly after each type rather than relying on the main
      * loop's own call to it.
      */
-    private void requestRingHealth() {
+    private boolean requestRingHealth() {
         int[] commands = RingProtocol.HEALTH_COMMANDS;
+        int rspCount = 0;
         for (int i = 0; i < commands.length; i++) {
             int command = commands[i];
             byte[] frame;
@@ -2314,10 +2425,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 frame = RingProtocol.buildHealthRequest(command, nextRingSeqLocked(), nextRingNonceLocked());
             }
             if (!writeRingFrame(frame, "health request 0x" + Integer.toHexString(command))) {
-                return;
+                // ABORTED: the sequence stopped partway. Distinct from "the
+                // ring had nothing for a type", which is an ordinary outcome
+                // and leaves the loop running - see the return below.
+                logLine("ring health: pull ABORTED on write at 0x" + Integer.toHexString(command)
+                    + " (" + i + " of " + commands.length + " types attempted, "
+                    + rspCount + " answered)");
+                return false;
             }
 
             if (awaitRingHealthRsp(RING_HEALTH_RSP_TIMEOUT_MS)) {
+                rspCount++;
                 awaitRingHealthDataIdle(RING_HEALTH_DATA_IDLE_MS);
             } else {
                 logLine("ring health: no RSP for command 0x" + Integer.toHexString(command) + ", moving on");
@@ -2331,7 +2449,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
             }
         }
-        logLine("ring health: requested " + commands.length + " record types");
+
+        // Two more ways to have not really completed, both distinguishable from
+        // "completed but empty":
+        //
+        //   - the link dropped while the loop was running, so the later types
+        //     were written into nothing;
+        //   - the ring answered NONE of the five. A type with no backlog still
+        //     RSPs (measured: five REQs, five RSPs, zero DATA), so zero RSPs
+        //     across the whole sequence means the ring was not answering at
+        //     all, not that there was nothing to send.
+        //
+        // An RSP with no DATA remains ambiguous per type and is NOT treated as
+        // a failure here - that is the ordinary "nothing new" case.
+        boolean stillConnected;
+        synchronized (lock) {
+            stillConnected = ringConnected;
+        }
+        if (!stillConnected || rspCount == 0) {
+            logLine("ring health: pull ABORTED - ran all " + commands.length + " types but "
+                + (stillConnected ? "the ring answered none of them" : "the link dropped"));
+            return false;
+        }
+        logLine("ring health: requested " + commands.length + " record types, "
+            + rspCount + " answered");
+        return true;
     }
 
     /** Block (worker thread) until the health RSP flag is set or the timeout
