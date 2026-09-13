@@ -41,7 +41,11 @@
  * ## Use
  *
  *     npx tsc -p tests/tsconfig.json      # or: npm test
- *     node tools/health-preview.cjs [--out DIR] [--big] [--real DIR]
+ *     node tools/health-preview.cjs [--out DIR] [--big] [--real DIR] [--two-block]
+ *
+ * `--two-block` replaces the fixture's last night with a synthetic two-block
+ * night (a gap between blocks, the second delivered twice as it grew), to check
+ * the assembled-night rendering across a gap. Files are prefixed `twoblock-`.
  *
  * ## --real: the same surfaces, on data pulled off the phone
  *
@@ -91,8 +95,9 @@ if (!fs.existsSync(BUILD)) {
 
 const { GrayImage } = require(path.join(BUILD, "graphics/image.js"));
 const { getFont } = require(path.join(BUILD, "graphics/bdffont.js"));
-const { buildFixtures } = require(path.join(BUILD, "health/health-fixtures.js"));
+const { buildFixtures, twoBlockNightFixture } = require(path.join(BUILD, "health/health-fixtures.js"));
 const {
+  assembleNight,
   dailySummary,
   hypnogram,
   rollupSeries,
@@ -103,7 +108,7 @@ const {
   formatDuration,
 } = require(path.join(BUILD, "health/health-derive.js"));
 const { drawGlancePage, GLANCE_PAGES } = require(path.join(BUILD, "health/health-glance.js"));
-const { convertRecords } = require(path.join(BUILD, "health/health-ingest.js"));
+const { convertRecords, sleepClockOffsetMs } = require(path.join(BUILD, "health/health-ingest.js"));
 const { HealthStore } = require(path.join(BUILD, "health/health-store.js"));
 const { renderPhoneChart } = require(path.join(BUILD, "health/health-phone-chart.js"));
 const { stageLabel } = require(path.join(BUILD, "health/sleep-stages.js"));
@@ -113,6 +118,7 @@ const UPNG = require("upng-js");
 // --- arguments -------------------------------------------------------------
 const args = process.argv.slice(2);
 const big = args.includes("--big");
+const TWO_BLOCK = args.includes("--two-block");
 const realIndex = args.indexOf("--real");
 const REAL_DIR = realIndex >= 0 && args[realIndex + 1] ? path.resolve(args[realIndex + 1]) : null;
 const outIndex = args.indexOf("--out");
@@ -170,7 +176,8 @@ function resolveStoredSleep(stored) {
   if (stored.timeResolved) return stored;
   const startTs = Math.round(stored.startMs / 1000);
   const endTs = Math.round(stored.endMs / 1000);
-  const correction = 2 * new Date(stored.startMs).getTimezoneOffset() * 60 * 1000;
+  // The shipping correction, not a restated one.
+  const correction = sleepClockOffsetMs(stored.startMs);
   const { sleep } = convertRecords([
     {
       kind: "sleep",
@@ -223,15 +230,28 @@ function loadReal(dir) {
 const real = REAL_DIR ? loadReal(REAL_DIR) : null;
 const NOW = real ? real.nowMs : new Date(2026, 8, 10, 15, 20, 0).getTime();
 const TODAY = startOfLocalDay(NOW);
-const fixtures = real
+const generated = real
   ? { samples: real.samples, sleep: real.sleep }
   : buildFixtures({ days: 95, nowMs: NOW, seed: 0x5eed });
+// --two-block: last night becomes two distinct blocks with a gap, the second
+// delivered twice as it grew - see `twoBlockNightFixture`.
+const fixtures =
+  TWO_BLOCK && !real
+    ? {
+        samples: generated.samples,
+        sleep: [
+          ...generated.sleep.filter((session) => session.dayStartMs !== TODAY),
+          ...twoBlockNightFixture(TODAY),
+        ],
+      }
+    : generated;
 
 const todaySamples = fixtures.samples.filter(
   (sample) => sample.startMs >= TODAY && sample.startMs < TODAY + DAY_MS,
 );
 const summary = dailySummary(todaySamples, fixtures.sleep, TODAY);
-const lastNight = fixtures.sleep.find((session) => session.dayStartMs === TODAY);
+// The assembled night (every block, gaps as wake), exactly as the app builds it.
+const lastNight = assembleNight(fixtures.sleep, TODAY);
 
 const hourly = {};
 for (const metric of SAMPLE_METRICS) {
@@ -267,7 +287,8 @@ function writePng(name, image) {
     rgba[i * 4 + 2] = value;
     rgba[i * 4 + 3] = 255;
   }
-  const file = path.join(OUT, `${REAL_DIR ? "real-" : ""}${name}${big ? "-big" : ""}.png`);
+  const prefix = REAL_DIR ? "real-" : TWO_BLOCK ? "twoblock-" : "";
+  const file = path.join(OUT, `${prefix}${name}${big ? "-big" : ""}.png`);
   fs.writeFileSync(file, Buffer.from(UPNG.encode([rgba.buffer], baked.width, baked.height, 0)));
 
   // A blank canvas would otherwise be a silent pass, and a page that drew

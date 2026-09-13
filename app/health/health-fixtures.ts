@@ -244,3 +244,50 @@ function buildSegments(random: () => number, inBedHalfMinutes: number): SleepSeg
   }
   return segments;
 }
+
+/**
+ * A night of TWO distinct blocks with a gap, the second delivered twice as it
+ * grew - the shape the ring is expected to send once every block of a night
+ * arrives. Synthetic, deterministic, segments first like `buildNight`.
+ *
+ *   block A        23:30 -> 01:30 the evening before `dayStartMs` (2h)
+ *   gap            01:30 -> 02:05 (35 min, wake)
+ *   block B, early 02:05 -> 06:05 (4h)   same start: superseded by
+ *   block B, late  02:05 -> 08:05 (6h)
+ *
+ * Assembled: 23:30 -> 08:05, 7h48m asleep (28080s), 47m awake (2820s, of which
+ * 35m is the gap), 16 segments. `tests/health-night.test.cjs` pins those.
+ */
+export function twoBlockNightFixture(dayStartMs: number): SleepSession[] {
+  const block = (startMs: number, runs: readonly [number, number][]): SleepSession => {
+    const segments: SleepSegment[] = runs.map(([stageId, halfMinutes]) => ({ stageId, halfMinutes }));
+    const seconds = (stageId: number): number =>
+      segments.filter((segment) => segment.stageId === stageId).reduce((sum, s) => sum + s.halfMinutes, 0) * 30;
+    const wakeSec = seconds(0);
+    const remSec = seconds(1);
+    const lightSec = seconds(2);
+    const deepSec = seconds(3);
+    const totalSec = remSec + lightSec + deepSec;
+    return {
+      dayStartMs,
+      startMs,
+      endMs: startMs + (totalSec + wakeSec) * 1000,
+      totalSec,
+      wakeSec,
+      remSec,
+      lightSec,
+      deepSec,
+      segments,
+      timeResolved: true,
+    };
+  };
+  const minute = 60 * 1000;
+  const blockB: [number, number][] = [[0, 10], [2, 90], [3, 70], [2, 110], [1, 60], [2, 140]];
+  const blockBGrew: [number, number][] = [...blockB, [0, 8], [2, 110], [1, 70], [2, 52]];
+  const bStart = dayStartMs + 2 * 60 * minute + 5 * minute;
+  return [
+    block(dayStartMs - 30 * minute, [[0, 6], [2, 80], [3, 60], [2, 60], [1, 34]]),
+    block(bStart, blockB),
+    block(bStart, blockBGrew),
+  ];
+}

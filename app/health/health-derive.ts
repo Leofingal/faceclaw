@@ -16,9 +16,11 @@ import {
   type RollupPoint,
   type SampleMetric,
   type SleepNight,
+  type SleepSegment,
   type SleepSession,
   isCumulative,
   rollupOf,
+  sleepNightDayStartMs,
   startOfLocalDay,
   startOfLocalHour,
 } from "./health-types";
@@ -151,10 +153,12 @@ function sumOf(samples: readonly HealthSample[], metric: SampleMetric): number {
 /**
  * Everything the glasses glance shows, for one local day.
  *
- * `sleepSessions` is searched for the night that ENDED on this day - the
- * "last night's sleep" a morning glance means. A session is attributed to its
- * wake-up day on ingest (`SleepSession.dayStartMs`), so this is a lookup, not
- * a heuristic applied here.
+ * `sleepSessions` is assembled into the night that ENDED on this day - the
+ * "last night's sleep" a morning glance means: every block whose end falls in
+ * the 20:00 -> 20:00 window, gaps counted as wake. See `assembleNights`.
+ *
+ * ⚠ CHANGED 2026-09-13. This used to pick the LONGEST single session of the
+ * day, which showed one block of a night that has several.
  */
 export function dailySummary(
   samples: readonly HealthSample[],
@@ -165,9 +169,7 @@ export function dailySummary(
   const inDay = samples.filter(
     (sample) => sample.startMs >= dayStartMs && sample.startMs < dayEndMs,
   );
-  const night = sleepSessions
-    .filter((session) => session.dayStartMs === dayStartMs)
-    .sort((a, b) => b.totalSec - a.totalSec)[0];
+  const night = assembleNight(sleepSessions, dayStartMs);
   return {
     dayStartMs,
     steps: Math.round(sumOf(inDay, "steps")),
@@ -264,6 +266,140 @@ export function stageSeconds(stage: SleepStageName, summary: SleepSummary): numb
   return summary.stageBands.find((band) => band.stage === stage)?.seconds ?? 0;
 }
 
+// ---------------------------------------------------------------------------
+// Night assembly
+
+/**
+ * One night built from every sleep block that belongs to it. Shaped as a
+ * `SleepSession`, so `sleepSummary` and `hypnogram` take it unchanged.
+ */
+export type AssembledNight = SleepSession & {
+  /** The distinct blocks it was built from, earliest first, after supersession. */
+  blocks: readonly SleepSession[];
+  /** Gap time between blocks, in seconds, already counted into `wakeSec`. */
+  gapSec: number;
+};
+
+/** Which night a stored block belongs to. See `assembleNights`. */
+function nightKeyOf(session: SleepSession): number {
+  return session.timeResolved ? sleepNightDayStartMs(session.endMs) : session.dayStartMs;
+}
+
+/**
+ * Stored sleep blocks -> nights, newest night first. Chris's spec, 2026-09-13:
+ *
+ * 1. **A night is the 20:00 -> 20:00 window, labelled by the day it ends in.**
+ *    Every block whose END falls in the window belongs to it
+ *    (`sleepNightDayStartMs`). Re-derived from `endMs` here rather than read off
+ *    the stored `dayStartMs`, so rows stored under the old midnight rule group
+ *    correctly with no migration. An UNRESOLVED block has no wall-clock end and
+ *    is grouped by its stored `dayStartMs` instead.
+ *
+ * 2. **Blocks sharing a start time are ONE block that grew.** The ring re-sends
+ *    a block as it extends (measured 2026-09-13: the same start delivered
+ *    ending 07:15 and then 09:09). The latest/longest supersedes; it never
+ *    sums.
+ *
+ * 3. **Gaps between distinct blocks count as WAKE time**, which is what Even's
+ *    app did. A gap is inserted into the segment run as its own wake segment
+ *    (`gap: true`) so the hypnogram spans the whole night in order, and added
+ *    to `wakeSec` so the lanes, the efficiency and the stage totals all agree.
+ *    It is rounded to whole half-minutes, the resolution of every other
+ *    segment, which keeps `sum(halfMinutes) * 30 == totalSec + wakeSec` true.
+ *
+ * Two defensive rules with no measurement behind them, flagged as such: a
+ * block wholly inside an earlier one is dropped as a duplicate, and resolved
+ * and unresolved blocks are never mixed in one night (the resolved ones win),
+ * because their times are on different clocks. A PARTIAL overlap between two
+ * blocks is kept as-is with no gap and would double-count the overlap; nothing
+ * seen so far produces one.
+ */
+export function assembleNights(sessions: readonly SleepSession[]): AssembledNight[] {
+  const byNight = new Map<number, SleepSession[]>();
+  for (const session of sessions) {
+    const key = nightKeyOf(session);
+    const list = byNight.get(key);
+    if (list) list.push(session);
+    else byNight.set(key, [session]);
+  }
+  const nights: AssembledNight[] = [];
+  for (const [key, group] of byNight) nights.push(assembleGroup(key, group));
+  return nights.sort((a, b) => b.dayStartMs - a.dayStartMs);
+}
+
+/** The assembled night that ends on `dayStartMs`, or null when there is none. */
+export function assembleNight(
+  sessions: readonly SleepSession[],
+  dayStartMs: number,
+): AssembledNight | null {
+  return assembleNights(sessions).find((night) => night.dayStartMs === dayStartMs) ?? null;
+}
+
+function assembleGroup(dayStartMs: number, group: readonly SleepSession[]): AssembledNight {
+  const resolved = group.filter((session) => session.timeResolved);
+  const pool = resolved.length > 0 ? resolved : group;
+
+  // Rule 2: one block per start time, the one that reaches furthest.
+  const byStart = new Map<number, SleepSession>();
+  for (const session of pool) {
+    const held = byStart.get(session.startMs);
+    const longer =
+      !held ||
+      session.endMs > held.endMs ||
+      (session.endMs === held.endMs &&
+        session.totalSec + session.wakeSec >= held.totalSec + held.wakeSec);
+    if (longer) byStart.set(session.startMs, session);
+  }
+  const ordered = [...byStart.values()].sort((a, b) => a.startMs - b.startMs);
+  const blocks: SleepSession[] = [];
+  for (const block of ordered) {
+    const previous = blocks[blocks.length - 1];
+    if (previous && block.endMs <= previous.endMs) continue;
+    blocks.push(block);
+  }
+
+  // Rule 3: concatenate, with each gap as a wake segment.
+  const segments: SleepSegment[] = [];
+  let gapSec = 0;
+  let totalSec = 0;
+  let wakeSec = 0;
+  let remSec = 0;
+  let lightSec = 0;
+  let deepSec = 0;
+  blocks.forEach((block, index) => {
+    if (index > 0) {
+      const gapHalfMinutes = Math.max(0, Math.round((block.startMs - blocks[index - 1]!.endMs) / 30000));
+      if (gapHalfMinutes > 0) {
+        segments.push({ stageId: -1, halfMinutes: gapHalfMinutes, gap: true });
+        gapSec += gapHalfMinutes * 30;
+      }
+    }
+    segments.push(...block.segments);
+    totalSec += Math.max(0, block.totalSec);
+    wakeSec += Math.max(0, block.wakeSec);
+    remSec += Math.max(0, block.remSec);
+    lightSec += Math.max(0, block.lightSec);
+    deepSec += Math.max(0, block.deepSec);
+  });
+
+  const first = blocks[0]!;
+  const last = blocks[blocks.length - 1]!;
+  return {
+    dayStartMs,
+    startMs: first.startMs,
+    endMs: last.endMs,
+    totalSec,
+    wakeSec: wakeSec + gapSec,
+    remSec,
+    lightSec,
+    deepSec,
+    segments,
+    timeResolved: first.timeResolved,
+    blocks,
+    gapSec,
+  };
+}
+
 /**
  * One entry per day in the window, carrying that night's four stage totals.
  *
@@ -272,11 +408,10 @@ export function stageSeconds(stage: SleepStageName, summary: SleepSummary): numb
  * night with no record comes back as `hasData: false` at its real position
  * rather than shifting every later night one column left.
  *
- * Two sessions attributed to the same day are SUMMED rather than the longest
- * winning. That differs from `dailySummary`, which picks the longest because it
- * is answering "how did you sleep last night" with one headline number; here
- * the column is the day's total time in each stage, and dropping a nap would
- * make the bar disagree with the sleep total shown beside it.
+ * ⚠ CHANGED 2026-09-13. Each column is the ASSEMBLED night (`assembleNights`):
+ * distinct blocks add, a block re-delivered as it grew counts once, and the
+ * gaps between blocks count as awake. It used to sum every stored session on
+ * the day, which double-counted a growing block.
  */
 export function sleepNights(
   sessions: readonly SleepSession[],
@@ -284,21 +419,16 @@ export function sleepNights(
   endMs: number,
 ): SleepNight[] {
   const byDay = new Map<number, SleepNight>();
-  for (const session of sessions) {
-    if (session.dayStartMs < startMs || session.dayStartMs >= endMs) continue;
-    const entry = byDay.get(session.dayStartMs) ?? {
-      startMs: session.dayStartMs,
+  for (const night of assembleNights(sessions)) {
+    if (night.dayStartMs < startMs || night.dayStartMs >= endMs) continue;
+    byDay.set(night.dayStartMs, {
+      startMs: night.dayStartMs,
       hasData: true,
-      deepSec: 0,
-      remSec: 0,
-      lightSec: 0,
-      wakeSec: 0,
-    };
-    entry.deepSec += Math.max(0, session.deepSec);
-    entry.remSec += Math.max(0, session.remSec);
-    entry.lightSec += Math.max(0, session.lightSec);
-    entry.wakeSec += Math.max(0, session.wakeSec);
-    byDay.set(session.dayStartMs, entry);
+      deepSec: night.deepSec,
+      remSec: night.remSec,
+      lightSec: night.lightSec,
+      wakeSec: night.wakeSec,
+    });
   }
 
   const nights: SleepNight[] = [];
@@ -328,10 +458,13 @@ export function sleepNights(
  * it is separated from `sleepSummary`'s percentages (those come from named
  * fields and are unaffected). A segment whose id is not in the mapping is
  * returned with `stage: null` rather than dropped or guessed at.
+ *
+ * The gap between two blocks of an assembled night is drawn as wake by its
+ * `gap` flag, independent of the mapping - see `assembleNights`.
  */
 export function hypnogram(session: SleepSession): { stage: SleepStageName | null; seconds: number }[] {
   return session.segments.map((segment) => ({
-    stage: stageNameForId(segment.stageId),
+    stage: segment.gap ? ("wake" as SleepStageName) : stageNameForId(segment.stageId),
     seconds: segment.halfMinutes * 30,
   }));
 }

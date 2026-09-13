@@ -28,7 +28,13 @@ import {
   type InProcessAppOptions,
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
-import { dailySummary, hypnogram, rollupSeries, type DailySummary } from "../../health/health-derive";
+import {
+  assembleNight,
+  dailySummary,
+  hypnogram,
+  rollupSeries,
+  type DailySummary,
+} from "../../health/health-derive";
 import {
   drawGlancePage,
   GLANCE_PAGES,
@@ -114,7 +120,8 @@ class HealthLayer implements Layer {
         });
       }
       this.hourly = hourly;
-      const night = sessions.find((session) => session.dayStartMs === today);
+      // The whole night - every block, gaps as wake - not one stored session.
+      const night = assembleNight(sessions, today);
       this.stageBands = night ? hypnogram(night) : [];
       this.fixture = isFixtureData();
     } catch (error) {

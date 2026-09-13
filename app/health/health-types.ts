@@ -77,7 +77,14 @@ export type HealthSample = {
  * time we made up.
  */
 export type SleepSession = {
-  /** Local midnight of the day the session is attributed to (the wake-up day). */
+  /**
+   * Local midnight of the day the session is attributed to (the wake-up day).
+   *
+   * As STORED this is only a hint. For a time-resolved block the night it
+   * belongs to is re-derived from `endMs` by `assembleNights`, so rows stored
+   * before the 20:00 night boundary existed are grouped correctly without a
+   * migration. Only an unresolved block is grouped by this field.
+   */
   dayStartMs: number;
   startMs: number;
   endMs: number;
@@ -95,7 +102,36 @@ export type SleepSegment = {
   /** RAW ring stage id, 0-3. Resolve via `stageNameForId`. */
   stageId: number;
   halfMinutes: number;
+  /**
+   * True only for the gap between two distinct blocks of one night, inserted by
+   * `assembleNights` and never stored. A gap is WAKE time (Chris's spec,
+   * 2026-09-13, matching what Even's app did) and is drawn in the wake lane by
+   * this flag rather than by `stageId` (which is -1), so it does not lean on
+   * the unconfirmed stage-id mapping.
+   */
+  gap?: boolean;
 };
+
+/**
+ * The hour a sleep night turns over: a night runs 20:00 -> 20:00 local.
+ * Chris's spec, 2026-09-13.
+ */
+export const NIGHT_BOUNDARY_HOUR = 20;
+
+/**
+ * Which night an instant belongs to, as the local midnight of the day that
+ * night ENDS in. A night is the 20:00 -> 20:00 window; a sleep block belongs
+ * to the night its END falls in. So 19:59 on the 13th is the 13th's night and
+ * 20:00 on the 13th is the 14th's.
+ *
+ * Calendar arithmetic, not `+ 4h`, so a DST change cannot move the boundary.
+ */
+export function sleepNightDayStartMs(ms: number): number {
+  const date = new Date(ms);
+  if (date.getHours() >= NIGHT_BOUNDARY_HOUR) date.setDate(date.getDate() + 1);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
 
 /**
  * One night's stage breakdown, in seconds, positioned on the day axis.

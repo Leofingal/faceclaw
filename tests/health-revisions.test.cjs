@@ -82,12 +82,15 @@ test("the nightly sleep series keeps gaps in position", () => {
   );
 });
 
-test("two sessions on one day are summed, not deduped to the longest", () => {
+test("two distinct blocks in one night are combined, with the gap as wake", () => {
+  // ⚠ REVISED 2026-09-13 for night assembly. This used to sum two sessions that
+  // shared a start time; a shared start now means ONE block that grew, so the
+  // blocks here are distinct and ten minutes apart.
   const today = startOfLocalDay(Date.now());
-  const night = (totalSec, wakeSec) => ({
+  const block = (startMs, totalSec, wakeSec) => ({
     dayStartMs: today,
-    startMs: today,
-    endMs: today,
+    startMs,
+    endMs: startMs + (totalSec + wakeSec) * 1000,
     totalSec,
     wakeSec,
     remSec: totalSec * 0.2,
@@ -96,12 +99,14 @@ test("two sessions on one day are summed, not deduped to the longest", () => {
     segments: [],
     timeResolved: true,
   });
-  const nights = sleepNights([night(3600, 300), night(1800, 60)], today, today + DAY_MS);
+  const first = block(today + 3600 * 1000, 3600, 300);
+  const second = block(first.endMs + 600 * 1000, 1800, 60);
+  const nights = sleepNights([first, second], today, today + DAY_MS);
   assert.equal(nights.length, 1);
-  assert.equal(nights[0].wakeSec, 360, "a nap's wake time counts too");
+  assert.equal(nights[0].wakeSec, 300 + 60 + 600, "both blocks' wake time, and the gap between");
   assert.ok(
     Math.abs(nights[0].lightSec - (3600 + 1800) * 0.6) < 1e-6,
-    "stage totals add across both sessions",
+    "stage totals add across both blocks",
   );
 });
 

@@ -54,6 +54,7 @@ import {
   hypnogram,
   shortWeekday,
   rollupSeries,
+  assembleNights,
   sleepNights,
   sleepSummary,
   stageSeconds,
@@ -410,12 +411,16 @@ export class HealthViewModel extends Observable {
     startMs: number,
     endMs: number,
   ): { content: PhoneChartContent; stats: StatRow[]; caption: string } {
-    const sessions = healthStore()
-      .sleepSessions()
-      .filter((session) => session.dayStartMs >= startMs && session.dayStartMs < endMs);
+    // Every stored block, not a pre-filtered set: which night a block belongs to
+    // is decided by assembly (20:00 -> 20:00, by where the block ENDS), not by
+    // the dayStartMs it happened to be stored with.
+    const sessions = healthStore().sleepSessions();
     const nights = sleepNights(sessions, startMs, endMs);
     const withData = nights.filter((night) => night.hasData);
-    const latest = [...sessions].sort((a, b) => b.dayStartMs - a.dayStartMs)[0];
+    // The latest ASSEMBLED night in the window: every block of it, gaps as wake.
+    const latest = assembleNights(sessions).find(
+      (night) => night.dayStartMs >= startMs && night.dayStartMs < endMs,
+    );
 
     const stats: StatRow[] = [];
     if (withData.length > 0) {

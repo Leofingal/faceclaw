@@ -52,6 +52,7 @@ import {
   type HealthSample,
   type SleepSession,
   type SleepSegment,
+  sleepNightDayStartMs,
   startOfLocalDay,
 } from "./health-types";
 
@@ -108,7 +109,7 @@ export type WireSleepRecord = {
    * omitted when the caller cannot say. Supplying it is what promotes the
    * session from `timeResolved: false` to a real placement - see
    * `convertSleep`. The value itself is the producer's problem, not this
-   * module's: see `sleepClockCorrectionMs` in `health-live.ts`.
+   * module's: see `sleepClockOffsetMs` below, which `sleepWireFromRing` applies.
    */
   clockCorrectionMs?: number;
 };
@@ -121,6 +122,138 @@ export type ConversionResult = {
   /** Every record or group deliberately not stored, with the reason. */
   skipped: { what: string; why: string }[];
 };
+
+// ===========================================================================
+// The ring's clock
+//
+// Moved here from `health-live.ts` on 2026-09-13 so the corrections run under
+// plain node: the known-good sleep windows are asserted THROUGH these functions
+// in `tests/health-night.test.cjs`, not against a restated constant.
+
+/**
+ * The ring timestamps in a frame 4 hours ahead of real time, and that is our
+ * own doing: the handshake sets its clock to `now + 14400s`, because that is
+ * what a real Even write carries (verified against six of them). Even's app
+ * evidently subtracts the same offset on the way back out. We were not, so
+ * every hourly sample landed 4 hours in the future.
+ *
+ * MEASURED, not theorised. Stored samples read 09:00/10:00/11:00 local while
+ * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
+ * is exactly right for a ring that had just reported the current hour.
+ *
+ * ⚠ This value is PAIRED with the offset in `sendRingHandshake()`. They must
+ * move together.
+ *
+ * Both were hardcoded to 14400. As of 2026-09-12 both COMPUTE it: 14400 was
+ * only ever right because every capture behind this work was taken in EDT,
+ * where 14400s is the magnitude of the UTC offset. Computing it is identical
+ * today and survives DST.
+ *
+ * ⚠ MIND THE SIGN. The quantity is "how far AHEAD of real time the ring's clock
+ * runs", which is the magnitude of a west-of-UTC offset — positive 14400 in
+ * EDT. `getTimezoneOffset()` is already minutes WEST of UTC (+240 in EDT), so
+ * it is used as-is, NOT negated. Java's `TimeZone.getOffset()` uses the
+ * opposite convention and is negated there; the two agree on +14400.
+ *
+ * Worth recording because the first cut of this change got the sign backwards
+ * on both sides at once — consistently, so they stayed "paired", and still
+ * wrong by 8 hours. Only the handshake's own assertion log caught it.
+ *
+ * Note this direction is the OPPOSITE of the "ring stores naive local time"
+ * hypothesis (which predicts `epoch + utc_offset`, i.e. 4h behind). Measured
+ * behaviour is 4h ahead. The hypothesis is unconfirmed; the measurement rules.
+ */
+export function ringClockOffsetMs(atMs: number): number {
+  return new Date(atMs).getTimezoneOffset() * 60 * 1000;
+}
+
+/**
+ * Sleep timestamps take the SAME correction as every other record type (-4h in
+ * EDT).
+ *
+ * ⚠ EMPIRICAL. From 2026-09-12 to 2026-09-13 this was TWICE the hourly
+ * correction (-8h), and that was wrong. The -8h rested on reading the one block
+ * the phone had stored as the night's FIRST block, with the missing hours after
+ * it. It was the night's LAST block: on both nights so far the phone has only
+ * received the block that ends at wake (see `awaitRingHealthDataIdle` in
+ * FaceclawBleCommunicator.java for the suspected cause), so the missing time
+ * sits BEFORE it.
+ *
+ * The evidence, night of 2026-09-12 -> 13, a 6h34m block:
+ *   - under -8h it reads 22:35 -> 05:09, an hour before Chris went to bed;
+ *   - under -4h it reads 02:35:08 -> 09:09:38, and Chris confirms waking ~09:09;
+ *   - hourly heart rate, on the -4h frame already validated for hourly samples,
+ *     shows an awake bump in the 02:00 hour (max 96) and a rise at 09:00
+ *     (max 104);
+ *   - `sleep.jsonl` was last written at 09:21.
+ * Under the same rule the 2026-09-12 block is 06:21:01 -> 09:25:31, which is
+ * also the LAST block of that night, not its first.
+ *
+ * Nothing here explains why sleep and hourly agree; the point is that the
+ * measurement no longer asks for a special case. Kept as its own function so
+ * that if a future record says sleep differs after all, the fix is one line.
+ *
+ * Evaluated at the RAW instant, like the hourly path, so within ~4h of a DST
+ * switch it can pick the wrong side by an hour.
+ */
+export function sleepClockOffsetMs(atMs: number): number {
+  return ringClockOffsetMs(atMs);
+}
+
+/** `SleepRecord.recordState`: 2 is the empty end-of-list marker, not a night. */
+const SLEEP_STATE_EMPTY = 2;
+
+/**
+ * The `RingProtocol.SleepRecord` fields `sleepWireFromRing` reads. The Java
+ * object handed over by the bridge satisfies it; so does a plain object in a
+ * test.
+ */
+export type RingSleepRecordLike = {
+  recordState: number;
+  startTs: number;
+  endTs: number;
+  totalTime: number;
+  wakeTime: number;
+  remTime: number;
+  lightTime: number;
+  deepTime: number;
+  segments: { length: number; [index: number]: { stage: number; halfMinutes: number } };
+  receivedAtMs: number;
+};
+
+/**
+ * A live sleep record -> the wire shape, WITH the ring clock correction
+ * attached. This is the shipping conversion `health-live.ts` calls; it lives
+ * here so the known-good windows can be asserted through it. Returns null for
+ * the RECSTATE=2 end-of-list marker.
+ */
+export function sleepWireFromRing(record: RingSleepRecordLike): WireSleepRecord | null {
+  if (Number(record.recordState) === SLEEP_STATE_EMPTY) return null;
+  const segments: SleepSegment[] = [];
+  const raw = record.segments;
+  for (let i = 0; i < raw.length; i++) {
+    const segment = raw[i]!;
+    // Java calls it `stage`, the domain type calls it `stageId` - both are the
+    // same raw 0-3 ring id, deliberately unresolved here (see sleep-stages.ts).
+    segments.push({ stageId: Number(segment.stage), halfMinutes: Number(segment.halfMinutes) });
+  }
+  const startTs = Number(record.startTs);
+  return {
+    kind: "sleep",
+    startTs,
+    endTs: Number(record.endTs),
+    clockCorrectionMs: sleepClockOffsetMs(startTs * 1000),
+    totalSec: Number(record.totalTime),
+    wakeSec: Number(record.wakeTime),
+    remSec: Number(record.remTime),
+    lightSec: Number(record.lightTime),
+    deepSec: Number(record.deepTime),
+    segments,
+    receivedAtMs: Number(record.receivedAtMs),
+  };
+}
+
+// ===========================================================================
 
 export function convertRecords(records: readonly WireRecord[]): ConversionResult {
   const result: ConversionResult = { samples: [], sleep: [], skipped: [] };
@@ -270,11 +403,12 @@ function convertSleep(record: WireSleepRecord, result: ConversionResult): void {
     const startMs = record.startTs * 1000 - record.clockCorrectionMs;
     const endMs = (record.startTs + durationSec) * 1000 - record.clockCorrectionMs;
     result.sleep.push({
-      // The WAKE-UP day, which is what `dailySummary` looks a night up by, and
-      // what the old receivedAtMs guess was approximating. Taken from the end
-      // of the session so a night that starts before midnight still belongs to
-      // the morning it ends on.
-      dayStartMs: startOfLocalDay(endMs),
+      // The night this block ends in (20:00 -> 20:00, labelled by the day it
+      // ends in), which is what `assembleNights` groups by. Taken from the END
+      // so a night that starts before midnight still belongs to the morning it
+      // ends on. Assembly re-derives this from `endMs` anyway, so a stored row
+      // is never trusted for it.
+      dayStartMs: sleepNightDayStartMs(endMs),
       startMs,
       endMs,
       ...common,

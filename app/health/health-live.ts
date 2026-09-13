@@ -39,14 +39,15 @@
 
 import {
   convertRecords,
+  ringClockOffsetMs,
+  sleepWireFromRing,
   type WireHourlyRecord,
   type WireRecord,
-  type WireSleepRecord,
   type WireStepsRecord,
 } from "./health-ingest";
 import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
-import { startOfLocalDay, type SleepSegment } from "./health-types";
+import { startOfLocalDay } from "./health-types";
 import { File, knownFolders } from "@nativescript/core";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
@@ -58,9 +59,6 @@ const CMD_SPO2 = 0x02;
 const CMD_HRV = 0x04;
 const CMD_STEPS = 0x05;
 const CMD_SLEEP = 0x06;
-
-/** `SleepRecord.recordState`: 2 is the empty end-of-list marker, not a night. */
-const SLEEP_STATE_EMPTY = 2;
 
 const HOURLY_METRIC: { [cmdHi: number]: WireHourlyRecord["metric"] } = {
   [CMD_HEART_RATE]: "heartRate",
@@ -76,71 +74,8 @@ function activeCommunicator(): any {
   }
 }
 
-/**
- * The ring timestamps in a frame 4 hours ahead of real time, and that is our
- * own doing: the handshake sets its clock to `now + 14400s`, because that is
- * what a real Even write carries (verified against six of them). Even's app
- * evidently subtracts the same offset on the way back out. We were not, so
- * every hourly sample landed 4 hours in the future.
- *
- * MEASURED, not theorised. Stored samples read 09:00/10:00/11:00 local while
- * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
- * is exactly right for a ring that had just reported the current hour.
- *
- * ⚠ This value is PAIRED with the offset in `sendRingHandshake()`. They must
- * move together.
- *
- * Both were hardcoded to 14400. As of 2026-09-12 both COMPUTE it: 14400 was
- * only ever right because every capture behind this work was taken in EDT,
- * where 14400s is the magnitude of the UTC offset. Computing it is identical
- * today and survives DST.
- *
- * ⚠ MIND THE SIGN. The quantity is "how far AHEAD of real time the ring's clock
- * runs", which is the magnitude of a west-of-UTC offset — positive 14400 in
- * EDT. `getTimezoneOffset()` is already minutes WEST of UTC (+240 in EDT), so
- * it is used as-is, NOT negated. Java's `TimeZone.getOffset()` uses the
- * opposite convention and is negated there; the two agree on +14400.
- *
- * Worth recording because the first cut of this change got the sign backwards
- * on both sides at once — consistently, so they stayed "paired", and still
- * wrong by 8 hours. Only the handshake's own assertion log caught it.
- *
- * Note this direction is the OPPOSITE of the "ring stores naive local time"
- * hypothesis (which predicts `epoch + utc_offset`, i.e. 4h behind). Measured
- * behaviour is 4h ahead. The hypothesis is unconfirmed; the measurement rules.
- */
-function ringClockOffsetMs(atMs: number): number {
-  return new Date(atMs).getTimezoneOffset() * 60 * 1000;
-}
-
-/**
- * Sleep timestamps need TWICE the correction the hourly samples need.
- *
- * ⚠ EMPIRICAL, AND THE MECHANISM IS UNEXPLAINED. Do not read a story into the
- * factor of 2. The last time this file invented a tidy explanation for a ring
- * clock quirk ("the ring stores naive local time") it was falsified the next
- * day, which is why the hourly comment above ends with "the measurement rules".
- * The same applies here, more so: nothing about a sleep record is known to
- * differ from an hourly one in how it is stamped, and yet the correction does.
- *
- * The evidence, 2026-09-12, the first real sleep record off the hardware:
- * `start_ts` decodes raw to 10:21:01 EDT. Chris confirmed the true window two
- * independent ways - he slept "straight through from around 1:30 AM to 9:30 AM",
- * and separately reported seeing only the first block with "another 4 or so
- * hours after that". Under -4h the block is 06:21 -> 09:25, which puts the
- * missing time BEFORE it and contradicts what the device showed. Under -8h it
- * is 02:21 -> 05:25, leaving 05:25 -> 09:30 (4h05m) missing AFTER it, which is
- * what he saw.
- *
- * Expressed as twice `ringClockOffsetMs` rather than a fresh 28800 so the
- * November DST change moves the hourly correction and this one together. Like
- * the hourly path it is evaluated at the RAW instant, so within ~8h of a DST
- * switch it can pick the wrong side by an hour - the same caveat, deliberately
- * kept identical rather than special-cased here.
- */
-function sleepClockOffsetMs(atMs: number): number {
-  return 2 * ringClockOffsetMs(atMs);
-}
+// The ring clock corrections (`ringClockOffsetMs`, `sleepClockOffsetMs`) live in
+// `health-ingest.ts`, with their evidence, so tests can run them under node.
 
 function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
@@ -349,39 +284,20 @@ function toWire(record: any): WireRecord | null {
   }
 
   if (cmdHi === CMD_SLEEP) {
-    if (Number(record.recordState) === SLEEP_STATE_EMPTY) return null;
-    const segments: SleepSegment[] = [];
-    const raw = record.segments;
-    for (let i = 0; i < raw.length; i++) {
-      const segment = raw[i];
-      // Java calls it `stage`, the domain type calls it `stageId` - both are
-      // the same raw 0-3 ring id, deliberately unresolved here (see sleep-stages.ts).
-      segments.push({ stageId: Number(segment.stage), halfMinutes: Number(segment.halfMinutes) });
-    }
-    const startTs = Number(record.startTs);
-    const endTs = Number(record.endTs);
-    const correction = sleepClockOffsetMs(startTs * 1000);
-    // The assertion log for the -8h correction. One sleep record a night makes
-    // this cheap, and a wrong clock frame is otherwise invisible until someone
-    // reads a chart and disbelieves it.
+    // The shipping conversion, including the clock correction, is in
+    // health-ingest.ts so its known-good windows are tested through it.
+    const wire = sleepWireFromRing(record);
+    if (!wire) return null;
+    const correction = wire.clockCorrectionMs ?? 0;
+    // The assertion log for the sleep clock correction. A handful of sleep
+    // records a night makes this cheap, and a wrong clock frame is otherwise
+    // invisible until someone reads a chart and disbelieves it.
     console.log(
-      `health live: sleep raw ${new Date(startTs * 1000).toString()} -> corrected ` +
-        `${new Date(startTs * 1000 - correction).toString()} .. ` +
-        `${new Date(endTs * 1000 - correction).toString()} (-${correction / 3600000}h)`,
+      `health live: sleep raw ${new Date(wire.startTs * 1000).toString()} -> corrected ` +
+        `${new Date(wire.startTs * 1000 - correction).toString()} .. ` +
+        `${new Date(wire.endTs * 1000 - correction).toString()} (-${correction / 3600000}h)`,
     );
-    return {
-      kind: "sleep",
-      startTs,
-      endTs,
-      clockCorrectionMs: correction,
-      totalSec: Number(record.totalTime),
-      wakeSec: Number(record.wakeTime),
-      remSec: Number(record.remTime),
-      lightSec: Number(record.lightTime),
-      deepSec: Number(record.deepTime),
-      segments,
-      receivedAtMs: Number(record.receivedAtMs),
-    };
+    return wire;
   }
 
   return null;
