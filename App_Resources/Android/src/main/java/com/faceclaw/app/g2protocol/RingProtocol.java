@@ -922,6 +922,81 @@ public final class RingProtocol {
     }
 
     /** Hex, for logs. Mirrors FaceclawBleCommunicator.hex(). */
+    /**
+     * One JSON line for {@code ring-sleep-receipts.jsonl}, describing one sleep
+     * DATA page as it came off the wire. Pure, so the self-test can pin it.
+     *
+     * <p>Deliberately RAW: {@code startTs}/{@code endTs} are the ring's own
+     * clock, uncorrected, and the whole payload rides along as hex. The log
+     * exists to answer protocol questions (how many blocks, in what order, how
+     * fast we ACKed) that the decoded store cannot, including about fields the
+     * decode has not cracked yet.
+     *
+     * @param ackWrittenWallMs wall time the ACK write completed, or -1 if it never went out
+     * @param ackLatencyMs     page arrival to ACK written, or -1 if it never went out
+     * @param note             why the ACK did not go out, or null
+     */
+    public static String sleepPageReceiptLine(Frame page, long receivedWallMs, long ackWrittenWallMs,
+                                              long ackLatencyMs, boolean ackOk, String note) {
+        byte[] pay = page.payload;
+        int recState = pay != null && pay.length >= 3 ? pay[2] & 0xff : -1;
+        SleepRecord record = null;
+        try {
+            record = page.cmdHi == CMD_HI_SLEEP ? decodeSleep(page, receivedWallMs) : null;
+        } catch (RuntimeException ignored) {
+            // A body the decoder chokes on still gets its receipt, marked undecoded.
+        }
+        StringBuilder out = new StringBuilder(320);
+        out.append("{\"type\":\"page\"");
+        out.append(",\"rx\":\"").append(localStamp(receivedWallMs)).append('"');
+        out.append(",\"rxMs\":").append(receivedWallMs);
+        out.append(",\"cmd\":\"").append(page.commandLabel()).append('"');
+        out.append(",\"pageSeq\":").append(page.seq & 0xff);
+        out.append(",\"recState\":").append(recState);
+        if (record != null && record.isRealRecord()) {
+            out.append(",\"startTs\":").append(record.startTs);
+            out.append(",\"endTs\":").append(record.endTs);
+            out.append(",\"segments\":").append(record.segments.length);
+            out.append(",\"totalSec\":").append(record.totalTime);
+            out.append(",\"wakeSec\":").append(record.wakeTime);
+            out.append(",\"identities\":").append(record.identitiesHold());
+        } else if (record == null) {
+            out.append(",\"decoded\":false");
+        }
+        if (ackWrittenWallMs >= 0) {
+            out.append(",\"ack\":\"").append(localStamp(ackWrittenWallMs)).append('"');
+            out.append(",\"ackMs\":").append(ackWrittenWallMs);
+            out.append(",\"ackLatencyMs\":").append(ackLatencyMs);
+        } else {
+            out.append(",\"ack\":null,\"ackMs\":null,\"ackLatencyMs\":null");
+        }
+        out.append(",\"ackOk\":").append(ackOk);
+        if (note != null) {
+            out.append(",\"note\":\"").append(note.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        }
+        out.append(",\"payloadHex\":\"").append(hex(pay)).append('"');
+        out.append('}');
+        return out.toString();
+    }
+
+    /**
+     * One JSON line for {@code ring-sleep-receipts.jsonl} per sleep REQUEST,
+     * whether or not any page came back. {@code pages} counts the DATA pages
+     * (of any type) acknowledged between this REQ and the end of its idle wait.
+     */
+    public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen, int pages) {
+        return "{\"type\":\"pull\",\"req\":\"" + localStamp(requestedWallMs) + "\""
+            + ",\"reqMs\":" + requestedWallMs
+            + ",\"doneMs\":" + finishedWallMs
+            + ",\"rsp\":" + rspSeen
+            + ",\"pages\":" + pages + "}";
+    }
+
+    /** "2026-09-14T09:31:02.123-0400", in the device's zone. */
+    static String localStamp(long wallMs) {
+        return String.format(Locale.US, "%tFT%<tT.%<tL%<tz", wallMs);
+    }
+
     public static String hex(byte[] data) {
         if (data == null || data.length == 0) {
             return "";

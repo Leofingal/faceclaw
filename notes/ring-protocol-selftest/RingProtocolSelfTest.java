@@ -32,6 +32,7 @@ public final class RingProtocolSelfTest {
         testHourlyDecode();
         testStepsDecode();
         testSleepDecodeAndIdentities();
+        testSleepReceiptLines();
 
         System.out.println();
         System.out.println(failures == 0
@@ -341,6 +342,57 @@ public final class RingProtocolSelfTest {
         broken[32] = (byte) (segments.length + 1);
         expect("segment-count mismatch rejected",
             RingProtocol.decodeSleep(dataFrame(RingProtocol.CMD_HI_SLEEP, broken), 0L) == null);
+    }
+
+    /**
+     * The sleep receipt log (ring-sleep-receipts.jsonl). The file append lives in
+     * FaceclawBleCommunicator and needs Android; the LINE is built here, purely,
+     * so what a morning pull will read is pinned. Each line is also printed with
+     * a RECEIPT prefix so a caller can JSON-parse it.
+     */
+    private static void testSleepReceiptLines() {
+        section("sleep receipt log lines");
+        int[][] segments = {{0, 4}, {2, 40}};
+        long start = 1789295708L;
+        long end = start + 44 * 30;
+        byte[] body = sleepBody(1, start, end, 40 * 30, 4 * 30, 0, 40 * 30, 0, segments);
+        RingProtocol.Frame page = dataFrame(RingProtocol.CMD_HI_SLEEP, body);
+
+        String line = RingProtocol.sleepPageReceiptLine(page, 1789300000123L, 1789300000135L, 12L, true, null);
+        System.out.println("RECEIPT " + line);
+        expect("page line is a single line", !line.contains("\n"));
+        expect("page line is typed", line.startsWith("{\"type\":\"page\""));
+        expect("carries receive time", line.contains("\"rxMs\":1789300000123"));
+        expect("carries RECSTATE", line.contains("\"recState\":1"));
+        expect("carries RAW ring start/end, uncorrected",
+            line.contains("\"startTs\":" + start) && line.contains("\"endTs\":" + end));
+        expect("carries segment count", line.contains("\"segments\":2"));
+        expect("carries the page's own seq", line.contains("\"pageSeq\":32"));
+        expect("carries ACK written time, latency and outcome",
+            line.contains("\"ackMs\":1789300000135") && line.contains("\"ackLatencyMs\":12")
+                && line.contains("\"ackOk\":true"));
+        expect("carries the whole payload as hex",
+            line.contains("\"payloadHex\":\"" + RingProtocol.hex(page.payload) + "\""));
+        expect("no note when the ACK went out", !line.contains("\"note\""));
+
+        String unsent = RingProtocol.sleepPageReceiptLine(page, 1L, -1L, -1L, false, "ACK dropped: link \"dropped\"");
+        System.out.println("RECEIPT " + unsent);
+        expect("an unsent ACK is null, not zero",
+            unsent.contains("\"ack\":null") && unsent.contains("\"ackLatencyMs\":null")
+                && unsent.contains("\"ackOk\":false"));
+        expect("note is JSON-escaped", unsent.contains("\"note\":\"ACK dropped: link \\\"dropped\\\"\""));
+
+        String marker = RingProtocol.sleepPageReceiptLine(
+            dataFrame(RingProtocol.CMD_HI_SLEEP, new byte[] {0x11, 0x22, 0x02}), 5L, 6L, 1L, true, null);
+        System.out.println("RECEIPT " + marker);
+        expect("RECSTATE=2 end marker gets a receipt with no session times",
+            marker.contains("\"recState\":2") && !marker.contains("startTs") && !marker.contains("\"decoded\""));
+
+        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3);
+        System.out.println("RECEIPT " + pull);
+        expect("pull line carries rsp and page count",
+            pull.startsWith("{\"type\":\"pull\"") && pull.contains("\"rsp\":true")
+                && pull.contains("\"pages\":3") && pull.contains("\"doneMs\":2600"));
     }
 
     // ------------------------------------------------------------------

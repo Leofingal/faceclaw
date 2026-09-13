@@ -92,7 +92,37 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // that same thread has to deliver — writing there would deadlock until the
     // write timeout. The worker loop drains the queue instead.
     private final RingProtocol.Reassembler ringReassembler = new RingProtocol.Reassembler();
-    private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
+    private final ArrayDeque<PendingRingAck> ringOutbound = new ArrayDeque<>();
+
+    /**
+     * A queued page ACK together with the page it acknowledges and when that
+     * page arrived - so the write can log its own latency and a sleep page can
+     * leave a receipt carrying the time its ACK actually went out.
+     */
+    private static final class PendingRingAck {
+        final byte[] frame;
+        final RingProtocol.Frame page;
+        final long arrivalElapsedMs;
+        final long arrivalWallMs;
+
+        PendingRingAck(byte[] frame, RingProtocol.Frame page, long arrivalElapsedMs, long arrivalWallMs) {
+            this.frame = frame;
+            this.page = page;
+            this.arrivalElapsedMs = arrivalElapsedMs;
+            this.arrivalWallMs = arrivalWallMs;
+        }
+    }
+
+    /**
+     * Append-only receipt of every sleep DATA page, and of every sleep request's
+     * outcome, under the same {@code files/health/} folder the JS store uses.
+     * Exists so a morning pull can answer "did the ring send more than one
+     * block, in what order, and when did we ACK each" after logcat has long
+     * rotated. See {@link RingProtocol#sleepPageReceiptLine}.
+     */
+    private static final String RING_SLEEP_RECEIPTS_FILE = "ring-sleep-receipts.jsonl";
+    /** Hard stop on the receipt file. A sleep page is ~250 bytes and a pull line ~150. */
+    private static final long RING_SLEEP_RECEIPTS_MAX_BYTES = 2L * 1024L * 1024L;
     private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
     /**
      * Total records ever appended to {@link #ringHealthRecords}, including every
@@ -1612,9 +1642,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return true;
         }
 
+        long arrivalWallMs = System.currentTimeMillis();
         RingProtocol.HealthRecord record = null;
         try {
-            record = RingProtocol.decode(frame, System.currentTimeMillis());
+            record = RingProtocol.decode(frame, arrivalWallMs);
         } catch (Throwable t) {
             logLine("ring health decode error " + frame.describe() + ": " + safeMessage(t));
         }
@@ -1641,30 +1672,84 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // Acknowledge the page regardless of whether we could decode it: the
         // ACK is what keeps the ring sending, and a decode gap must not stall
         // the rest of the transfer.
-        queueRingPageAck(frame);
+        queueRingPageAck(frame, arrivalMs, arrivalWallMs);
         return true;
     }
 
-    private void queueRingPageAck(RingProtocol.Frame page) {
-        byte[] ack;
+    private void queueRingPageAck(RingProtocol.Frame page, long arrivalElapsedMs, long arrivalWallMs) {
+        boolean queued;
         synchronized (lock) {
-            if (!ringNotificationsReady) {
-                return;
+            queued = ringNotificationsReady;
+            if (queued) {
+                byte[] ack = RingProtocol.buildPageAck(
+                    nextRingSeqLocked(),
+                    nextRingNonceLocked(),
+                    page.cmdHi,
+                    page.cmdLo,
+                    page.seq
+                );
+                ringOutbound.add(new PendingRingAck(ack, page, arrivalElapsedMs, arrivalWallMs));
+                ringHealthPageCounter++;
+                // Wakes a health pull's wait loop, which writes the ACK straight
+                // away - see awaitRingHealthDataIdle().
+                lock.notifyAll();
             }
-            ack = RingProtocol.buildPageAck(
-                nextRingSeqLocked(),
-                nextRingNonceLocked(),
-                page.cmdHi,
-                page.cmdLo,
-                page.seq
-            );
-            ringOutbound.add(ack);
-            ringHealthPageCounter++;
-            lock.notifyAll();
         }
-        // The worker loop does the actual write; wake it so the ACK is not held
+        if (!queued) {
+            logLine("ring page ack NOT queued, notifications not ready: " + page.describe());
+            if (page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                // Rare path, and exactly the kind of page the receipt log exists
+                // to catch, so it gets a line even though nothing was ACKed.
+                appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                    page, arrivalWallMs, -1L, -1L, false, "not queued: notifications not ready"));
+            }
+            return;
+        }
+        // Outside a pull (a page the ring pushed unprompted) the worker loop's
+        // own flushRingOutbound() does the write; wake it so the ACK is not held
         // for a whole idle tick.
         interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Drop every unsent ACK, leaving a receipt for any sleep page whose ACK
+     * never went out. Caller holds {@code lock}. The file append happens under
+     * the lock; accepted because this runs only on connect/disconnect and
+     * normally finds the queue empty.
+     */
+    private void clearRingOutboundLocked(String reason) {
+        if (!ringOutbound.isEmpty()) {
+            logLine("ring page ack: dropping " + ringOutbound.size() + " unsent ACK(s), " + reason);
+            for (PendingRingAck pending : ringOutbound) {
+                if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                    appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                        pending.page, pending.arrivalWallMs, -1L, -1L, false, "ACK dropped: " + reason));
+                }
+            }
+        }
+        ringOutbound.clear();
+    }
+
+    /** Append one line to the sleep receipt log. Never throws. */
+    private void appendSleepReceipt(String line) {
+        try {
+            java.io.File dir = new java.io.File(appContext.getFilesDir(), "health");
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                logLine("ring sleep receipt: cannot create " + dir + ", NOT written: " + line);
+                return;
+            }
+            java.io.File file = new java.io.File(dir, RING_SLEEP_RECEIPTS_FILE);
+            if (file.length() > RING_SLEEP_RECEIPTS_MAX_BYTES) {
+                logLine("ring sleep receipt: file over " + RING_SLEEP_RECEIPTS_MAX_BYTES + " bytes, NOT written: " + line);
+                return;
+            }
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(file, true)) {
+                out.write((line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            logLine("ring sleep receipt: " + line);
+        } catch (Throwable t) {
+            logLine("ring sleep receipt write failed: " + safeMessage(t) + ", line was: " + line);
+        }
     }
 
     private void handleRenderNotification(String address, byte[] data) {
@@ -1698,7 +1783,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // Half-received fragments and unsent ACKs do not survive the
                     // link; the sequence counter restarts on the next connect.
                     ringReassembler.reset();
-                    ringOutbound.clear();
+                    clearRingOutboundLocked("link dropped");
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
                 return;
@@ -1935,7 +2020,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringSeq = 0;
             ringNonce = 0;
             ringReassembler.reset();
-            ringOutbound.clear();
+            clearRingOutboundLocked("ring reconnected");
         }
         logLine("direct ring ready phoneNotify=" + phoneNotify + " dataNotify=" + dataNotify);
 
@@ -2382,11 +2467,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * The original version fired all five REQs on a blind fixed sleep and
      * only flushed queued page ACKs after the whole loop finished - a real
      * successful Even sync (see the constants above) does the opposite: it
-     * waits for each REQ's own RSP, waits for DATA to go idle, ACKs
-     * immediately, then interleaves one device-channel command before the
+     * waits for each REQ's own RSP, ACKs each DATA page immediately, waits for
+     * DATA to go idle, then interleaves one device-channel command before the
      * next health type. This version does the same, using the existing
      * lock.wait()/notifyAll() idiom already used elsewhere in this class
      * (e.g. the shutdown-ack wait above) rather than a new mechanism.
+     *
+     * <p><b>Until 2026-09-13 it did NOT ACK immediately</b>, despite this doc
+     * saying so: the ACK waited for the idle window to close. See
+     * {@link #awaitRingHealthDataIdle} for what that cost and what changed.
      *
      * <p><b>Race condition, confirmed live 2026-09-10 - this is what the
      * rewrite above addresses, not a reason to remove this warning.</b> The
@@ -2434,8 +2523,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         for (int i = 0; i < commands.length; i++) {
             int command = commands[i];
             byte[] frame;
+            int pagesBefore;
+            long requestedWallMs = System.currentTimeMillis();
             synchronized (lock) {
                 ringHealthRspSeen = false;
+                pagesBefore = ringHealthPageCounter;
                 frame = RingProtocol.buildHealthRequest(command, nextRingSeqLocked(), nextRingNonceLocked());
             }
             if (!writeRingFrame(frame, "health request 0x" + Integer.toHexString(command))) {
@@ -2448,16 +2540,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 return false;
             }
 
-            if (awaitRingHealthRsp(RING_HEALTH_RSP_TIMEOUT_MS)) {
+            boolean answered = awaitRingHealthRsp(RING_HEALTH_RSP_TIMEOUT_MS);
+            if (answered) {
                 rspCount++;
                 awaitRingHealthDataIdle(RING_HEALTH_DATA_IDLE_MS);
             } else {
                 logLine("ring health: no RSP for command 0x" + Integer.toHexString(command) + ", moving on");
             }
-            // Write out any ACK(s) queued by DATA pages that just landed,
-            // right now rather than after the whole loop - this is the fix
-            // for the bug the doc above describes.
+            // Normally a no-op now: both wait loops above ACK each page the
+            // moment it lands. Kept for a page that races the idle deadline.
             flushRingOutbound();
+
+            if (command == RingProtocol.CMD_HI_SLEEP) {
+                // One line per sleep request, pages or not, so the receipt log
+                // shows every pull that ASKED as well as every page that came.
+                int pages;
+                synchronized (lock) {
+                    pages = ringHealthPageCounter - pagesBefore;
+                }
+                appendSleepReceipt(RingProtocol.sleepPullReceiptLine(
+                    requestedWallMs, System.currentTimeMillis(), answered, pages));
+            }
 
             if (i < commands.length - 1) {
                 sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
@@ -2495,8 +2598,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * this protocol's request path, it trusts the ring answers in order. */
     private boolean awaitRingHealthRsp(long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
-        synchronized (lock) {
-            while (running && ringConnected && !ringHealthRspSeen) {
+        while (true) {
+            // A DATA page can land in the same instant as its RSP (measured
+            // 2026-09-13: heart rate RSP and DATA logged in the same ms), so ACK
+            // anything queued before deciding anything else.
+            flushRingOutbound();
+            synchronized (lock) {
+                if (!running || !ringConnected || ringHealthRspSeen) {
+                    return ringHealthRspSeen;
+                }
+                if (ringNotificationsReady && !ringOutbound.isEmpty()) {
+                    continue;
+                }
                 long remaining = deadline - SystemClock.elapsedRealtime();
                 if (remaining <= 0) {
                     return false;
@@ -2508,28 +2621,60 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     return ringHealthRspSeen;
                 }
             }
-            return ringHealthRspSeen;
         }
     }
 
-    /** Block (worker thread) until DATA pages go idle for {@code idleMs},
+    /**
+     * Block (worker thread) until DATA pages go idle for {@code idleMs},
      * extending the window on every new page so a real multi-page backlog
-     * transfer isn't cut short. Not filtered by health type - correct given
-     * the ring only has one type in flight at a time (see the class doc
-     * above), so any page arriving here belongs to the type just requested. */
+     * transfer isn't cut short - and ACK each page THE MOMENT IT LANDS.
+     *
+     * <p><b>Changed 2026-09-13: the ACK used to wait out this whole idle
+     * window.</b> A page's ACK was queued from the GATT callback thread and only
+     * written by {@link #flushRingOutbound} after this method returned, on the
+     * same worker thread that was blocked here - so every page sat unacked for
+     * the full {@code idleMs} (1.5s) after the last page. The {@code notifyAll}
+     * from {@link #queueRingPageAck} woke this loop, but the loop only reset the
+     * deadline. Measured on the phone the same morning: heart-rate DATA at
+     * 10:31:00.608, next ring frame 10:31:02.410. Even's app ACKs each page
+     * immediately. The phone only ever stored the LAST sleep block of a night,
+     * which fits a ring that sends one block per page and gates page N+1 on
+     * page N's ACK: we got one block, went idle, and moved on to steps. That
+     * mechanism is a hypothesis; {@code ring-sleep-receipts.jsonl} is what
+     * tests it.
+     *
+     * <p>The ACK is written outside the lock - a GATT write blocks until the
+     * callback thread delivers onCharacteristicWrite, and that thread takes
+     * this lock to queue the next page.
+     *
+     * <p>Not filtered by health type - correct given the ring only has one type
+     * in flight at a time (see the class doc above), so any page arriving here
+     * belongs to the type just requested.
+     */
     private void awaitRingHealthDataIdle(long idleMs) {
         long idleDeadline = SystemClock.elapsedRealtime() + idleMs;
+        int lastSeenCounter;
         synchronized (lock) {
-            int lastSeenCounter = ringHealthPageCounter;
-            while (running && ringConnected) {
-                long remaining = idleDeadline - SystemClock.elapsedRealtime();
-                if (remaining <= 0) {
+            lastSeenCounter = ringHealthPageCounter;
+        }
+        while (true) {
+            flushRingOutbound();
+            synchronized (lock) {
+                if (!running || !ringConnected) {
                     return;
                 }
                 if (ringHealthPageCounter != lastSeenCounter) {
                     lastSeenCounter = ringHealthPageCounter;
                     idleDeadline = SystemClock.elapsedRealtime() + idleMs;
-                    remaining = idleMs;
+                }
+                if (ringNotificationsReady && !ringOutbound.isEmpty()) {
+                    // A page landed while the last ACK was being written: ACK it
+                    // before sleeping again.
+                    continue;
+                }
+                long remaining = idleDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return;
                 }
                 try {
                     lock.wait(Math.min(remaining, 100));
@@ -2588,21 +2733,37 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /**
      * Drain queued ring frames (page ACKs). Worker-thread only. Returns true
      * when anything was written.
+     *
+     * <p>Logs one line per ACK with the page's arrival time and the time the
+     * write completed, so "ACKed within tens of ms" is checkable from logcat,
+     * and leaves a receipt for every sleep page.
      */
     private boolean flushRingOutbound() {
         boolean wroteAny = false;
         while (true) {
-            byte[] frame;
+            PendingRingAck pending;
             synchronized (lock) {
                 if (!ringNotificationsReady || ringOutbound.isEmpty()) {
                     return wroteAny;
                 }
-                frame = ringOutbound.poll();
+                pending = ringOutbound.poll();
             }
-            if (frame == null) {
+            if (pending == null) {
                 return wroteAny;
             }
-            wroteAny |= writeRingFrame(frame, "page ack");
+            boolean ok = writeRingFrame(pending.frame, "page ack");
+            wroteAny |= ok;
+            long writtenWallMs = System.currentTimeMillis();
+            long latencyMs = SystemClock.elapsedRealtime() - pending.arrivalElapsedMs;
+            logLine(String.format(Locale.US,
+                "ring page ack %s pageSeq=%02x arrived %tT.%tL written %tT.%tL (+%dms)%s",
+                pending.page.commandLabel(), pending.page.seq & 0xff,
+                pending.arrivalWallMs, pending.arrivalWallMs, writtenWallMs, writtenWallMs,
+                latencyMs, ok ? "" : " WRITE FAILED"));
+            if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                    pending.page, pending.arrivalWallMs, writtenWallMs, latencyMs, ok, null));
+            }
         }
     }
 
