@@ -191,6 +191,7 @@ export class VoiceInputLayer implements Layer {
     const text = this.displayText().trim();
     const target = this.sendTargets[this.defaultTargetIndex];
     if (text && target) {
+      voiceControlBridge.noteCaptureOutcome("sent", "voice-input:auto");
       this.dismiss();
       target.onSend(text);
     } else {
@@ -212,7 +213,10 @@ export class VoiceInputLayer implements Layer {
         dim: !hasText,
         onSelect: () => {
           this.dismiss();
-          if (hasText) target.onSend(text);
+          if (hasText) {
+            voiceControlBridge.noteCaptureOutcome("sent", "voice-input");
+            target.onSend(text);
+          }
         },
       });
     }
@@ -220,10 +224,20 @@ export class VoiceInputLayer implements Layer {
       label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
       dim: !hasLlmKey,
       onSelect: () => {
-        if (hasLlmKey) this.startContinuation();
+        if (hasLlmKey) {
+          voiceControlBridge.noteCaptureOutcome("continue", "voice-input");
+          this.startContinuation();
+        }
       },
     });
-    rows.push({ label: "Discard", dim: false, onSelect: () => this.dismiss() });
+    rows.push({
+      label: "Discard",
+      dim: false,
+      onSelect: () => {
+        voiceControlBridge.noteCaptureOutcome("discarded", "voice-input");
+        this.dismiss();
+      },
+    });
     return rows;
   }
 

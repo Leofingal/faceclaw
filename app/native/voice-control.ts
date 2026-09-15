@@ -43,6 +43,12 @@ export type PushToTalkOptions = {
    * (providers, endpointing, verification) works the same on either source.
    */
   usePhoneMic?: boolean;
+  /**
+   * Whether Settings > Developer > Force phone microphone is on, separate from
+   * usePhoneMic (which is also true in preview-only mode). Recorded in the
+   * capture receipt only; it changes nothing about the capture itself.
+   */
+  forcePhoneMic?: boolean;
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
   openAiApiKey: string;
@@ -75,6 +81,12 @@ export type PushToTalkOptions = {
 
 /** Who currently wants the mic running. */
 type CaptureHolder = "ptt" | "continuous";
+
+/**
+ * What the wearer did with a capture's transcript, appended to the on-phone
+ * capture receipt log (FaceclawVoiceCaptureReceipt) as its own line.
+ */
+export type CaptureOutcome = "sent" | "cancelled" | "abandoned" | "refine" | "discarded" | "continue";
 
 export type RawPcmListener = (pcm: Uint8Array) => void;
 
@@ -162,6 +174,20 @@ export class FaceclawVoiceControlBridge {
     this.releaseCapture("continuous", false);
   }
 
+  /**
+   * Record what the wearer did with the most recent capture's transcript, as
+   * an "outcome" line in files/voice/capture-receipts.jsonl keyed to that
+   * capture. Diagnostic only: never throws, no-op off Android.
+   */
+  noteCaptureOutcome(outcome: CaptureOutcome, via: string): void {
+    if (!global.isAndroid) return;
+    try {
+      this.controller?.appendCaptureOutcome(outcome, via);
+    } catch {
+      // A receipt must never break the dictation flow.
+    }
+  }
+
   /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
   onRawPcm(listener: RawPcmListener): () => void {
     this.rawPcmListeners.add(listener);
@@ -200,6 +226,8 @@ export class FaceclawVoiceControlBridge {
     this.controller?.setNoiseSuppression(false);
     this.controller?.setBeamFilter(false, 0, 180);
     this.controller?.clearSpeakerVerification();
+    // The raw tap is not a dictation and can run for hours: no receipt.
+    this.controller?.clearReceiptContext();
     this.cloudClient = null;
     this.rawActive = true;
     this.started = true;
@@ -249,6 +277,10 @@ export class FaceclawVoiceControlBridge {
     } else {
       this.controller?.setBeamFilter(false, 0, 180);
     }
+    // One receipt line per capture (see FaceclawVoiceCaptureReceipt). The
+    // provider is the setting as requested; the receipt's mode/model fields
+    // say what actually ran, e.g. after a missing cloud key fell back.
+    this.controller?.setReceiptContext(options.provider, Boolean(options.forcePhoneMic), holder);
     this.verificationRejected = false;
     if (options.speakerVerification) {
       this.verificationActive = true;
@@ -288,8 +320,12 @@ export class FaceclawVoiceControlBridge {
     if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
-      onTranscript: (event: { text: string; isFinal: boolean }) =>
-        this.emitTranscript(event.text, event.isFinal),
+      onTranscript: (event: { text: string; isFinal: boolean }) => {
+        // Cloud finals arrive after the capture's receipt line is written, so
+        // they get a line of their own.
+        if (event.isFinal) this.noteCloudFinal(event.text);
+        this.emitTranscript(event.text, event.isFinal);
+      },
       onStatus: (status: string) => this.setStatus(status),
       onError: (message: string) => this.setStatus(message),
     };
@@ -494,6 +530,15 @@ export class FaceclawVoiceControlBridge {
     const event = { text, isFinal };
     for (const listener of this.transcriptListeners) {
       listener(event);
+    }
+  }
+
+  private noteCloudFinal(text: string): void {
+    if (!global.isAndroid) return;
+    try {
+      this.controller?.appendCloudFinal(String(text));
+    } catch {
+      // Diagnostic only.
     }
   }
 

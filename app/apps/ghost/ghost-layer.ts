@@ -670,6 +670,7 @@ export class GhostLayer implements Layer {
     // per-surface routing because it has to mean the same thing on both mic
     // surfaces (see onMicSurface()'s own doc comment on why that matters).
     if (delta < 0 && this.micState === "confirming" && this.onMicSurface()) {
+      voiceControlBridge.noteCaptureOutcome("cancelled", "ghost");
       this.resetMic();
       this.requestRender();
       return;
@@ -688,6 +689,7 @@ export class GhostLayer implements Layer {
     // comment). That freed the single down-gesture for the more differentiated
     // action.
     if (this.onMic() && this.micState === "confirming" && delta > 0) {
+      voiceControlBridge.noteCaptureOutcome("refine", "ghost");
       this.startListening(true);
       return;
     }
@@ -721,8 +723,15 @@ export class GhostLayer implements Layer {
     this.bodyScroll = 0;
     // Paging is a new intent; stop talking about the old one.
     stopGhostSpeech();
-    if (this.onMic()) this.startListening(false);
-    else this.resetMic();
+    if (this.onMic()) {
+      this.startListening(false);
+    } else {
+      // Paging off the mic slot abandons a live or unconfirmed dictation.
+      if (this.micState === "listening" || this.micState === "confirming") {
+        voiceControlBridge.noteCaptureOutcome("abandoned", "ghost");
+      }
+      this.resetMic();
+    }
     this.requestRender();
   }
 
@@ -864,6 +873,7 @@ export class GhostLayer implements Layer {
    */
   private back(): void {
     if (this.micState === "confirming" && this.onMicSurface()) {
+      voiceControlBridge.noteCaptureOutcome("cancelled", "ghost");
       this.resetMic();
       this.requestRender();
       return;
@@ -1186,6 +1196,9 @@ export class GhostLayer implements Layer {
     // Whether this is the countdown firing or a tap beating it, the timer's
     // work is done — and a tap that did not stop it would send twice.
     this.cancelAutoSend();
+    // He accepted the dictation (tap or countdown). Whether the network send
+    // then succeeds says nothing about the transcript, so it is not recorded.
+    voiceControlBridge.noteCaptureOutcome("sent", "ghost");
     await this.commitText(this.heard, this.pendingRaw);
   }
 
