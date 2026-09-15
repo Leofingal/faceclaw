@@ -15,9 +15,10 @@ import java.util.List;
  *   java -cp /tmp/rpt com.faceclaw.app.RingProtocolSelfTest
  * </pre>
  *
- * <p>The captured frames reproduced below are requests, page-ACKs and the
- * ring's device-channel 00:08 pushes. Those carry a nonce, a command id and a
- * sequence number — no biometric values. No captured health DATA page appears
+ * <p>The captured frames reproduced below are requests, page-ACKs, the ring's
+ * device-channel 00:08 pushes and its battery-shaped 00:01/00:7F/00:03 frames.
+ * Those carry a nonce, a command id, a sequence number and at most battery or
+ * state bytes — no biometric values. No captured health DATA page appears
  * here, deliberately.
  */
 public final class RingProtocolSelfTest {
@@ -36,6 +37,7 @@ public final class RingProtocolSelfTest {
         testSleepReceiptLines();
         testEvenConnectFramesAgainstCapture();
         testReconnectGuardAndBootReceipts();
+        testRingBatteryReceipts();
 
         System.out.println();
         System.out.println(failures == 0
@@ -525,12 +527,75 @@ public final class RingProtocolSelfTest {
         expect("a link up 13 235 s says held; a wrap shows prevPushSeq 255",
             RingProtocol.ringBootReceiptLine(1L, 13_235_000L, 0xff)
                 .endsWith(",\"link\":\"held\",\"linkAgeMs\":13235000,\"prevPushSeq\":255}"));
-        expect("held starts at exactly 10 000 ms",
-            RingProtocol.ringBootReceiptLine(1L, 9_999L, 1).contains("\"link\":\"new\"")
-                && RingProtocol.ringBootReceiptLine(1L, 10_000L, 1).contains("\"link\":\"held\""));
+        expect("held starts at exactly 30 000 ms",
+            RingProtocol.ringBootReceiptLine(1L, 29_999L, 1).contains("\"link\":\"new\"")
+                && RingProtocol.ringBootReceiptLine(1L, 30_000L, 1).contains("\"link\":\"held\""));
         expect("no link-up time and no earlier push -> unknown and nulls",
             RingProtocol.ringBootReceiptLine(1L, -1L, -1)
                 .endsWith(",\"link\":\"unknown\",\"linkAgeMs\":null,\"prevPushSeq\":null}"));
+    }
+
+    /**
+     * 2026-09-15 ringBattery receipt, against the ring's own battery-shaped
+     * frames from bazzite-desktop's 09-15 captures (btsnoop_hci.log and .last).
+     */
+    private static void testRingBatteryReceipts() {
+        section("ring battery receipt (09-15 capture 00:01 / 00:7F / 00:03 frames)");
+        // Nonce split: parse() puts everything after the 15-byte header into
+        // payload, and payload[0:2] is the nonce. A bare 06:01 RSP carries only that.
+        final String bareHex = "0059ca906564026414000306010c00ae68";
+        RingProtocol.Frame bare = RingProtocol.parse(unhex(bareHex));
+        expect("pkt 41753, a bare 06:01 RSP: payload is the 2-byte nonce alone",
+            bare != null && bare.crcOk && bare.kind == RingProtocol.KIND_RSP
+                && "ae68".equals(RingProtocol.hex(bare.payload)));
+
+        final String rspHex = "00cf0c53f06401640400030001130017993c020100000000";
+        RingProtocol.Frame rsp = RingProtocol.parse(unhex(rspHex));
+        expect("pkt 41306 (06:22:00) parses CRC-clean: device RSP 00:01 seq 04, payload 17993c020100000000",
+            rsp != null && rsp.crcOk && rsp.chan == RingProtocol.CHAN_DEVICE && rsp.kind == RingProtocol.KIND_RSP
+                && "00:01".equals(rsp.commandLabel()) && rsp.seq == 0x04
+                && "17993c020100000000".equals(RingProtocol.hex(rsp.payload)));
+        expect("pkt 41306 is battery-shaped", RingProtocol.isRingBatteryFrame(rsp));
+        expect("pkt 41306 level = 60 (0x3c, the byte after nonce 1799)", RingProtocol.ringBatteryLevel(rsp) == 60);
+        RingProtocol.Frame before = RingProtocol.parse(unhex("003588823364016404000300011300ba9e41020100000000"));
+        expect("pkt 36337 (00:44:52, before the reset) level = 65 (0x41)",
+            RingProtocol.isRingBatteryFrame(before) && RingProtocol.ringBatteryLevel(before) == 65);
+        RingProtocol.Frame hourly = RingProtocol.parse(unhex("00bc9f0945640164590002007f1300ea5e41020100000000"));
+        expect("pkt 4502 hourly 00:7F push (03:02:28) is battery-shaped, level 65",
+            RingProtocol.isRingBatteryFrame(hourly) && hourly.kind == RingProtocol.KIND_DATA
+                && RingProtocol.ringBatteryLevel(hourly) == 65);
+        RingProtocol.Frame state = RingProtocol.parse(unhex("00b79f84cf64016433000200030d00472702"));
+        expect("pkt 44986 00:03 push (01:02:18) is battery-shaped, no level",
+            RingProtocol.isRingBatteryFrame(state) && RingProtocol.ringBatteryLevel(state) == -1);
+
+        expect("pkt 41285 00:08 boot push is not",
+            !RingProtocol.isRingBatteryFrame(RingProtocol.parse(unhex("004a4af65364016400000200080d00376d00"))));
+        expect("our own 00:01 REQ is not",
+            !RingProtocol.isRingBatteryFrame(RingProtocol.parse(RingProtocol.buildDeviceRequest(0x01, 0x04, 0x3d4b))));
+        expect("our 00:7E page ACK is not",
+            !RingProtocol.isRingBatteryFrame(RingProtocol.parse(RingProtocol.buildPageAck(0x0d, 0x5f49, 0x01, 0x01, 0x03))));
+        expect("a health-channel 06:01 RSP (cmd lo 01) is not", !RingProtocol.isRingBatteryFrame(bare));
+        byte[] corrupt = unhex(rspHex);
+        corrupt[17] ^= 0x01;
+        expect("pkt 41306 with one level bit flipped (CRC fails) is not",
+            !RingProtocol.isRingBatteryFrame(RingProtocol.parse(corrupt)));
+
+        String line = RingProtocol.ringBatteryReceiptLine(rsp, 1789453320403L, 1_500L);
+        System.out.println("RECEIPT " + line);
+        expect("00:01 RSP line, exact",
+            line.equals("{\"type\":\"ringBattery\",\"at\":\"" + RingProtocol.localStamp(1789453320403L) + "\""
+                + ",\"atMs\":1789453320403,\"cmd\":\"00:01\",\"kind\":\"rsp\",\"level\":60"
+                + ",\"payloadHex\":\"17993c020100000000\",\"link\":\"new\",\"linkAgeMs\":1500}"));
+        String hourlyLine = RingProtocol.ringBatteryReceiptLine(hourly, 1L, 13_235_000L);
+        System.out.println("RECEIPT " + hourlyLine);
+        expect("00:7F push line: cmd 00:7f, kind push, level 65, raw payload, held",
+            hourlyLine.contains(",\"cmd\":\"00:7f\",\"kind\":\"push\",\"level\":65"
+                + ",\"payloadHex\":\"ea5e41020100000000\",\"link\":\"held\","));
+        String stateLine = RingProtocol.ringBatteryReceiptLine(state, 1L, -1L);
+        System.out.println("RECEIPT " + stateLine);
+        expect("00:03 push line: level null, raw payload, unknown link",
+            stateLine.endsWith(",\"cmd\":\"00:03\",\"kind\":\"push\",\"level\":null"
+                + ",\"payloadHex\":\"472702\",\"link\":\"unknown\",\"linkAgeMs\":null}"));
     }
 
     // ------------------------------------------------------------------

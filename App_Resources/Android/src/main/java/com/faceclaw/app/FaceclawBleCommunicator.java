@@ -1667,6 +1667,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     lock.notifyAll();
                 }
             }
+            if (RingProtocol.isRingBatteryFrame(frame)) {
+                // Receipt-log only (2026-09-15): 00:01 RSP, 00:7F and 00:03
+                // pushes, raw. Written after the RSP wake above, so a waiting
+                // handshake or pull is not held by the file append.
+                long linkAgeMs;
+                synchronized (lock) {
+                    linkAgeMs = ringLinkAgeMsLocked();
+                }
+                appendSleepReceipt(RingProtocol.ringBatteryReceiptLine(frame, System.currentTimeMillis(), linkAgeMs));
+            }
             return true;
         }
 

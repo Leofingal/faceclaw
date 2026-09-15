@@ -1116,12 +1116,20 @@ public final class RingProtocol {
     public static final long RING_CONNECT_SKIP_RECEIPT_GAP_MS = 60_000L;
 
     /**
-     * A ringBoot line whose ring link had been up at least this long says
-     * {@code "link":"held"}. A fresh connect's 00:08 push lands ~1.4 s after the
-     * link comes up (09-15 capture, pkts 559 -> 682); the 06:21:44 re-handshake
-     * ran on a link 13 235 s old. Receipt labelling only.
+     * A ringBoot or ringBattery line whose ring link had been up at least this
+     * long says {@code "link":"held"}. A fresh connect's 00:08 push lands ~1.4 s
+     * after the link comes up (09-15 capture, pkts 559 -> 682), and the
+     * handshake plus the first pull are done ~14-18 s in (09-14 22:11:59 ->
+     * 22:12:12; 09-15 02:41:09 -> 02:41:27). The 06:21:44 re-handshake ran on a
+     * link 13 235 s old. Receipt labelling only, and NOT the pull line's
+     * "link", which means "first pull after a handshake".
      */
-    public static final long RING_BOOT_HELD_LINK_MIN_AGE_MS = 10_000L;
+    public static final long RING_HELD_LINK_MIN_AGE_MS = 30_000L;
+
+    /** "held", "new" or "unknown" (age < 0) for a ring link age in ms. */
+    static String linkLabel(long linkAgeMs) {
+        return linkAgeMs < 0 ? "unknown" : linkAgeMs >= RING_HELD_LINK_MIN_AGE_MS ? "held" : "new";
+    }
 
     /**
      * The tryConnectRing guard. True = the ring is already connected with its
@@ -1172,18 +1180,63 @@ public final class RingProtocol {
 
     /**
      * One JSON line: the ring's boot signature arrived. {@code link} is "held"
-     * when the link had been up {@link #RING_BOOT_HELD_LINK_MIN_AGE_MS} or more,
+     * when the link had been up {@link #RING_HELD_LINK_MIN_AGE_MS} or more,
      * "new" below that, "unknown" with no link-up time. {@code prevPushSeq} is
      * the ring's previous DATA seq this process (null = none): near 255 reads
      * as a counter wrap, anything else as a reset.
      */
     public static String ringBootReceiptLine(long wallMs, long linkAgeMs, int prevPushSeq) {
-        String link = linkAgeMs < 0 ? "unknown" : linkAgeMs >= RING_BOOT_HELD_LINK_MIN_AGE_MS ? "held" : "new";
         return "{\"type\":\"ringBoot\",\"at\":\"" + localStamp(wallMs) + "\""
             + ",\"atMs\":" + wallMs
-            + ",\"link\":\"" + link + "\""
+            + ",\"link\":\"" + linkLabel(linkAgeMs) + "\""
             + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null")
             + ",\"prevPushSeq\":" + (prevPushSeq >= 0 ? Integer.toString(prevPushSeq) : "null") + "}";
+    }
+
+    /**
+     * Battery-shaped device frames, receipt-log only (2026-09-15): the 00:01 RSP
+     * (asked for in every handshake and pull), the hourly 00:7F push of the
+     * same shape (09-15 capture pkt 4502), and the 00:03 push, one byte after
+     * the nonce, meaning unknown. RSP or DATA for all three.
+     */
+    public static boolean isRingBatteryFrame(Frame frame) {
+        return frame != null
+            && frame.crcOk
+            && frame.chan == CHAN_DEVICE
+            && frame.cmdHi == CMD_HI_DEVICE
+            && (frame.kind == KIND_RSP || frame.kind == KIND_DATA)
+            && (frame.cmdLo == 0x01 || frame.cmdLo == 0x7F || frame.cmdLo == 0x03);
+    }
+
+    /**
+     * 00:01 / 00:7F level: the first payload byte after the 2-byte nonce, as
+     * 0-255 (0x3c = 60 in pkt 41306). -1 for 00:03 or a payload too short to
+     * hold it. Nothing after that byte is read or named here; the whole payload
+     * goes into the receipt, to be decoded against known charge times.
+     */
+    public static int ringBatteryLevel(Frame frame) {
+        if (frame == null || frame.cmdLo == 0x03 || frame.payload == null || frame.payload.length < 3) {
+            return -1;
+        }
+        return frame.payload[2] & 0xff;
+    }
+
+    /**
+     * One JSON line per battery-shaped frame. {@code cmd} is the same lower-case
+     * label page lines use ("00:01", "00:7f", "00:03"); {@code kind} is "rsp" or
+     * "push"; {@code payloadHex} is the whole payload, nonce included;
+     * {@code link} as for ringBoot.
+     */
+    public static String ringBatteryReceiptLine(Frame frame, long wallMs, long linkAgeMs) {
+        int level = ringBatteryLevel(frame);
+        return "{\"type\":\"ringBattery\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"cmd\":\"" + frame.commandLabel() + "\""
+            + ",\"kind\":\"" + (frame.kind == KIND_RSP ? "rsp" : "push") + "\""
+            + ",\"level\":" + (level >= 0 ? Integer.toString(level) : "null")
+            + ",\"payloadHex\":\"" + hex(frame.payload) + "\""
+            + ",\"link\":\"" + linkLabel(linkAgeMs) + "\""
+            + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null") + "}";
     }
 
     /** "2026-09-14T09:31:02.123-0400", in the device's zone. */
