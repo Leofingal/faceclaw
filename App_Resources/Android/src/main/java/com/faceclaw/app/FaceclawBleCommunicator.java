@@ -156,9 +156,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * rather than after the whole run.
      */
     private boolean ringHealthRspSeen;
+    /** Set by any DEVICE-channel RSP; see sendRingDeviceFrameAwaitRsp. Guarded by lock. */
+    private boolean ringDeviceRspSeen;
     /** Bumped once per decoded health DATA page (any type) so a waiter can
      * detect "a page just arrived" without polling ringHealthRecords. */
     private int ringHealthPageCounter;
+    /** Bumped once per SLEEP DATA page that reaches {@link #queueRingPageAck},
+     * queued or not. Receipt-log only: it feeds the pull line's {@code pages}
+     * and nothing on the wire reads it. {@link #ringHealthPageCounter} counts
+     * every type, which made the pull line report non-sleep pages. */
+    private int ringSleepPageCounter;
+    /** Same, for every NON-sleep DATA page. Receipt-log only: the pull line's
+     * {@code otherPages}, so a late page of another type landing inside the
+     * sleep request's window stays visible now that {@code pages} is sleep-only. */
+    private int ringOtherPageCounter;
     /**
      * elapsedRealtime() of the last time {@link #requestRingHealth()} was
      * attempted, or 0 if never. Health data updates hourly at the source
@@ -1626,6 +1637,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // Route on the CHAN byte, not on the shape of the payload.
         if (frame.chan != RingProtocol.CHAN_HEALTH) {
             Log.d(TAG, "ring device frame " + frame.describe());
+            if (frame.kind == RingProtocol.KIND_RSP) {
+                synchronized (lock) {
+                    ringDeviceRspSeen = true;
+                    lock.notifyAll();
+                }
+            }
             return true;
         }
 
@@ -1679,6 +1696,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void queueRingPageAck(RingProtocol.Frame page, long arrivalElapsedMs, long arrivalWallMs) {
         boolean queued;
         synchronized (lock) {
+            if (page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                ringSleepPageCounter++;
+            } else {
+                ringOtherPageCounter++;
+            }
             queued = ringNotificationsReady;
             if (queued) {
                 byte[] ack = RingProtocol.buildPageAck(
@@ -1690,8 +1712,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 );
                 ringOutbound.add(new PendingRingAck(ack, page, arrivalElapsedMs, arrivalWallMs));
                 ringHealthPageCounter++;
-                // Wakes a health pull's wait loop, which writes the ACK straight
-                // away - see awaitRingHealthDataIdle().
+                // Wakes a health pull's idle wait so it restarts its window. The
+                // ACK itself is NOT written until that wait returns - see
+                // awaitRingHealthDataIdle().
                 lock.notifyAll();
             }
         }
@@ -2331,6 +2354,52 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " (tz " + TimeZone.getDefault().getID() + ")");
         byte[] clock = le32(liveClockSeconds);
 
+        // 2026-09-14 (sleep lobe, even-sequence-match): order, repetition and
+        // pacing copied from a complete Even connect - bazzite-desktop
+        // /tmp/br4_last/btsnoop_hci.log.last pkts 64287-64473; the fresh
+        // capture's pkts 41056-41267 run the identical order 29 h earlier:
+        //   00:08 -> 00:0E -> 00:05 -> 00:01 -> 00:05 -> 00:0A -> 00:0A -> 06:02 -> ~1.5 s
+        // - Even waits for each device-channel RSP (85-391 ms) before its next
+        //   write; this used to fire seven frames within ~15 ms.
+        // - Even sends 00:05 TWICE per connect (4/4 full connects), both with
+        //   the same u32 as 00:0E. Not local midnight - see buildDayAnchorWrite.
+        // - 06:02 (health channel, nonce only) then a ~1.5 s pause, 3/4 connects.
+        // - 00:02 and 00:0B moved into the pull, where Even sends them; 00:04
+        //   is added there too (RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE).
+        // Every frame is pinned byte for byte by RingProtocolSelfTest.
+        //
+        // NOT matched tonight: the clock VALUE. Even writes the phone's plain
+        // Unix time; this writes now + clockOffsetSeconds (+14400 in EDT). Same
+        // capture, 54 s apart, ours was exactly 14400 s ahead of Even's (br4l
+        // pkt 63664 vs 64303). Left alone because it is paired with
+        // ringClockOffsetMs() and the -4h sleep correction, and 0daf44f
+        // delivered sleep with it. See the 2026-09-14 return before changing.
+        long clockSeconds = liveClockSeconds;
+        int[] handshake = {0x08, 0x0e, 0x05, 0x01, 0x05, 0x0a, 0x0a};
+        for (int cmdLo : handshake) {
+            if (!sendRingDeviceFrameAwaitRsp(cmdLo, clockSeconds, "handshake")) {
+                return;
+            }
+        }
+        byte[] frame0602;
+        synchronized (lock) {
+            frame0602 = RingProtocol.buildHealth0602(nextRingSeqLocked(), nextRingNonceLocked());
+        }
+        if (!writeRingFrame(frame0602, "handshake 06:02")) {
+            return;
+        }
+        logLine("ring handshake 06:02 " + RingProtocol.hex(frame0602) + " (no RSP expected), pausing "
+            + RING_HANDSHAKE_0602_PAUSE_MS + "ms");
+        SystemClock.sleep(RING_HANDSHAKE_0602_PAUSE_MS);
+        logLine("ring health: sent device-channel handshake (8 frames, Even br4l order)");
+    }
+
+    /**
+     * Superseded 2026-09-14 by the Even-order handshake above; kept only as a
+     * record of the old frame list (never called).
+     */
+    @SuppressWarnings("unused")
+    private void sendRingHandshakeOld(byte[] clock) {
         int seq1, nonce1, seq2, nonce2, seq3, nonce3, seq4, nonce4, seq5, nonce5, seq6, nonce6, seq7, nonce7;
         synchronized (lock) {
             seq1 = nextRingSeqLocked();
@@ -2469,13 +2538,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * successful Even sync (see the constants above) does the opposite: it
      * waits for each REQ's own RSP, ACKs each DATA page immediately, waits for
      * DATA to go idle, then interleaves one device-channel command before the
-     * next health type. This version does the same, using the existing
-     * lock.wait()/notifyAll() idiom already used elsewhere in this class
-     * (e.g. the shutdown-ack wait above) rather than a new mechanism.
+     * next health type. This version is response-paced the same way, using the
+     * existing lock.wait()/notifyAll() idiom already used elsewhere in this
+     * class (e.g. the shutdown-ack wait above) rather than a new mechanism.
      *
-     * <p><b>Until 2026-09-13 it did NOT ACK immediately</b>, despite this doc
-     * saying so: the ACK waited for the idle window to close. See
-     * {@link #awaitRingHealthDataIdle} for what that cost and what changed.
+     * <p><b>It does NOT ACK immediately</b>: each page's ACK is written after
+     * the idle window closes. Immediate ACKs were built 2026-09-13 (f39f23e)
+     * and the first night on them delivered no sleep pages at all, so they
+     * are reverted on this branch as a one-night test. See
+     * {@link #awaitRingHealthDataIdle}.
      *
      * <p><b>Race condition, confirmed live 2026-09-10 - this is what the
      * rewrite above addresses, not a reason to remove this warning.</b> The
@@ -2523,11 +2594,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         for (int i = 0; i < commands.length; i++) {
             int command = commands[i];
             byte[] frame;
-            int pagesBefore;
+            int sleepPagesBefore;
+            int otherPagesBefore;
             long requestedWallMs = System.currentTimeMillis();
             synchronized (lock) {
                 ringHealthRspSeen = false;
-                pagesBefore = ringHealthPageCounter;
+                sleepPagesBefore = ringSleepPageCounter;
+                otherPagesBefore = ringOtherPageCounter;
                 frame = RingProtocol.buildHealthRequest(command, nextRingSeqLocked(), nextRingNonceLocked());
             }
             if (!writeRingFrame(frame, "health request 0x" + Integer.toHexString(command))) {
@@ -2547,23 +2620,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             } else {
                 logLine("ring health: no RSP for command 0x" + Integer.toHexString(command) + ", moving on");
             }
-            // Normally a no-op now: both wait loops above ACK each page the
-            // moment it lands. Kept for a page that races the idle deadline.
+            // Write out any ACK(s) queued by DATA pages that just landed,
+            // right now rather than after the whole loop - this is the fix
+            // for the bug the doc above describes.
             flushRingOutbound();
 
             if (command == RingProtocol.CMD_HI_SLEEP) {
                 // One line per sleep request, pages or not, so the receipt log
                 // shows every pull that ASKED as well as every page that came.
+                // pages = sleep pages only (it used to count any type);
+                // otherPages = pages of other types that landed in this window.
                 int pages;
+                int otherPages;
                 synchronized (lock) {
-                    pages = ringHealthPageCounter - pagesBefore;
+                    pages = ringSleepPageCounter - sleepPagesBefore;
+                    otherPages = ringOtherPageCounter - otherPagesBefore;
                 }
                 appendSleepReceipt(RingProtocol.sleepPullReceiptLine(
-                    requestedWallMs, System.currentTimeMillis(), answered, pages));
+                    requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages));
             }
 
-            if (i < commands.length - 1) {
-                sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
+            // Even's device-channel REQs after each health type (br4l pkts
+            // 64640-64748, fresh 41417-41535): after 01:01 -> 00:02, 00:0A,
+            // 00:04, 00:01; after 04:01 -> 00:0B; nothing after the other
+            // three. Each waits for its RSP, as Even's do. Replaces the old
+            // one-ping-per-gap rotation (0a, 01, 02, 0b). Still sent after this
+            // type's ACK flush, not before it as Even does - the ACK timing is
+            // 0daf44f's on purpose tonight.
+            for (int cmdLo : RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE[i]) {
+                sendRingDeviceFrameAwaitRsp(cmdLo, 0L, "pull");
             }
         }
 
@@ -2598,18 +2683,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * this protocol's request path, it trusts the ring answers in order. */
     private boolean awaitRingHealthRsp(long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
-        while (true) {
-            // A DATA page can land in the same instant as its RSP (measured
-            // 2026-09-13: heart rate RSP and DATA logged in the same ms), so ACK
-            // anything queued before deciding anything else.
-            flushRingOutbound();
-            synchronized (lock) {
-                if (!running || !ringConnected || ringHealthRspSeen) {
-                    return ringHealthRspSeen;
-                }
-                if (ringNotificationsReady && !ringOutbound.isEmpty()) {
-                    continue;
-                }
+        synchronized (lock) {
+            while (running && ringConnected && !ringHealthRspSeen) {
                 long remaining = deadline - SystemClock.elapsedRealtime();
                 if (remaining <= 0) {
                     return false;
@@ -2621,31 +2696,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     return ringHealthRspSeen;
                 }
             }
+            return ringHealthRspSeen;
         }
     }
 
     /**
      * Block (worker thread) until DATA pages go idle for {@code idleMs},
      * extending the window on every new page so a real multi-page backlog
-     * transfer isn't cut short - and ACK each page THE MOMENT IT LANDS.
+     * transfer isn't cut short.
      *
-     * <p><b>Changed 2026-09-13: the ACK used to wait out this whole idle
-     * window.</b> A page's ACK was queued from the GATT callback thread and only
-     * written by {@link #flushRingOutbound} after this method returned, on the
-     * same worker thread that was blocked here - so every page sat unacked for
-     * the full {@code idleMs} (1.5s) after the last page. The {@code notifyAll}
-     * from {@link #queueRingPageAck} woke this loop, but the loop only reset the
-     * deadline. Measured on the phone the same morning: heart-rate DATA at
-     * 10:31:00.608, next ring frame 10:31:02.410. Even's app ACKs each page
-     * immediately. The phone only ever stored the LAST sleep block of a night,
-     * which fits a ring that sends one block per page and gates page N+1 on
-     * page N's ACK: we got one block, went idle, and moved on to steps. That
-     * mechanism is a hypothesis; {@code ring-sleep-receipts.jsonl} is what
-     * tests it.
-     *
-     * <p>The ACK is written outside the lock - a GATT write blocks until the
-     * callback thread delivers onCharacteristicWrite, and that thread takes
-     * this lock to queue the next page.
+     * <p><b>ACKs wait out this whole window, on purpose, as a test.</b> A page's
+     * ACK is queued from the GATT callback thread and only written by
+     * {@link #flushRingOutbound} after this method returns, on this same worker
+     * thread - so every page sits unacked for {@code idleMs} (1.5s) after the
+     * last page. That is the pre-2026-09-13 behaviour (0daf44f), which the
+     * ring DID deliver sleep under, including a growing in-progress block
+     * mid-night. f39f23e changed this loop (and awaitRingHealthRsp) to write
+     * each ACK the moment its page landed (measured 2-4ms), and the first night
+     * on that build delivered ZERO sleep pages across ~20 overnight pulls while
+     * HR/HRV/SpO2 kept arriving. Both loops are restored verbatim to 0daf44f
+     * so the ring sees the old wire timing; the receipt log (hooked into
+     * {@link #flushRingOutbound}) is kept, so a sleep page still leaves a line.
+     * If sleep comes back, immediate ACKs broke it. If not, the ACK timing is
+     * cleared and the cause is elsewhere.
      *
      * <p>Not filtered by health type - correct given the ring only has one type
      * in flight at a time (see the class doc above), so any page arriving here
@@ -2653,28 +2726,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     private void awaitRingHealthDataIdle(long idleMs) {
         long idleDeadline = SystemClock.elapsedRealtime() + idleMs;
-        int lastSeenCounter;
         synchronized (lock) {
-            lastSeenCounter = ringHealthPageCounter;
-        }
-        while (true) {
-            flushRingOutbound();
-            synchronized (lock) {
-                if (!running || !ringConnected) {
+            int lastSeenCounter = ringHealthPageCounter;
+            while (running && ringConnected) {
+                long remaining = idleDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
                     return;
                 }
                 if (ringHealthPageCounter != lastSeenCounter) {
                     lastSeenCounter = ringHealthPageCounter;
                     idleDeadline = SystemClock.elapsedRealtime() + idleMs;
-                }
-                if (ringNotificationsReady && !ringOutbound.isEmpty()) {
-                    // A page landed while the last ACK was being written: ACK it
-                    // before sleeping again.
-                    continue;
-                }
-                long remaining = idleDeadline - SystemClock.elapsedRealtime();
-                if (remaining <= 0) {
-                    return;
+                    remaining = idleMs;
                 }
                 try {
                     lock.wait(Math.min(remaining, 100));
@@ -2686,11 +2748,75 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /** Device-channel RSP wait for Even-paced writes. Even's own RSPs land in 85-391 ms. */
+    private static final long RING_DEVICE_RSP_TIMEOUT_MS = 1000L;
+
     /**
-     * Fire one bare device-channel REQ in the gap between health types,
-     * matching (without waiting on a response) the cadence a real Even sync
-     * uses. See {@link #RING_DEVICE_PING_CMD_LO} for provenance and caveats.
+     * Even's pause after 06:02 before its first health request: 1501, 1514 and
+     * 1515 ms (pkts 8845->9145, 41267->41408, 64473->64626).
      */
+    private static final long RING_HANDSHAKE_0602_PAUSE_MS = 1500L;
+
+    /**
+     * Build one device-channel frame the way Even does (seq/nonce taken now, in
+     * write order), write it, and wait for the ring's device-channel RSP before
+     * returning: Even never writes its next device frame before the previous
+     * RSP lands. Logs the frame hex and the RSP latency, so the handshake bytes
+     * are checkable from logcat. Returns false only when the write failed; a
+     * missing RSP is logged and the sequence moves on.
+     */
+    private boolean sendRingDeviceFrameAwaitRsp(int cmdLo, long clockSeconds, String what) {
+        byte[] frame;
+        synchronized (lock) {
+            ringDeviceRspSeen = false;
+            int seq = nextRingSeqLocked();
+            if (cmdLo == 0x08) {
+                frame = RingProtocol.buildHello(seq);
+            } else if (cmdLo == 0x0e) {
+                frame = RingProtocol.buildClockSet(seq, nextRingNonceLocked(), clockSeconds);
+            } else if (cmdLo == 0x05) {
+                frame = RingProtocol.buildDayAnchorWrite(seq, nextRingNonceLocked(), clockSeconds);
+            } else {
+                frame = RingProtocol.buildDeviceRequest(cmdLo, seq, nextRingNonceLocked());
+            }
+        }
+        String label = what + String.format(Locale.US, " 00:%02x", cmdLo);
+        long startMs = SystemClock.elapsedRealtime();
+        if (!writeRingFrame(frame, label)) {
+            return false;
+        }
+        boolean rsp = awaitRingDeviceRsp(RING_DEVICE_RSP_TIMEOUT_MS);
+        logLine("ring " + label + " " + RingProtocol.hex(frame) + (rsp
+            ? " rsp +" + (SystemClock.elapsedRealtime() - startMs) + "ms"
+            : " NO rsp within " + RING_DEVICE_RSP_TIMEOUT_MS + "ms"));
+        return true;
+    }
+
+    /** Same shape as awaitRingHealthRsp, for the DEVICE channel's RSP flag. */
+    private boolean awaitRingDeviceRsp(long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        synchronized (lock) {
+            while (running && ringConnected && !ringDeviceRspSeen) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ringDeviceRspSeen;
+                }
+            }
+            return ringDeviceRspSeen;
+        }
+    }
+
+    /**
+     * Superseded 2026-09-14 by sendRingDeviceFrameAwaitRsp and
+     * RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE; no longer called.
+     */
+    @SuppressWarnings("unused")
     private void sendRingDevicePing(int cmdLo) {
         byte[] frame;
         synchronized (lock) {

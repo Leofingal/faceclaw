@@ -33,6 +33,7 @@ public final class RingProtocolSelfTest {
         testStepsDecode();
         testSleepDecodeAndIdentities();
         testSleepReceiptLines();
+        testEvenConnectFramesAgainstCapture();
 
         System.out.println();
         System.out.println(failures == 0
@@ -142,6 +143,56 @@ public final class RingProtocolSelfTest {
         expect("ack command is 00:7e", f.cmdHi == 0x00 && f.cmdLo == 0x7e);
         expect("ack header seq differs from echoed page seq", f.seq != (f.payload[6] & 0xff));
         expect("echoed page seq is at payload[6]", (f.payload[6] & 0xff) == 0x03);
+    }
+
+    /**
+     * Known-good assertion for the 2026-09-14 handshake: rebuild a complete
+     * Even connect's device-channel writes from their decoded fields and
+     * reproduce the captured ATT values byte for byte, CRC included.
+     * Source: bazzite-desktop:/tmp/br4_last/btsnoop_hci.log.last, pkts
+     * 64287-64690, Even's app, 2026-09-11 05:32:18 EDT (btsnoop label 01:32:18
+     * plus this phone's 4 h snoop skew).
+     *
+     * <p>EVEN_CLOCK is that capture's clock value: the phone's plain Unix time
+     * at that instant (1789119138 = 2026-09-11 09:32:18 UTC). The 00:05 frames
+     * carry the SAME u32 as the 00:0E - not local midnight. No DATA page here.
+     */
+    private static void testEvenConnectFramesAgainstCapture() {
+        section("Even connect device frames rebuilt from br4l capture (00:08/0E/05/01/05/0A/0A/06:02/04)");
+        final long evenClock = 1789119138L;
+        expectHex("pkt 64287 00:08 hello", "00971953f964016401000000080d003f0101",
+            RingProtocol.buildHello(0x01));
+        expectHex("pkt 64303 00:0E clock set", "00414eef16640164020002000e1800c9a6a2caa36a0100000000000000",
+            RingProtocol.buildClockSet(0x02, 0xa6c9, evenClock));
+        expectHex("pkt 64324 00:05 (first)", "00b0f79eb964016403000200051200282810ffa2caa36a",
+            RingProtocol.buildDayAnchorWrite(0x03, 0x2828, evenClock));
+        expectHex("pkt 64336 00:01", "00a16eee6064016404000000010c004b3d",
+            RingProtocol.buildDeviceRequest(0x01, 0x04, 0x3d4b));
+        expectHex("pkt 64393 00:05 (second, same clock)", "000de3911a64016405000200051200162310ffa2caa36a",
+            RingProtocol.buildDayAnchorWrite(0x05, 0x2316, evenClock));
+        expectHex("pkt 64411 00:0A", "008c9c8ae8640164060000000a1800a882f8f53d235ac4ceaa073885cc",
+            RingProtocol.buildDeviceRequest(0x0a, 0x06, 0x82a8));
+        expectHex("pkt 64462 00:0A (again)", "00bb857344640164070000000a18009972f8f53d235ac4ceaa073885cc",
+            RingProtocol.buildDeviceRequest(0x0a, 0x07, 0x7299));
+        expectHex("pkt 64473 06:02 health-channel DATA", "00c0d450e764026408000206020c0097c4",
+            RingProtocol.buildHealth0602(0x08, 0xc497));
+        expectHex("pkt 64690 00:04 settings", "00db4db2126401640c000000041800c9f40000b7005100000000000000",
+            RingProtocol.buildDeviceRequest(0x04, 0x0c, 0xf4c9));
+
+        // The midnight reading of 00:05 is dead: a midnight anchor for that
+        // capture's day (2026-09-11 00:00 EDT = 1789099200) does NOT reproduce it.
+        String midnightBuilt = RingProtocol.hex(RingProtocol.buildDayAnchorWrite(0x03, 0x2828, 1789099200L));
+        expect("a local-midnight 00:05 does not match pkt 64324",
+            !"00b0f79eb964016403000200051200282810ffa2caa36a".equals(midnightBuilt));
+
+        int[] even = {RingProtocol.CMD_HI_HEART_RATE, RingProtocol.CMD_HI_HRV, RingProtocol.CMD_HI_SPO2,
+            RingProtocol.CMD_HI_SLEEP, RingProtocol.CMD_HI_STEPS};
+        expect("HEALTH_COMMANDS is Even's order 01,04,02,06,05",
+            Arrays.equals(even, RingProtocol.HEALTH_COMMANDS));
+        expect("interleave table has one row per health type",
+            RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE.length == RingProtocol.HEALTH_COMMANDS.length);
+        expect("after 01:01 Even sends 00:02, 00:0A, 00:04, 00:01",
+            Arrays.equals(new int[] {0x02, 0x0a, 0x04, 0x01}, RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE[0]));
     }
 
     private static void testParseRejectsGarbage() {
@@ -388,11 +439,13 @@ public final class RingProtocolSelfTest {
         expect("RECSTATE=2 end marker gets a receipt with no session times",
             marker.contains("\"recState\":2") && !marker.contains("startTs") && !marker.contains("\"decoded\""));
 
-        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3);
+        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2);
         System.out.println("RECEIPT " + pull);
         expect("pull line carries rsp and page count",
             pull.startsWith("{\"type\":\"pull\"") && pull.contains("\"rsp\":true")
                 && pull.contains("\"pages\":3") && pull.contains("\"doneMs\":2600"));
+        expect("pull line keeps sleep pages and other-type pages apart",
+            pull.contains("\"pages\":3,\"otherPages\":2}"));
     }
 
     // ------------------------------------------------------------------

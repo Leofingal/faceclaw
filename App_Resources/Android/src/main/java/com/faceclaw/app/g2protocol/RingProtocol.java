@@ -213,6 +213,110 @@ public final class RingProtocol {
     }
 
     // ------------------------------------------------------------------
+    // Device-channel frames, built exactly as Even's app builds them
+    // ------------------------------------------------------------------
+    //
+    // Every builder below is pinned byte for byte (CRC included) by
+    // RingProtocolSelfTest against a complete Even connect in
+    // bazzite-desktop:/tmp/br4_last/btsnoop_hci.log.last, pkts 64287-64690
+    // (2026-09-11 05:32 EDT). The fresh capture (/tmp/btsnoop_fresh.log,
+    // pkts 41056-41643, 2026-09-11 00:09 EDT) runs the identical order.
+
+    /** 00:0A's constant argument, byte-identical in every Even capture. */
+    private static final byte[] IDENTITY_0A_ARG = {
+        (byte) 0xf8, (byte) 0xf5, 0x3d, 0x23, 0x5a, (byte) 0xc4, (byte) 0xce, (byte) 0xaa, 0x07, 0x38, (byte) 0x85, (byte) 0xcc,
+    };
+
+    /**
+     * 00:04's constant argument. Even sends 00:04 as a REQ with exactly these
+     * 12 bytes after the nonce in all four captured frames (pkts 9327, 9390,
+     * 41456, 64690), across three connects from 2026-09-09 to 2026-09-11.
+     * Meaning unknown; copied, not derived.
+     */
+    private static final byte[] SETTINGS_04_ARG = {
+        0x00, 0x00, (byte) 0xb7, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    /**
+     * The device-channel REQs Even sends after each health type's request,
+     * indexed by position in {@link #HEALTH_COMMANDS} (01:01, 04:01, 02:01,
+     * 06:01, 05:01 - Even's order too). br4l pkts 64640-64748 and fresh pkts
+     * 41417-41535 agree: after 01:01 come 00:02, 00:0A, 00:04, 00:01; after
+     * 04:01 comes 00:0B; nothing after the other three.
+     */
+    public static final int[][] EVEN_DEVICE_REQS_AFTER_TYPE = {
+        {0x02, 0x0a, 0x04, 0x01},
+        {0x0b},
+        {},
+        {},
+        {},
+    };
+
+    /** 00:08: REQ whose payload is exactly 3f 01 01 - the one frame with NO nonce. */
+    public static byte[] buildHello(int seq) {
+        return buildFrame(CHAN_DEVICE, KIND_REQ, CMD_HI_DEVICE, 0x08, seq, new byte[] {0x3f, 0x01, 0x01});
+    }
+
+    /** 00:0E clock set: DATA, nonce, u32 LE clock seconds, then 01 and seven zero bytes. */
+    public static byte[] buildClockSet(int seq, int nonce, long clockSeconds) {
+        byte[] payload = new byte[14];
+        payload[0] = (byte) (nonce & 0xff);
+        payload[1] = (byte) ((nonce >>> 8) & 0xff);
+        writeIntLe(payload, 2, (int) clockSeconds);
+        payload[6] = 0x01;
+        return buildFrame(CHAN_DEVICE, KIND_DATA, CMD_HI_DEVICE, 0x0e, seq, payload);
+    }
+
+    /**
+     * 00:05: DATA, nonce, {@code 10 ff}, then a u32 LE timestamp. <b>Even puts
+     * the same u32 here as in the same connect's 00:0E clock set</b> - in all
+     * five captured Even connects (pkts 8835/9153/9266, 26693/26703/26765,
+     * 41069/41088/41178, 46555/46569/46594, 64303/64324/64393). It is NOT local
+     * midnight: midnight (e.g. {@code c0d9a06a}) appears only in the ring's own
+     * DATA page anchors, ring to phone.
+     */
+    public static byte[] buildDayAnchorWrite(int seq, int nonce, long clockSeconds) {
+        byte[] payload = new byte[8];
+        payload[0] = (byte) (nonce & 0xff);
+        payload[1] = (byte) ((nonce >>> 8) & 0xff);
+        payload[2] = (byte) ANCHOR_MARK_HI;
+        payload[3] = (byte) ANCHOR_MARK_LO;
+        writeIntLe(payload, 4, (int) clockSeconds);
+        return buildFrame(CHAN_DEVICE, KIND_DATA, CMD_HI_DEVICE, 0x05, seq, payload);
+    }
+
+    /**
+     * A device-channel REQ as Even builds it: 00:0A carries its constant blob,
+     * 00:04 its constant settings argument, everything else (00:01, 00:02,
+     * 00:0B) is nonce-only.
+     */
+    public static byte[] buildDeviceRequest(int cmdLo, int seq, int nonce) {
+        byte[] arg;
+        if (cmdLo == 0x0a) {
+            arg = IDENTITY_0A_ARG;
+        } else if (cmdLo == 0x04) {
+            arg = SETTINGS_04_ARG;
+        } else {
+            return buildRequest(CHAN_DEVICE, CMD_HI_DEVICE, cmdLo, seq, nonce);
+        }
+        byte[] payload = new byte[2 + arg.length];
+        payload[0] = (byte) (nonce & 0xff);
+        payload[1] = (byte) ((nonce >>> 8) & 0xff);
+        System.arraycopy(arg, 0, payload, 2, arg.length);
+        return buildFrame(CHAN_DEVICE, KIND_REQ, CMD_HI_DEVICE, cmdLo, seq, payload);
+    }
+
+    /**
+     * 06:02 on the HEALTH channel: DATA, nonce only. Even sends it as the last
+     * handshake frame, then pauses ~1.5 s (1501/1514/1515 ms) before its first
+     * health request, in 3 of 4 captured full connects (pkts 8845, 41267, 64473).
+     * No RSP follows it in any capture.
+     */
+    public static byte[] buildHealth0602(int seq, int nonce) {
+        return buildFrame(CHAN_HEALTH, KIND_DATA, CMD_HI_SLEEP, 0x02, seq, nonceBytes(nonce));
+    }
+
+    // ------------------------------------------------------------------
     // Frame parsing and fragment reassembly
     // ------------------------------------------------------------------
 
@@ -981,15 +1085,22 @@ public final class RingProtocol {
 
     /**
      * One JSON line for {@code ring-sleep-receipts.jsonl} per sleep REQUEST,
-     * whether or not any page came back. {@code pages} counts the DATA pages
-     * (of any type) acknowledged between this REQ and the end of its idle wait.
+     * whether or not any page came back. {@code pages} counts the SLEEP DATA
+     * pages that arrived between this REQ and the ACK flush after its idle
+     * wait, queued or not - one per {@code "type":"page"} line in that window.
+     * {@code otherPages} counts DATA pages of any OTHER type in the same window:
+     * nonzero means an earlier type's pages were still landing after the sleep
+     * REQ went out (seen 2026-09-13 15:24, two of them), which is the
+     * one-type-in-flight race {@code requestRingHealth} warns about.
      */
-    public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen, int pages) {
+    public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen,
+                                              int pages, int otherPages) {
         return "{\"type\":\"pull\",\"req\":\"" + localStamp(requestedWallMs) + "\""
             + ",\"reqMs\":" + requestedWallMs
             + ",\"doneMs\":" + finishedWallMs
             + ",\"rsp\":" + rspSeen
-            + ",\"pages\":" + pages + "}";
+            + ",\"pages\":" + pages
+            + ",\"otherPages\":" + otherPages + "}";
     }
 
     /** "2026-09-14T09:31:02.123-0400", in the device's zone. */
