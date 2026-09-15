@@ -439,13 +439,17 @@ public final class RingProtocolSelfTest {
         expect("RECSTATE=2 end marker gets a receipt with no session times",
             marker.contains("\"recState\":2") && !marker.contains("startTs") && !marker.contains("\"decoded\""));
 
-        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2);
+        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2, true);
         System.out.println("RECEIPT " + pull);
         expect("pull line carries rsp and page count",
             pull.startsWith("{\"type\":\"pull\"") && pull.contains("\"rsp\":true")
                 && pull.contains("\"pages\":3") && pull.contains("\"doneMs\":2600"));
         expect("pull line keeps sleep pages and other-type pages apart",
-            pull.contains("\"pages\":3,\"otherPages\":2}"));
+            pull.contains("\"pages\":3,\"otherPages\":2,"));
+        expect("pull line says the link was new (first pull after a handshake)",
+            pull.endsWith(",\"link\":\"new\"}"));
+        expect("a held-link pull says held",
+            RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 0, 0, false).endsWith(",\"link\":\"held\"}"));
     }
 
     // ------------------------------------------------------------------

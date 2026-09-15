@@ -1094,13 +1094,18 @@ public final class RingProtocol {
      * one-type-in-flight race {@code requestRingHealth} warns about.
      */
     public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen,
-                                              int pages, int otherPages) {
+                                              int pages, int otherPages, boolean newLink) {
         return "{\"type\":\"pull\",\"req\":\"" + localStamp(requestedWallMs) + "\""
             + ",\"reqMs\":" + requestedWallMs
             + ",\"doneMs\":" + finishedWallMs
             + ",\"rsp\":" + rspSeen
             + ",\"pages\":" + pages
-            + ",\"otherPages\":" + otherPages + "}";
+            + ",\"otherPages\":" + otherPages
+            // link: "new" = first pull after a handshake (Even's connect-time
+            // device REQs); "held" = pull over an already-held link (0daf44f's
+            // pings). Added 2026-09-14 so a night's sleep pages can be
+            // attributed without logcat.
+            + ",\"link\":\"" + (newLink ? "new" : "held") + "\"}";
     }
 
     /** "2026-09-14T09:31:02.123-0400", in the device's zone. */

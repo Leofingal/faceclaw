@@ -158,6 +158,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean ringHealthRspSeen;
     /** Set by any DEVICE-channel RSP; see sendRingDeviceFrameAwaitRsp. Guarded by lock. */
     private boolean ringDeviceRspSeen;
+    /**
+     * True from a completed handshake until the next pull starts: that pull sends
+     * Even's connect-time device REQs (incl. 00:04). A pull on a held link keeps
+     * 0daf44f's pings, because Even's held-link syncs send no device frames at
+     * all (br2 pkts 15434-15859, 22641-22967) and 00:04 is a settings write of
+     * unknown meaning. Guarded by lock.
+     */
+    private boolean ringPullFollowsHandshake;
     /** Bumped once per decoded health DATA page (any type) so a waiter can
      * detect "a page just arrived" without polling ringHealthRecords. */
     private int ringHealthPageCounter;
@@ -2359,7 +2367,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // /tmp/br4_last/btsnoop_hci.log.last pkts 64287-64473; the fresh
         // capture's pkts 41056-41267 run the identical order 29 h earlier:
         //   00:08 -> 00:0E -> 00:05 -> 00:01 -> 00:05 -> 00:0A -> 00:0A -> 06:02 -> ~1.5 s
-        // - Even waits for each device-channel RSP (85-391 ms) before its next
+        // - Even waits for each device-channel RSP (85-450 ms) before its next
         //   write; this used to fire seven frames within ~15 ms.
         // - Even sends 00:05 TWICE per connect (4/4 full connects), both with
         //   the same u32 as 00:0E. Not local midnight - see buildDayAnchorWrite.
@@ -2391,6 +2399,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("ring handshake 06:02 " + RingProtocol.hex(frame0602) + " (no RSP expected), pausing "
             + RING_HANDSHAKE_0602_PAUSE_MS + "ms");
         SystemClock.sleep(RING_HANDSHAKE_0602_PAUSE_MS);
+        synchronized (lock) {
+            ringPullFollowsHandshake = true;
+        }
         logLine("ring health: sent device-channel handshake (8 frames, Even br4l order)");
     }
 
@@ -2591,6 +2602,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean requestRingHealth() {
         int[] commands = RingProtocol.HEALTH_COMMANDS;
         int rspCount = 0;
+        boolean evenInterleave;
+        synchronized (lock) {
+            evenInterleave = ringPullFollowsHandshake;
+            ringPullFollowsHandshake = false;
+        }
         for (int i = 0; i < commands.length; i++) {
             int command = commands[i];
             byte[] frame;
@@ -2637,18 +2653,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     otherPages = ringOtherPageCounter - otherPagesBefore;
                 }
                 appendSleepReceipt(RingProtocol.sleepPullReceiptLine(
-                    requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages));
+                    requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages, evenInterleave));
             }
 
             // Even's device-channel REQs after each health type (br4l pkts
             // 64640-64748, fresh 41417-41535): after 01:01 -> 00:02, 00:0A,
             // 00:04, 00:01; after 04:01 -> 00:0B; nothing after the other
-            // three. Each waits for its RSP, as Even's do. Replaces the old
-            // one-ping-per-gap rotation (0a, 01, 02, 0b). Still sent after this
+            // three. Each waits for its RSP, as Even's do. Only on the first pull
+            // after a handshake; a held-link pull keeps 0daf44f's rotation
+            // (0a, 01, 02, 0b), fire-and-forget. Still sent after this
             // type's ACK flush, not before it as Even does - the ACK timing is
             // 0daf44f's on purpose tonight.
-            for (int cmdLo : RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE[i]) {
-                sendRingDeviceFrameAwaitRsp(cmdLo, 0L, "pull");
+            if (evenInterleave) {
+                for (int cmdLo : RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE[i]) {
+                    sendRingDeviceFrameAwaitRsp(cmdLo, 0L, "pull");
+                }
+            } else if (i < commands.length - 1) {
+                sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
             }
         }
 
@@ -2674,7 +2695,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return false;
         }
         logLine("ring health: requested " + commands.length + " record types, "
-            + rspCount + " answered");
+            + rspCount + " answered" + (evenInterleave ? " (Even connect device REQs)" : " (held-link pings)"));
         return true;
     }
 
@@ -2748,8 +2769,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    /** Device-channel RSP wait for Even-paced writes. Even's own RSPs land in 85-391 ms. */
-    private static final long RING_DEVICE_RSP_TIMEOUT_MS = 1000L;
+    /**
+     * Device-channel RSP wait for Even-paced writes. Even's own RSPs land in
+     * 85-450 ms; this phone's first hardware run (2026-09-14 21:58) measured
+     * 79-654 ms with two misses at a 1000 ms cap, so 1500.
+     */
+    private static final long RING_DEVICE_RSP_TIMEOUT_MS = 1500L;
 
     /**
      * Even's pause after 06:02 before its first health request: 1501, 1514 and
@@ -2813,10 +2838,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Superseded 2026-09-14 by sendRingDeviceFrameAwaitRsp and
-     * RingProtocol.EVEN_DEVICE_REQS_AFTER_TYPE; no longer called.
+     * Fire one bare device-channel REQ in the gap between health types, without
+     * waiting on a response: 0daf44f's cadence. Since 2026-09-14 used only for
+     * pulls over a held link; the pull right after a handshake sends Even's
+     * connect-time REQs instead. See {@link #RING_DEVICE_PING_CMD_LO}.
      */
-    @SuppressWarnings("unused")
     private void sendRingDevicePing(int cmdLo) {
         byte[] frame;
         synchronized (lock) {
