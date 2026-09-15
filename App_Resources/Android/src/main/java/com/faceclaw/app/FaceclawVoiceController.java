@@ -1277,9 +1277,22 @@ public class FaceclawVoiceController {
             OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
             String raw = result == null ? "" : result.getText();
             String text = raw == null ? "" : raw.trim();
+            // Whisper writes non-speech as bracketed tags ([BLANK_AUDIO],
+            // [ Silence ], (wind blowing)). A segment that is nothing but tags
+            // is not words: drop it before it reaches the transcript. Tags
+            // inside real speech stay; see FaceclawNonSpeechTags.
+            String droppedTag = null;
+            if (FaceclawNonSpeechTags.isNonSpeechOnly(text)) {
+                droppedTag = text;
+                text = "";
+                Log.i(TAG, "dropped non-speech segment kind=" + kind + " text=\"" + droppedTag + "\"");
+            }
             if (r != null) {
-                r.noteSegment(kind, segmentAudioMs, peak, SystemClock.elapsedRealtime() - decodeStartMs, false,
-                        text.length());
+                int index = r.noteSegment(kind, segmentAudioMs, peak, SystemClock.elapsedRealtime() - decodeStartMs,
+                        false, text.length());
+                if (droppedTag != null) {
+                    r.noteTagDropped(index, kind, droppedTag);
+                }
             }
             return text;
         } finally {

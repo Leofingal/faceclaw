@@ -4,11 +4,13 @@ import java.io.File;
 import java.nio.file.Files;
 
 /**
- * Standalone self-test for {@link FaceclawVoiceCaptureReceipt}. No Android
- * APIs and no hardware: every capture here is synthetic.
+ * Standalone self-test for {@link FaceclawVoiceCaptureReceipt} and
+ * {@link FaceclawNonSpeechTags}. No Android APIs and no hardware: every
+ * capture here is synthetic.
  *
  * <pre>
  *   javac -d /tmp/vct App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawVoiceCaptureReceipt.java \
+ *                     App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawNonSpeechTags.java \
  *                     notes/voice-capture-selftest/VoiceCaptureSelfTest.java
  *   java -cp /tmp/vct com.faceclaw.app.VoiceCaptureSelfTest
  * </pre>
@@ -30,6 +32,8 @@ public final class VoiceCaptureSelfTest {
         testG2Line();
         testSideLines();
         testAppendCap();
+        testNonSpeechTags();
+        testTagsDroppedInLine();
 
         System.out.println();
         System.out.println(failures == 0
@@ -267,6 +271,54 @@ public final class VoiceCaptureSelfTest {
         nested.delete();
         notADir.delete();
         dir.delete();
+    }
+
+    private static void testNonSpeechTags() {
+        section("non-speech tag matcher");
+        String[] dropped = {
+            "[BLANK_AUDIO]",
+            " [BLANK_AUDIO] ",
+            "[ Silence ]",
+            "(wind blowing)",
+            "[Music]",
+            "[BLANK_AUDIO] [BLANK_AUDIO]",
+            "(upbeat music) [Music]",
+            "(laughs).",
+            "- [Music] -",
+        };
+        for (String s : dropped) {
+            check("drops \"" + s + "\"", FaceclawNonSpeechTags.isNonSpeechOnly(s));
+        }
+        String[] kept = {
+            null,
+            "",
+            "   ",
+            "hello",
+            "I said [inaudible] twice",
+            "He called it (the thing) again",
+            "[BLANK_AUDIO] hello",
+            "hello (laughs)",
+            "okay [BLANK_AUDIO] okay",
+            "(a) b (c)",
+            "[unclosed",
+            "closed]",
+            "3) that",
+        };
+        for (String s : kept) {
+            check("keeps \"" + s + "\"", !FaceclawNonSpeechTags.isNonSpeechOnly(s));
+        }
+    }
+
+    private static void testTagsDroppedInLine() {
+        section("tagsDropped in the receipt");
+        FaceclawVoiceCaptureReceipt r = phoneReceipt("whisper");
+        int index = r.noteSegment("final", 2000, 0.05f, 900, false, 0);
+        r.noteTagDropped(index, "final", "[BLANK_AUDIO]");
+        r.noteTagDropped(-1, "partial", "(wind blowing)");
+        String line = r.toJsonLine();
+        contains("both drops, partial without an index", line,
+            "\"tagsDropped\":[{\"i\":0,\"kind\":\"final\",\"tag\":\"[BLANK_AUDIO]\"},{\"i\":null,\"kind\":\"partial\",\"tag\":\"(wind blowing)\"}]");
+        contains("none dropped is an empty list", phoneReceipt("whisper").toJsonLine(), "\"tagsDropped\":[]");
     }
 
     private static void section(String name) {

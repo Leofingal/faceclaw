@@ -46,6 +46,7 @@ public final class FaceclawVoiceCaptureReceipt {
     private static final int MAX_ROUTING_CHANGES = 32;
     private static final int MAX_SEGMENTS = 64;
     private static final int MAX_TRANSCRIPT_CHARS = 4000;
+    private static final int MAX_TAGS_DROPPED = 16;
     private static final Object APPEND_LOCK = new Object();
 
     /** A device as the receipt records it: Android's type label, product name, AudioDeviceInfo id. */
@@ -91,6 +92,18 @@ public final class FaceclawVoiceCaptureReceipt {
         }
     }
 
+    private static final class TagDrop {
+        final int index;
+        final String kind;
+        final String tag;
+
+        TagDrop(int index, String kind, String tag) {
+            this.index = index;
+            this.kind = kind;
+            this.tag = tag;
+        }
+    }
+
     public final long id;
     public final long startElapsedMs;
     public final boolean phoneMic;
@@ -128,6 +141,8 @@ public final class FaceclawVoiceCaptureReceipt {
     private final List<Integer> gatedSegments = new ArrayList<>();
     private int partialDecodes;
     private long partialDecodeMs;
+    private final List<TagDrop> tagsDropped = new ArrayList<>();
+    private int tagsDroppedOmitted;
 
     // G2 path.
     private long beamDropped;
@@ -275,6 +290,20 @@ public final class FaceclawVoiceCaptureReceipt {
             gatedSegments.add(index);
         }
         return index;
+    }
+
+    /**
+     * A recognizer result that was nothing but non-speech tags, dropped
+     * before it reached the transcript.
+     *
+     * @param index the segment index from {@link #noteSegment}, or -1 for a partial
+     */
+    public synchronized void noteTagDropped(int index, String kind, String tag) {
+        if (tagsDropped.size() >= MAX_TAGS_DROPPED) {
+            tagsDroppedOmitted++;
+            return;
+        }
+        tagsDropped.add(new TagDrop(index, kind, tag));
     }
 
     public synchronized void noteBeamDrop() {
@@ -426,6 +455,21 @@ public final class FaceclawVoiceCaptureReceipt {
         out.append(']');
         out.append(",\"partialDecodes\":").append(partialDecodes);
         out.append(",\"partialDecodeMs\":").append(partialDecodeMs);
+        out.append(",\"tagsDropped\":[");
+        for (int i = 0; i < tagsDropped.size(); i++) {
+            TagDrop drop = tagsDropped.get(i);
+            if (i > 0) {
+                out.append(',');
+            }
+            out.append("{\"i\":").append(drop.index >= 0 ? String.valueOf(drop.index) : "null")
+                    .append(",\"kind\":").append(json(drop.kind))
+                    .append(",\"tag\":").append(json(drop.tag))
+                    .append('}');
+        }
+        out.append(']');
+        if (tagsDroppedOmitted > 0) {
+            out.append(",\"tagsDroppedOmitted\":").append(tagsDroppedOmitted);
+        }
         out.append(",\"speechEnd\":").append(speechEnd);
         out.append(",\"verify\":");
         if (verified) {
