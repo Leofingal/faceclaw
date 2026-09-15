@@ -30,6 +30,32 @@ export type AppDefinition = {
   boot?: (ctx: AppContext) => void;
   /** False for apps that must not appear in the launcher grid (the launcher itself). */
   showInLauncher?: boolean;
+  /**
+   * A short live status for this app's row on the Exocortex home screen —
+   * Health's step count, Weather's line for today — or null for none.
+   *
+   * ⚠ CHEAP AND SYNCHRONOUS. This is called inside the glasses menu's PAINT
+   * PATH, once per visible row per frame. No network call, no file read that
+   * could block, no promise. An app whose figure costs more than a property
+   * read caches it and refreshes the cache in `refreshStatus` below; an app
+   * that cannot meet that returns null.
+   *
+   * ⚠ DEGRADE TO NOTHING. null means the row draws exactly as it did before
+   * this feature existed — not "--", not "n/a", not an empty column.
+   *
+   * Throwing is survivable (the home screen catches it and drops the status)
+   * but is not a design: it costs a warning on every frame.
+   */
+  statusLine?: () => string | null;
+  /**
+   * The expensive half of `statusLine`: whatever has to be fetched, read or
+   * pulled so the cheap read above has something to return.
+   *
+   * Called on the shared wall-clock-aligned :01/:31 tick (see
+   * `util/aligned-tick.ts` and `apps/status-refresh.ts`), and once at boot.
+   * May be slow and may start async work; nothing waits on it.
+   */
+  refreshStatus?: () => void;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
 };

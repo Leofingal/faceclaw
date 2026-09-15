@@ -49,6 +49,7 @@ import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
 import { startOfLocalDay } from "./health-types";
 import { File, knownFolders } from "@nativescript/core";
+import { onAlignedTick, startAlignedTick, __alignedTickInternals } from "../util/aligned-tick";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
 const UNKNOWN_TIME = -1;
@@ -451,48 +452,39 @@ export function startLiveHealthSync(): void {
  * and got built as a throttle, so a connected, stable ring pulled never —
  * nothing in the system drives a pull on a timer at all.
  *
- * Two reasons this is aligned to the wall clock rather than a plain interval:
- *
- * 1. **The ring's own step buckets close on 10-minute boundaries.** Pulling on
- *    the boundary collects a just-closed bucket instead of a half-formed one.
- * 2. **An elapsed timer drifts.** A pull at :07 sets the next at :37, then :07,
- *    wandering away from the boundary it is supposed to track. Re-arming
- *    against the clock each time cannot drift.
- *
- * The **one-minute offset is deliberate**: firing exactly at :00 risks catching
- * the ring before it has finalised that bucket.
+ * ⚠ THE SCHEDULER ITSELF NOW LIVES IN `util/aligned-tick.ts`, and this is one
+ * of its subscribers. It moved there when the home screen's status lines
+ * needed the same cadence: a second timer doing the same arithmetic would
+ * have drifted against this one the first time either was re-armed late, and
+ * would have put the reasoning in two places. The behaviour is unchanged —
+ * same slots, same re-arm-against-the-clock, same one-minute offset, and the
+ * arithmetic is still pinned by a test (now `tests/aligned-tick.test.cjs`).
  *
  * This only *requests* a pull. The communicator still applies its own anti-spam
  * floor, so an extra call here can never hammer the ring.
  */
-const ALIGNED_PULL_MINUTES = [1, 31];
-let alignedPullTimer: ReturnType<typeof setTimeout> | null = null;
-
-function msUntilNextAlignedPull(now: Date): number {
-  const minutes = now.getMinutes();
-  const withinHour = ALIGNED_PULL_MINUTES.filter((m) => m > minutes);
-  // Next slot this hour, or the first slot of the next hour.
-  const target = withinHour.length ? withinHour[0] : ALIGNED_PULL_MINUTES[0] + 60;
-  const msIntoMinute = now.getSeconds() * 1000 + now.getMilliseconds();
-  return (target - minutes) * 60 * 1000 - msIntoMinute;
-}
+let alignedPullSubscribed = false;
 
 export function startAlignedRingPull(): void {
-  if (alignedPullTimer) return;
-  const arm = () => {
-    const delay = msUntilNextAlignedPull(new Date());
-    alignedPullTimer = setTimeout(() => {
-      alignedPullTimer = null;
-      try {
-        requestFreshPull();
-      } catch (error) {
-        console.warn("health live: aligned ring pull failed", error);
-      }
-      arm();                        // re-arm against the clock, never the elapsed time
-    }, delay);
-  };
-  arm();
+  if (alignedPullSubscribed) return;
+  alignedPullSubscribed = true;
+  startAlignedTick();
+  onAlignedTick(() => {
+    try {
+      requestFreshPull();
+    } catch (error) {
+      console.warn("health live: aligned ring pull failed", error);
+    }
+  });
 }
 
-/** Exported for tests — the scheduling arithmetic, with no timer attached. */
-export const __alignedPullInternals = { msUntilNextAlignedPull, ALIGNED_PULL_MINUTES };
+/**
+ * Exported for tests — the scheduling arithmetic, with no timer attached.
+ *
+ * Kept as a name so nothing that referenced it has to change; it now forwards
+ * to the shared tick's own internals, which is where the arithmetic lives.
+ */
+export const __alignedPullInternals = {
+  msUntilNextAlignedPull: __alignedTickInternals.msUntilNextAlignedTick,
+  ALIGNED_PULL_MINUTES: __alignedTickInternals.ALIGNED_TICK_MINUTES,
+};

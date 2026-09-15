@@ -8,8 +8,16 @@
  *
  * The formulas reproduce the pre-TTF constants exactly at the 12px default:
  * listRowHeight 20, tightRowHeight 16, lineStep 14, menuTitleHeight 16.
+ *
+ * ⚠ THIS FILE MUST STAY FREE OF NATIVESCRIPT, and of anything that imports
+ * it. `drawSelectionHighlight` and `scrollToKeepSelectionVisible` moved here
+ * from `ui/menu.ts` (which reaches `native/frame-timings` through
+ * `ui/layers.ts`) so that list UIs can be drawn under plain node by
+ * `tools/menu-preview.cjs` and `tools/health-preview.cjs`. `ui/menu.ts`
+ * re-exports both, so every existing caller is unaffected.
  */
-import type { UiFont } from "../graphics/image";
+import type { GrayImage, UiFont } from "../graphics/image";
+import { clamp } from "../util/numeric-util";
 
 /** Height of one selectable list/menu row (line box + breathing room). */
 export function listRowHeight(font: UiFont): number {
@@ -47,4 +55,46 @@ export function menuTitleHeight(font: UiFont): number {
  */
 export function iconGridMinRowHeight(font: UiFont, iconSize: number, labelGap: number): number {
   return iconSize + labelGap + font.lineHeight + 8;
+}
+
+const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
+const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
+
+/**
+ * Draw a selection highlight for a list row. A focused list fills the row and
+ * outlines it; a visible-but-unfocused list draws only the outline, so the
+ * selection stays legible without implying it will receive input.
+ */
+export function drawSelectionHighlight(
+  image: GrayImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  focused: boolean,
+  radius = 6,
+): void {
+  if (focused) {
+    image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL, radius);
+  }
+  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
+}
+
+/**
+ * Move a list's scroll position the minimum distance needed to keep the
+ * selected row inside the visible window, clamped to the list bounds.
+ * Returns the new scroll row (the index of the first visible item).
+ */
+export function scrollToKeepSelectionVisible(
+  scrollRow: number,
+  selectedIndex: number,
+  visibleRowCount: number,
+  itemCount: number,
+): number {
+  if (selectedIndex < scrollRow) {
+    scrollRow = selectedIndex;
+  } else if (selectedIndex >= scrollRow + visibleRowCount) {
+    scrollRow = selectedIndex - visibleRowCount + 1;
+  }
+  return clamp(scrollRow, 0, Math.max(0, itemCount - visibleRowCount));
 }

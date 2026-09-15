@@ -13,6 +13,7 @@
  * hosted app could not use this as-is; see the return doc.
  */
 import { type GhostItem } from "./ghost-client";
+import { parseGhostTimestamp } from "../exocortex/status-line";
 
 export type GhostCompanionState = {
   /** True while Ghost's window exists on the glasses. */
@@ -39,6 +40,49 @@ const EMPTY: GhostCompanionState = {
 
 let current: GhostCompanionState = EMPTY;
 let listeners: Array<(state: GhostCompanionState) => void> = [];
+
+/**
+ * When Ghost's newest message arrived — the home screen's menu row.
+ *
+ * ⚠ DELIBERATELY NOT PART OF `GhostCompanionState`, because that state is
+ * cleared when the window closes and this must not be. The menu row exists
+ * precisely for the moments Ghost is NOT open; a "last message" that vanished
+ * the moment you left the app would be a row that is blank whenever anyone
+ * could read it.
+ *
+ * In memory only. It does not survive a process restart, and the row is bare
+ * until the next poll — a settings write on every three-second poll would be
+ * the wrong trade for a line that is back within seconds of opening Ghost.
+ */
+let lastMessageMs: number | null = null;
+/** The newest item's id as last seen, so an arrival can be told from a repaint. */
+let lastItemUuid = "";
+
+export function ghostLastMessageMs(): number | null {
+  return lastMessageMs;
+}
+
+/**
+ * Note the arrival time of the newest item, if it is new.
+ *
+ * Prefers the box's own `ts`. Falls back to the wall clock when the feed
+ * carries none — `GhostItem.ts` is optional in the wire type, and a row that
+ * said nothing whenever the box omitted a field would be a puzzle to debug
+ * from the glasses. The fallback is only taken when the newest item's uuid
+ * has actually CHANGED, so a repaint of the same feed never makes an old
+ * message look like it just landed.
+ */
+function noteNewestItem(items: readonly GhostItem[]): void {
+  const newest = items.length ? items[items.length - 1] : null;
+  if (!newest) return;
+  const stamped = parseGhostTimestamp(newest.ts);
+  if (stamped !== null) {
+    if (lastMessageMs === null || stamped > lastMessageMs) lastMessageMs = stamped;
+  } else if (newest.uuid !== lastItemUuid) {
+    lastMessageMs = Date.now();
+  }
+  lastItemUuid = newest.uuid;
+}
 
 export function ghostCompanionState(): GhostCompanionState {
   return current;
@@ -71,12 +115,18 @@ export function publishGhostCompanion(patch: Partial<GhostCompanionState>): void
     return;
   }
   current = next;
+  // After the identity guard: an unchanged feed cannot have a new newest
+  // item, so this runs only when something actually moved.
+  noteNewestItem(next.items);
   for (const listener of listeners.slice()) {
     listener(next);
   }
 }
 
-/** The window closed: drop the feed rather than leave a frozen one on the phone. */
+/**
+ * The window closed: drop the feed rather than leave a frozen one on the
+ * phone. `lastMessageMs` deliberately survives this — see its declaration.
+ */
 export function clearGhostCompanion(): void {
   publishGhostCompanion({ open: false, items: [], cursor: -1, status: "", sessionId: "" });
 }

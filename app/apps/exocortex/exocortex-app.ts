@@ -1,5 +1,4 @@
 import { GrayImage } from "../../graphics/image";
-import { renderIcon, type IconName } from "../../graphics/icons";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
@@ -14,8 +13,19 @@ import {
 } from "../../native/notification-icons";
 import { isNotificationListenerEnabled } from "../../native/notification-access";
 import { SingleNotificationLayer } from "../../ui/notifications";
-import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
-import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
+import { lineStep, listRowHeight, scrollToKeepSelectionVisible } from "../../ui/metrics";
+import {
+  appRunIndexAt,
+  appRunVisibleRows,
+  drawAppRun,
+  ICON_TEXT_GAP,
+  LIST_TOP,
+  PAGE_X,
+  ROW_X,
+  TITLE_X,
+  TITLE_Y,
+  type AppRunEntry,
+} from "./app-run";
 import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
 import { type InputEvent } from "../../ui/gestures";
 import { type Plane } from "../../graphics/plane";
@@ -25,14 +35,14 @@ import { type ShellWindow } from "../../ui/shell/shell";
 export const EXOCORTEX_WINDOW_ID = "exocortex";
 export const EXOCORTEX_SURFACE_ID = "window:exocortex";
 
-/** One launchable entry of the home screen's app run. */
-export type ExocortexAppEntry = {
-  appId: string;
-  label: string;
-  icon: IconName;
-  /** App-supplied artwork; icon remains the fallback. */
-  renderIcon?: (size: number) => GrayImage | null;
-};
+/**
+ * One launchable entry of the home screen's app run.
+ *
+ * The shape lives with the painter that consumes it (./app-run), which is the
+ * half of this screen that runs under plain node; this alias keeps the name
+ * every caller already imports.
+ */
+export type ExocortexAppEntry = AppRunEntry;
 
 /**
  * What the home window needs from the controller. Spelled out rather than
@@ -54,13 +64,11 @@ export type ExocortexOptions = {
   setSurfaceVisible: (visible: boolean) => void;
 };
 
-const PAGE_X = 20;
-const TITLE_X = 18;
-const TITLE_Y = 10;
-const LIST_TOP = 38;
-const ROW_X = 12;
+// The home screen's shared geometry (PAGE_X, TITLE_X, TITLE_Y, LIST_TOP,
+// ROW_X, ICON_TEXT_GAP) lives in ./app-run, so the notification view here and
+// the app run there cannot drift apart. These two are the notification view's
+// own.
 const NOTIF_ICON_SIZE = 24;
-const ICON_TEXT_GAP = 8;
 const MAX_NOTIFICATIONS = 50;
 
 /**
@@ -289,7 +297,13 @@ class ExocortexHomeLayer implements Layer {
     }
   }
 
-  /** The app run: a plain vertical list, one row per app. */
+  /**
+   * The app run: a plain vertical list, one row per app.
+   *
+   * The drawing itself is in ./app-run, which imports no NativeScript and is
+   * therefore renderable to a PNG by tools/menu-preview.cjs. Scroll position
+   * is resolved here, because it is layer state rather than layout.
+   */
   private paintAppList(
     image: GrayImage,
     apps: ExocortexAppEntry[],
@@ -298,30 +312,17 @@ class ExocortexHomeLayer implements Layer {
     height: number,
   ): void {
     const font = getDefaultSmallFont();
-    image.drawText(font, TITLE_X, TITLE_Y, "Apps", 220);
-    if (!apps.length) {
-      image.drawText(font, PAGE_X, LIST_TOP, "No apps registered.", 190);
-      return;
-    }
-    const rowH = listRowHeight(font);
-    const iconSize = Math.max(12, rowH - 6);
-    const visibleRows = Math.max(1, Math.floor((height - LIST_TOP) / rowH));
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.appIndex, visibleRows, apps.length);
-    const textX = ROW_X + 8 + iconSize + ICON_TEXT_GAP;
-    for (let index = this.scrollRow; index < Math.min(apps.length, this.scrollRow + visibleRows); index++) {
-      const app = apps[index]!;
-      const y = LIST_TOP + (index - this.scrollRow) * rowH;
-      const selected = index === this.appIndex;
-      if (selected) {
-        drawSelectionHighlight(image, ROW_X, y, width - 2 * ROW_X, rowH - 2, focused);
-      }
-      const icon = app.renderIcon?.(iconSize) ?? renderIcon(app.icon, iconSize);
-      if (icon) {
-        image.bitBlt(icon, ROW_X + 8, y + Math.round((rowH - 2 - icon.height) / 2), { transparentZero: true });
-      }
-      const label = truncateText(font, app.label, width - textX - ROW_X - 8);
-      image.drawText(font, textX, y + LIST_ROW_TEXT_INSET, label, selected ? 235 : 190);
-    }
+    this.scrollRow = scrollToKeepSelectionVisible(
+      this.scrollRow,
+      this.appIndex,
+      appRunVisibleRows(font, height),
+      apps.length,
+    );
+    drawAppRun(image, { width, height, font }, apps, {
+      selectedIndex: this.appIndex,
+      scrollRow: this.scrollRow,
+      focused,
+    });
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -410,12 +411,15 @@ class ExocortexHomeLayer implements Layer {
       return true;
     }
     if (this.zone !== "app" || !apps.length) return false;
-    const font = getDefaultSmallFont();
-    const rowH = listRowHeight(font);
     const { width } = ctx.stack.getBaseSize();
-    if (y < LIST_TOP || x < ROW_X || x >= width - ROW_X) return false;
-    const index = this.scrollRow + Math.floor((y - LIST_TOP) / rowH);
-    if (index < 0 || index >= apps.length) return false;
+    const index = appRunIndexAt(
+      { width, font: getDefaultSmallFont() },
+      apps.length,
+      this.scrollRow,
+      x,
+      y,
+    );
+    if (index === null) return false;
     this.appIndex = index;
     await this.options.launchApp(apps[index]!.appId);
     return true;

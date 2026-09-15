@@ -42,6 +42,7 @@ import {
 } from "../../health/health-glance";
 import { healthStore } from "../../health/health-store-files";
 import { requestFreshPull, syncLiveRecords } from "../../health/health-live";
+import { noteHealthSteps } from "../../health/health-status";
 import { isFixtureData, seedFixturesIfNeeded } from "../../health/health-seed";
 import {
   DAY_MS,
@@ -108,6 +109,11 @@ class HealthLayer implements Layer {
       const samples = store.samplesInRange(today, today + DAY_MS);
       const sessions = store.sleepSessions();
       this.summary = dailySummary(samples, sessions, today);
+      // Chris asked for the menu's step count to update "every 30 minutes, or
+      // when you go into the health app view". This is that second case — and
+      // it hands over the exact figure this page is about to draw, so the row
+      // and the glance can never disagree about today's steps.
+      noteHealthSteps(today, this.summary.steps);
       // One pass per metric over a day's samples - a few hundred rows, and the
       // drill-down has to be instant when the cursor lands on it.
       const hourly: Partial<Record<SampleMetric, RollupPoint[]>> = {};
