@@ -178,6 +178,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * {@code otherPages}, so a late page of another type landing inside the
      * sleep request's window stays visible now that {@code pages} is sleep-only. */
     private int ringOtherPageCounter;
+    /** elapsedRealtime of the ring's last connected=true callback, 0 = none. Receipt-log only
+     * (link age on ringConnectSkipped/ringBoot lines). Guarded by lock. */
+    private long ringLinkUpElapsedMs;
+    /** The ring's last DATA seq seen (its global push counter), -1 = none this process.
+     * Receipt-log only: lets a ringBoot line tell a reset from an 8-bit wrap. Guarded by lock. */
+    private int ringLastPushSeq = -1;
+    /** ringConnectSkipped rate limit: elapsedRealtime of the last line written (-1 = none),
+     * and the skips not written since. Guarded by lock. */
+    private long ringConnectSkipReceiptAtMs = -1L;
+    private int ringConnectSkipsSuppressed;
     /**
      * elapsedRealtime() of the last time {@link #requestRingHealth()} was
      * attempted, or 0 if never. Health data updates hourly at the source
@@ -1642,6 +1652,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return true;
         }
 
+        // Receipt-log only (2026-09-15): track the ring's push counter and
+        // leave a ringBoot line on its boot signature. Nothing on the wire.
+        if (frame.kind == RingProtocol.KIND_DATA) {
+            noteRingPush(frame);
+        }
+
         // Route on the CHAN byte, not on the shape of the payload.
         if (frame.chan != RingProtocol.CHAN_HEALTH) {
             Log.d(TAG, "ring device frame " + frame.describe());
@@ -1783,6 +1799,59 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /** Ms since the ring's last connected callback, or -1 if none. Caller holds {@code lock}. */
+    private long ringLinkAgeMsLocked() {
+        return ringLinkUpElapsedMs > 0 ? SystemClock.elapsedRealtime() - ringLinkUpElapsedMs : -1L;
+    }
+
+    /**
+     * Receipt for a skipped {@link #tryConnectRing}. At most one line per
+     * {@link RingProtocol#RING_CONNECT_SKIP_RECEIPT_GAP_MS}; skips inside that
+     * window are counted and reported as {@code suppressed} on the next line
+     * that is written. Worker thread.
+     */
+    private void noteRingConnectSkipped(String reason, long linkAgeMs) {
+        long now = SystemClock.elapsedRealtime();
+        int suppressed;
+        synchronized (lock) {
+            if (!RingProtocol.ringConnectSkipReceiptDue(now, ringConnectSkipReceiptAtMs)) {
+                ringConnectSkipsSuppressed++;
+                return;
+            }
+            suppressed = ringConnectSkipsSuppressed;
+            ringConnectSkipsSuppressed = 0;
+            ringConnectSkipReceiptAtMs = now;
+        }
+        appendSleepReceipt(RingProtocol.ringConnectSkippedReceiptLine(
+            System.currentTimeMillis(), reason, linkAgeMs, suppressed));
+    }
+
+    /**
+     * Receipt-log only; called for every intact ring DATA frame on the GATT
+     * callback thread. Tracks the ring's push counter and, on the boot
+     * signature (a device-channel 00:08 push with seq 00, see
+     * {@link RingProtocol#isRingBootHello}), appends a ringBoot line. The
+     * previous push seq rides along because the counter is 8-bit and the push
+     * bytes are a function of seq: a wrap landing on the 00:08 push would be
+     * byte-identical to a boot, and only a previous seq near ff tells them apart.
+     */
+    private void noteRingPush(RingProtocol.Frame frame) {
+        int prevPushSeq;
+        long linkAgeMs;
+        synchronized (lock) {
+            prevPushSeq = ringLastPushSeq;
+            ringLastPushSeq = frame.seq & 0xff;
+            linkAgeMs = ringLinkAgeMsLocked();
+        }
+        if (!RingProtocol.isRingBootHello(frame)) {
+            return;
+        }
+        logLine("ring BOOT signature: 00:08 push seq 00, previous push seq "
+            + (prevPushSeq >= 0 ? Integer.toHexString(prevPushSeq) : "none") + ", link age "
+            + (linkAgeMs >= 0 ? linkAgeMs + "ms" : "unknown"));
+        appendSleepReceipt(RingProtocol.ringBootReceiptLine(System.currentTimeMillis(), linkAgeMs, prevPushSeq));
+    }
+
     private void handleRenderNotification(String address, byte[] data) {
         FaceclawAudioPacketListener listenerToCall;
         long arrivalMs = SystemClock.elapsedRealtime();
@@ -1809,6 +1878,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (isConfiguredRingAddress(address)) {
                 ringConnected = connected;
                 ringNotificationsReady = false;
+                if (connected) {
+                    // Receipt-log only: link age for ringConnectSkipped/ringBoot lines.
+                    ringLinkUpElapsedMs = SystemClock.elapsedRealtime();
+                }
                 if (!connected) {
                     ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
                     // Half-received fragments and unsent ACKs do not survive the
@@ -1984,6 +2057,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void tryConnectRing(String reason) {
         if (!hasRingAddress()) {
+            return;
+        }
+        // Guard (2026-09-15). connectRing() on a live ring link re-writes both
+        // CCCDs, resets ringSeq/ringNonce, clears the reassembler and the ACK
+        // queue, and re-sends the whole handshake. connectLoopOnce() did exactly
+        // that after every glasses reconnect: on 09-15 at 06:21:44 the glasses
+        // connected, the ring (link up 13 235 s) got a fresh 00:08, never
+        // answered, dropped at 06:21:51 and came back reset (push seq 00), and
+        // the night's second sleep block was gone. This is the test
+        // shouldAttemptRingConnect() already makes; the "retry" caller only
+        // gets here with notifications not ready, so it never trips there.
+        boolean live;
+        long linkAgeMs;
+        synchronized (lock) {
+            live = RingProtocol.ringConnectShouldSkip(ringConnected, ringNotificationsReady);
+            linkAgeMs = ringLinkAgeMsLocked();
+        }
+        if (live) {
+            logLine("direct ring connect skipped (" + reason + "): ring already connected with notifications ready, link age "
+                + (linkAgeMs >= 0 ? linkAgeMs + "ms" : "unknown"));
+            noteRingConnectSkipped(reason, linkAgeMs);
             return;
         }
         try {

@@ -15,9 +15,10 @@ import java.util.List;
  *   java -cp /tmp/rpt com.faceclaw.app.RingProtocolSelfTest
  * </pre>
  *
- * <p>The captured frames reproduced below are requests and page-ACKs only.
- * Those carry a nonce, a command id and a sequence number — no biometric
- * values. No captured DATA page appears here, deliberately.
+ * <p>The captured frames reproduced below are requests, page-ACKs and the
+ * ring's device-channel 00:08 pushes. Those carry a nonce, a command id and a
+ * sequence number — no biometric values. No captured health DATA page appears
+ * here, deliberately.
  */
 public final class RingProtocolSelfTest {
     private static int checks;
@@ -34,6 +35,7 @@ public final class RingProtocolSelfTest {
         testSleepDecodeAndIdentities();
         testSleepReceiptLines();
         testEvenConnectFramesAgainstCapture();
+        testReconnectGuardAndBootReceipts();
 
         System.out.println();
         System.out.println(failures == 0
@@ -452,6 +454,85 @@ public final class RingProtocolSelfTest {
             RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 0, 0, false).endsWith(",\"link\":\"held\"}"));
     }
 
+    /**
+     * 2026-09-15 reconnect guard and ring-boot receipt. The guard lives in
+     * FaceclawBleCommunicator.tryConnectRing and needs Android; its predicate is
+     * pinned here. The boot detector runs against the ring's own 00:08 frames
+     * from bazzite-desktop's 09-15 capture (FS__data__log__bt__btsnoop_hci.log,
+     * handle 0x0017 rx and 0x0015 tx). Each carries a 2-byte nonce and one or
+     * three argument bytes, no biometric values.
+     */
+    private static void testReconnectGuardAndBootReceipts() {
+        section("reconnect guard + ring boot receipt (09-15 capture 00:08 frames)");
+        expect("connected + notifications ready -> skip, connectRing() not called",
+            RingProtocol.ringConnectShouldSkip(true, true));
+        expect("connected, notifications NOT ready -> connect (the retry path's case)",
+            !RingProtocol.ringConnectShouldSkip(true, false));
+        expect("not connected -> connect", !RingProtocol.ringConnectShouldSkip(false, false));
+        expect("ready flag without a link -> connect", !RingProtocol.ringConnectShouldSkip(false, true));
+
+        final String bootHex = "004a4af65364016400000200080d00376d00";
+        RingProtocol.Frame boot = RingProtocol.parse(unhex(bootHex));
+        expect("pkt 41285 (06:22:00) parses CRC-clean: device DATA 00:08 seq 00 payload 376d00",
+            boot != null && boot.crcOk && boot.chan == RingProtocol.CHAN_DEVICE
+                && boot.kind == RingProtocol.KIND_DATA && "00:08".equals(boot.commandLabel())
+                && boot.seq == 0 && "376d00".equals(RingProtocol.hex(boot.payload)));
+        expect("pkt 41285 is the boot signature", RingProtocol.isRingBootHello(boot));
+        expectHex("buildFrame reproduces pkt 41285 from its fields", bootHex,
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x08, 0x00,
+                new byte[] {0x37, 0x6d, 0x00}));
+        expect("the same push at seq 01 is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(RingProtocol.buildFrame(
+                RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x08, 0x01, new byte[] {0x37, 0x6d, 0x00}))));
+        expect("pkt 682 (02:41:10, push seq 4b) is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(unhex("00611281706401644b000200080d00445c00"))));
+        expect("pkt 49829 (06:38:07, push seq 2d) is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(unhex("00d12d51136401642d000200080d00a7fd00"))));
+        expect("pkt 683, the ring's RSP to our hello (seq 01), is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(unhex("00a25aac9264016401000300080d00a76400"))));
+        expect("pkt 41282, our own 00:08 REQ, is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(unhex("00971953f964016401000000080d003f0101"))));
+        expect("a seq-00 health DATA page is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(RingProtocol.buildFrame(
+                RingProtocol.CHAN_HEALTH, RingProtocol.KIND_DATA, RingProtocol.CMD_HI_SLEEP,
+                RingProtocol.CMD_LO_HEALTH, 0x00, new byte[] {0x11, 0x22, 0x02}))));
+        byte[] corrupt = unhex(bootHex);
+        corrupt[16] ^= 0x01;
+        expect("pkt 41285 with one payload bit flipped (CRC fails) is not",
+            !RingProtocol.isRingBootHello(RingProtocol.parse(corrupt)));
+
+        expect("first skip receipt is always due", RingProtocol.ringConnectSkipReceiptDue(5_000L, -1L));
+        expect("a second skip 59 999 ms later is suppressed", !RingProtocol.ringConnectSkipReceiptDue(64_999L, 5_000L));
+        expect("a skip 60 000 ms later is due", RingProtocol.ringConnectSkipReceiptDue(65_000L, 5_000L));
+
+        String skip = RingProtocol.ringConnectSkippedReceiptLine(1789453302322L, "initial", 13_235_000L, 0);
+        System.out.println("RECEIPT " + skip);
+        expect("skip line is typed and a single line",
+            skip.startsWith("{\"type\":\"ringConnectSkipped\",\"at\":\"") && !skip.contains("\n"));
+        expect("skip line's at uses the pull/page stamp format",
+            skip.contains("\"at\":\"" + RingProtocol.localStamp(1789453302322L) + "\""));
+        expect("skip line carries atMs, reason, link age and suppressed count",
+            skip.endsWith(",\"atMs\":1789453302322,\"reason\":\"initial\",\"linkAgeMs\":13235000,\"suppressed\":0}"));
+        expect("unknown link age is null, suppressed count carried",
+            RingProtocol.ringConnectSkippedReceiptLine(1L, "retry", -1L, 3)
+                .endsWith(",\"reason\":\"retry\",\"linkAgeMs\":null,\"suppressed\":3}"));
+
+        String bootLine = RingProtocol.ringBootReceiptLine(1789453320009L, 1_400L, 0x7c);
+        System.out.println("RECEIPT " + bootLine);
+        expect("boot line is typed, fresh link says new, carries previous push seq",
+            bootLine.startsWith("{\"type\":\"ringBoot\",\"at\":\"" + RingProtocol.localStamp(1789453320009L) + "\"")
+                && bootLine.endsWith(",\"atMs\":1789453320009,\"link\":\"new\",\"linkAgeMs\":1400,\"prevPushSeq\":124}"));
+        expect("a link up 13 235 s says held; a wrap shows prevPushSeq 255",
+            RingProtocol.ringBootReceiptLine(1L, 13_235_000L, 0xff)
+                .endsWith(",\"link\":\"held\",\"linkAgeMs\":13235000,\"prevPushSeq\":255}"));
+        expect("held starts at exactly 10 000 ms",
+            RingProtocol.ringBootReceiptLine(1L, 9_999L, 1).contains("\"link\":\"new\"")
+                && RingProtocol.ringBootReceiptLine(1L, 10_000L, 1).contains("\"link\":\"held\""));
+        expect("no link-up time and no earlier push -> unknown and nulls",
+            RingProtocol.ringBootReceiptLine(1L, -1L, -1)
+                .endsWith(",\"link\":\"unknown\",\"linkAgeMs\":null,\"prevPushSeq\":null}"));
+    }
+
     // ------------------------------------------------------------------
     // Synthetic body builders (mirror the spec layout, used only by the tests)
     // ------------------------------------------------------------------
@@ -588,5 +669,13 @@ public final class RingProtocolSelfTest {
 
     private static String hex2(int value) {
         return String.format(java.util.Locale.US, "%02x", value & 0xff);
+    }
+
+    private static byte[] unhex(String hex) {
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
     }
 }

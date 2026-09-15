@@ -1108,6 +1108,84 @@ public final class RingProtocol {
             + ",\"link\":\"" + (newLink ? "new" : "held") + "\"}";
     }
 
+    // ------------------------------------------------------------------
+    // Reconnect guard and ring-boot receipts (2026-09-15)
+    // ------------------------------------------------------------------
+
+    /** Least gap between two ringConnectSkipped lines; skips inside it are counted instead. */
+    public static final long RING_CONNECT_SKIP_RECEIPT_GAP_MS = 60_000L;
+
+    /**
+     * A ringBoot line whose ring link had been up at least this long says
+     * {@code "link":"held"}. A fresh connect's 00:08 push lands ~1.4 s after the
+     * link comes up (09-15 capture, pkts 559 -> 682); the 06:21:44 re-handshake
+     * ran on a link 13 235 s old. Receipt labelling only.
+     */
+    public static final long RING_BOOT_HELD_LINK_MIN_AGE_MS = 10_000L;
+
+    /**
+     * The tryConnectRing guard. True = the ring is already connected with its
+     * notifications subscribed, so connecting again would re-handshake a live
+     * link. Pure so the self-test can pin it.
+     */
+    public static boolean ringConnectShouldSkip(boolean ringConnected, boolean ringNotificationsReady) {
+        return ringConnected && ringNotificationsReady;
+    }
+
+    /** Rate limit for ringConnectSkipped lines, monotonic clock. {@code lastWrittenMs} < 0 = none yet. */
+    public static boolean ringConnectSkipReceiptDue(long nowMs, long lastWrittenMs) {
+        return lastWrittenMs < 0 || nowMs - lastWrittenMs >= RING_CONNECT_SKIP_RECEIPT_GAP_MS;
+    }
+
+    /**
+     * The ring's boot signature: an intact device-channel 00:08 DATA push with
+     * seq 00. The ring's DATA seq is one global push counter that carries
+     * through reconnects and supervision timeouts and restarts at 00 only after
+     * a reset (09-15 capture: 06:22:00, 06:32:01, 06:40:16, three byte-identical
+     * frames). Our own 00:08 is a REQ and the ring's answer is a RSP echoing our
+     * seq, so neither matches. The counter is 8 bits, so a wrap onto a 00:08
+     * push would match too; the receipt carries the previous push seq for that.
+     */
+    public static boolean isRingBootHello(Frame frame) {
+        return frame != null
+            && frame.crcOk
+            && frame.chan == CHAN_DEVICE
+            && frame.kind == KIND_DATA
+            && frame.cmdHi == CMD_HI_DEVICE
+            && frame.cmdLo == 0x08
+            && frame.seq == 0;
+    }
+
+    /**
+     * One JSON line: tryConnectRing found the ring live and did not touch it.
+     * {@code linkAgeMs} < 0 = unknown; {@code suppressed} = skips inside the
+     * rate-limit window since the previous such line.
+     */
+    public static String ringConnectSkippedReceiptLine(long wallMs, String reason, long linkAgeMs, int suppressed) {
+        String safeReason = reason == null ? "" : reason.replace("\\", "\\\\").replace("\"", "\\\"");
+        return "{\"type\":\"ringConnectSkipped\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"reason\":\"" + safeReason + "\""
+            + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null")
+            + ",\"suppressed\":" + suppressed + "}";
+    }
+
+    /**
+     * One JSON line: the ring's boot signature arrived. {@code link} is "held"
+     * when the link had been up {@link #RING_BOOT_HELD_LINK_MIN_AGE_MS} or more,
+     * "new" below that, "unknown" with no link-up time. {@code prevPushSeq} is
+     * the ring's previous DATA seq this process (null = none): near 255 reads
+     * as a counter wrap, anything else as a reset.
+     */
+    public static String ringBootReceiptLine(long wallMs, long linkAgeMs, int prevPushSeq) {
+        String link = linkAgeMs < 0 ? "unknown" : linkAgeMs >= RING_BOOT_HELD_LINK_MIN_AGE_MS ? "held" : "new";
+        return "{\"type\":\"ringBoot\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"link\":\"" + link + "\""
+            + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null")
+            + ",\"prevPushSeq\":" + (prevPushSeq >= 0 ? Integer.toString(prevPushSeq) : "null") + "}";
+    }
+
     /** "2026-09-14T09:31:02.123-0400", in the device's zone. */
     static String localStamp(long wallMs) {
         return String.format(Locale.US, "%tFT%<tT.%<tL%<tz", wallMs);
