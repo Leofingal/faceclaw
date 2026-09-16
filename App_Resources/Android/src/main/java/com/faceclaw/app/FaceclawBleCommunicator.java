@@ -294,6 +294,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean phoneLockReceiverRegistered;
     private boolean audioCaptureActive;
     private boolean firmwareInfoQueried;
+    // Re-sends the first session's settings query while it goes unanswered
+    // (see StartupSettingsRetry for the loss this covers).
+    private final StartupSettingsRetry startupSettings = new StartupSettingsRetry();
     // Glasses are in the charging case: nobody is wearing them, so display
     // communication pauses and only battery polls flow (see driveSession).
     private boolean chargingMode;
@@ -2010,6 +2013,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     firmwareInfoQueried = true;
                     lastBatteryRefreshAtMs = SystemClock.elapsedRealtime();
                     pendingMessages.addLast(createBatteryQueryMessageLocked());
+                    startupSettings.noteQueued(lastBatteryRefreshAtMs);
                     logLine("queue settings query for firmware info");
                 }
             }
@@ -3436,6 +3440,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
+                    } else if (messageToPrewrite == null && sessionReady && windowHasRoom
+                            && startupSettings.shouldResend(now, hasPendingOrInflightKindLocked("battery"))) {
+                        // The first settings query was dropped (e.g. by a firmware
+                        // exit event's queue clear) or timed out: ask again rather
+                        // than leave battery and capabilities unknown until the
+                        // five-minute poll.
+                        int resend = startupSettings.noteResent(now);
+                        messageToWrite = createBatteryQueryMessageLocked();
+                        lastBatteryRefreshAtMs = now;
+                        logLine("startup settings query unanswered; re-sending ("
+                                + resend + "/" + StartupSettingsRetry.MAX_RESENDS + ")");
                     } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
@@ -4131,6 +4146,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private OutboundMessage createBatteryQueryMessageLocked() {
         OutboundMessage message = messageBuilder.batteryQuery();
         message.onAck = () -> {
+            startupSettings.noteAnswered();
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
                 headsetBattery = snapshot.battery;
