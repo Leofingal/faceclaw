@@ -9,6 +9,7 @@ import { registerShareIntentHandler } from './native/share-intents'
 import { installNativeUserAgent } from './util/http'
 import { resyncSystemAppearance } from './native/system-appearance'
 import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
+import { startStatusLineRefresh } from './apps/status-refresh'
 
 installNativeUserAgent()
 registerShareIntentHandler()
@@ -23,6 +24,11 @@ startLiveHealthSync()
 // nothing drives a pull on a timer at all - only onRingReady() on reconnect -
 // so a ring that stays connected is never read.
 startAlignedRingPull()
+
+// Refresh the home screen's status lines on that same :01/:31 tick - one
+// timer, two riders, no drift between them. The cheap half of the contract
+// (statusLine()) runs in the menu's paint path; this is the other half.
+startStatusLineRefresh()
 
 // Live system dark/light switches while the app is running were confirmed
 // (Chris, both directions, 2026-09-02) to leave the Ghost companion's Terminal

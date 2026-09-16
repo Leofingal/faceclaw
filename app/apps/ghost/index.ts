@@ -1,5 +1,7 @@
 import { type AppDefinition } from "../app-definition";
+import { formatGhostStatus } from "../exocortex/status-line";
 import { createGhostAppWindow, GHOST_SURFACE_ID, GHOST_WINDOW_ID } from "./ghost-app";
+import { ghostLastMessageMs } from "./ghost-companion-store";
 
 /**
  * Ghost: a pager onto the live cc-web session on Chris's own box — the
@@ -18,6 +20,14 @@ const ghostApp: AppDefinition = {
   title: "Ghost",
   icon: "activity",
   launch: (ctx) => ctx.launchInProcessApp(GHOST_WINDOW_ID, GHOST_SURFACE_ID, createGhostAppWindow),
+  /**
+   * How long ago Ghost's last message arrived. Chris's own observation when
+   * he specified this: it needs no fetch at all — the feed has already been
+   * polled by the app itself, and the timestamp is sitting in memory.
+   *
+   * No `refreshStatus`: there is nothing to refresh. The row simply ages.
+   */
+  statusLine: () => formatGhostStatus(ghostLastMessageMs(), Date.now()),
 };
 
 export default ghostApp;
