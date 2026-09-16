@@ -1823,6 +1823,7 @@ class DashboardController {
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
       usePhoneMic: communicator === null || forcePhoneMicSetting.get(),
+      forcePhoneMic: forcePhoneMicSetting.get(),
       provider: voiceProviderSetting.get(),
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
