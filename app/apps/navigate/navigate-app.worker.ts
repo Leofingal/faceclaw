@@ -14,6 +14,7 @@ import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
+import { JavaDirectBuffer } from "../../native/java-direct-buffer";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolSpec, ToolResult } from "../../assistant/tool-registry";
@@ -31,6 +32,11 @@ import {
 } from "../../native/mapbox";
 import { bearingDegrees, haversineMeters, RouteFollower, type RouteProgress } from "./route-follower";
 import { drawManeuverGlyph } from "./maneuver-icons";
+
+// Reused Java-side buffers for this worker's frames: passing a
+// JS ArrayBuffer to Java leaks it (native/java-direct-buffer.ts).
+const framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+const frameDrawsBuffer = new JavaDirectBuffer();
 
 declare const global: any;
 declare const com: any;
@@ -938,7 +944,7 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
-      buffer.buffer,
+      framePixelsBuffer.load(buffer),
       win.surfaceId,
       0,
       0,
@@ -947,7 +953,9 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      frameDrawsBuffer.loadOptional(
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      ),
     );
     win.lastSubmittedFingerprint = fingerprint;
   } catch (error) {
