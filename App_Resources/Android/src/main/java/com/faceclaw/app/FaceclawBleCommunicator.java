@@ -1679,14 +1679,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
             }
             if (RingProtocol.isRingBatteryFrame(frame)) {
-                // Receipt-log only (2026-09-15): 00:01 RSP, 00:7F and 00:03
+                // Receipt-log (2026-09-15): 00:01 RSP, 00:7F and 00:03
                 // pushes, raw. Written after the RSP wake above, so a waiting
                 // handshake or pull is not held by the file append.
+                long wallMs = System.currentTimeMillis();
                 long linkAgeMs;
                 synchronized (lock) {
                     linkAgeMs = ringLinkAgeMsLocked();
                 }
-                appendSleepReceipt(RingProtocol.ringBatteryReceiptLine(frame, System.currentTimeMillis(), linkAgeMs));
+                appendSleepReceipt(RingProtocol.ringBatteryReceiptLine(frame, wallMs, linkAgeMs));
+                // The top bar's ring battery (2026-09-16): every frame that
+                // carries a level, stamped with the receipt's own wall time.
+                int ringLevel = RingProtocol.ringBatteryLevel(frame);
+                if (ringLevel >= 0) {
+                    emitRingBatteryState(ringLevel, RingProtocol.ringBatteryCharging(frame), wallMs);
+                }
             }
             return true;
         }
@@ -4876,6 +4883,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 current.onBatteryState(headsetBattery, headsetCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
+            }
+        });
+    }
+
+    /** Ring battery for the top bar: level 0-255 as sent, charge state, wall ms of arrival. */
+    private void emitRingBatteryState(int level, boolean charging, long atMs) {
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) {
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                current.onRingBatteryState(level, charging, atMs);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onRingBatteryState failed", t);
             }
         });
     }

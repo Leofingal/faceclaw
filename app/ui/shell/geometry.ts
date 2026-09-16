@@ -1,8 +1,10 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../../graphics/image";
 import { displayModeSetting, type DisplayModeSetting, verticalPositionSetting } from "../dashboard-settings";
+import { SHELL_OPAQUE_BLACK, TOP_BAR_HEIGHT } from "./top-bar";
 
-/** Top bar: 24px notification icons plus a little padding. */
-export const TOP_BAR_HEIGHT = 28;
+// Top bar height and the shell's opaque black live in top-bar.ts, which has no
+// NativeScript imports, so the headless top-bar preview uses the real values.
+export { SHELL_OPAQUE_BLACK, TOP_BAR_HEIGHT };
 /**
  * Width of the sidebar strip as painted. Leaves the app viewport exactly
  * 576px wide — the surface width EvenHub apps expect — except in the
@@ -79,13 +81,6 @@ export function effectiveHeightMode(mode: WindowHeightMode): WindowHeightMode {
 export function screenCenterInViewportX(): number {
   return Math.round(G2_LENS_WIDTH / 2) - sidebarWidth();
 }
-
-/**
- * On the color-key shell surface, pixel value 0 is transparent; 1 is the
- * darkest opaque shade (identical to 0 after 4bpp quantization). Shell
- * painting must use this for intentional black.
- */
-export const SHELL_OPAQUE_BLACK = 1;
 
 /**
  * Windows come in three heights. "min" covers the same 288px band the stock

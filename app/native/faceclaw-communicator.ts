@@ -25,6 +25,18 @@ export type HeadsetBatteryState = {
   chargingStatus: number;
 };
 
+/**
+ * The ring's battery from its 00:01 / 00:7F frames, parsed in Java
+ * (RingProtocol.ringBatteryLevel / ringBatteryCharging). `level` is the byte
+ * as sent (a percentage in every capture so far), `charging` is true only for
+ * the on-charger state byte, `atMs` is the wall-clock ms the frame arrived.
+ */
+export type RingBatteryState = {
+  level: number;
+  charging: boolean;
+  atMs: number;
+};
+
 export type FrameMetrics = {
   paintMs: number;
   transmitMs: number;
@@ -142,6 +154,8 @@ export class FaceclawCommunicatorBridge {
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
+  private readonly ringBatteryListeners = new Set<(state: RingBatteryState) => void>();
+  private latestRingBattery: RingBatteryState | null = null;
   private readonly silentModeListeners = new Set<(silent: boolean) => void>();
   private readonly wearStateListeners = new Set<(wearing: boolean) => void>();
   private readonly phoneLockStateListeners = new Set<(locked: boolean) => void>();
@@ -197,6 +211,15 @@ export class FaceclawCommunicatorBridge {
           chargingStatus: Number(headsetCharging),
         };
         this.emitAsync(this.batteryListeners, state);
+      },
+      onRingBatteryState: (level: number, charging: boolean, atMs: number) => {
+        const state = {
+          level: Number(level),
+          charging: Boolean(charging),
+          atMs: Number(atMs),
+        };
+        this.latestRingBattery = state;
+        this.emitAsync(this.ringBatteryListeners, state);
       },
       onSilentMode: (silent: boolean) => {
         this.emitAsync(this.silentModeListeners, Boolean(silent));
@@ -307,6 +330,22 @@ export class FaceclawCommunicatorBridge {
   onBatteryState(listener: (state: HeadsetBatteryState) => void): () => void {
     this.batteryListeners.add(listener);
     return () => this.batteryListeners.delete(listener);
+  }
+
+  /**
+   * Every ring frame that carries a battery level. A listener added after a
+   * reading gets the latest one replayed, as onWearState does, so the top bar
+   * does not wait for the next frame (the :01/:31 pull, on a held link).
+   */
+  onRingBatteryState(listener: (state: RingBatteryState) => void): () => void {
+    this.ringBatteryListeners.add(listener);
+    if (this.latestRingBattery !== null) {
+      const latest = this.latestRingBattery;
+      setTimeout(() => {
+        if (this.ringBatteryListeners.has(listener)) listener(latest);
+      }, 0);
+    }
+    return () => this.ringBatteryListeners.delete(listener);
   }
 
   /**

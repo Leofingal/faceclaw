@@ -38,6 +38,7 @@ public final class RingProtocolSelfTest {
         testSleepReceiptLines();
         testEvenConnectFramesAgainstCapture();
         testReconnectGuardAndBootReceipts();
+        testRingBatteryChargeState();
         testRingBatteryReceipts();
         testPageJournal();
 
@@ -535,6 +536,57 @@ public final class RingProtocolSelfTest {
         expect("no link-up time and no earlier push -> unknown and nulls",
             RingProtocol.ringBootReceiptLine(1L, -1L, -1)
                 .endsWith(",\"link\":\"unknown\",\"linkAgeMs\":null,\"prevPushSeq\":null}"));
+    }
+
+    /**
+     * 2026-09-16 top-bar ring battery: level and charge state from the same
+     * parse the receipt uses. The three payloads are the seat's known-good
+     * values from the ring's 00:01 frames: [nonce2][level][state], state 01 on
+     * the charger and 02 off it.
+     */
+    private static void testRingBatteryChargeState() {
+        section("ring battery charge state (2026-09-16 known-good 00:01 payloads)");
+        RingProtocol.Frame off51 = batteryFrame(RingProtocol.KIND_RSP, 0x01, "025233020100000000");
+        expect("025233020100000000 -> level 51, state 02, not charging",
+            RingProtocol.isRingBatteryFrame(off51) && RingProtocol.ringBatteryLevel(off51) == 51
+                && RingProtocol.ringBatteryChargeState(off51) == RingProtocol.RING_BATTERY_STATE_NOT_CHARGING
+                && !RingProtocol.ringBatteryCharging(off51));
+        RingProtocol.Frame on49 = batteryFrame(RingProtocol.KIND_DATA, 0x01, "d98531010000000000");
+        expect("d98531010000000000 (as the charger's unprompted push) -> level 49, state 01, charging",
+            RingProtocol.isRingBatteryFrame(on49) && RingProtocol.ringBatteryLevel(on49) == 49
+                && RingProtocol.ringBatteryChargeState(on49) == RingProtocol.RING_BATTERY_STATE_CHARGING
+                && RingProtocol.ringBatteryCharging(on49));
+        RingProtocol.Frame off59 = batteryFrame(RingProtocol.KIND_RSP, 0x01, "feab3b020000000000");
+        expect("feab3b020000000000 -> level 59, not charging",
+            RingProtocol.ringBatteryLevel(off59) == 59 && !RingProtocol.ringBatteryCharging(off59));
+        expect("kind does not matter: d985... as an RSP is still level 49, charging",
+            RingProtocol.ringBatteryLevel(batteryFrame(RingProtocol.KIND_RSP, 0x01, "d98531010000000000")) == 49
+                && RingProtocol.ringBatteryCharging(batteryFrame(RingProtocol.KIND_RSP, 0x01, "d98531010000000000")));
+        RingProtocol.Frame hourlyOn = batteryFrame(RingProtocol.KIND_DATA, 0x7F, "d98531010000000000");
+        expect("the same payload on the hourly 00:7F push reads the same",
+            RingProtocol.ringBatteryLevel(hourlyOn) == 49 && RingProtocol.ringBatteryCharging(hourlyOn));
+
+        RingProtocol.Frame captured = RingProtocol.parse(unhex("00cf0c53f06401640400030001130017993c020100000000"));
+        expect("09-15 pkt 41306 (off the charger, 06:22) -> state 02, not charging",
+            RingProtocol.ringBatteryChargeState(captured) == 0x02 && !RingProtocol.ringBatteryCharging(captured));
+        RingProtocol.Frame state03 = RingProtocol.parse(unhex("00b79f84cf64016433000200030d00472702"));
+        expect("00:03 push pkt 44986 -> no charge state, not charging",
+            RingProtocol.ringBatteryChargeState(state03) == -1 && !RingProtocol.ringBatteryCharging(state03));
+        RingProtocol.Frame short01 = batteryFrame(RingProtocol.KIND_RSP, 0x01, "025233");
+        expect("a payload ending at the level byte -> level 51, no charge state",
+            RingProtocol.ringBatteryLevel(short01) == 51 && RingProtocol.ringBatteryChargeState(short01) == -1
+                && !RingProtocol.ringBatteryCharging(short01));
+        RingProtocol.Frame unknown = batteryFrame(RingProtocol.KIND_RSP, 0x01, "025233030100000000");
+        expect("an unseen state byte (03) is kept raw and is not charging",
+            RingProtocol.ringBatteryChargeState(unknown) == 0x03 && !RingProtocol.ringBatteryCharging(unknown));
+        expect("null frame -> -1, not charging",
+            RingProtocol.ringBatteryChargeState(null) == -1 && !RingProtocol.ringBatteryCharging(null));
+    }
+
+    /** A CRC-clean device-channel battery frame around a known payload, through the real parse. */
+    private static RingProtocol.Frame batteryFrame(int kind, int cmdLo, String payloadHex) {
+        return RingProtocol.parse(RingProtocol.buildFrame(
+            RingProtocol.CHAN_DEVICE, kind, RingProtocol.CMD_HI_DEVICE, cmdLo, 0x04, unhex(payloadHex)));
     }
 
     /**

@@ -2,7 +2,6 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
-import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readGlassesNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
@@ -11,6 +10,7 @@ import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-setti
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
+import { BORDER_VALUE, paintTopBar, topBarBatteryItems, type TopBarBatteryLevels } from "./top-bar";
 import {
   APP_SWITCHER_REMOVED,
   MIN_WINDOW_HEIGHT,
@@ -84,8 +84,6 @@ export function sidebarContentLeft(windowCount: number): number {
   if (APP_SWITCHER_REMOVED) return 0;
   return columnLeft(sidebarVariant(windowCount), 0);
 }
-const NOTIFICATION_ICON_SIZE = 24;
-const BORDER_VALUE = 40;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -103,7 +101,7 @@ export type ShellChromeState = {
   focus: "sidebar" | "window";
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
-  battery: { headset: number | null; headsetCharging: boolean | null };
+  battery: TopBarBatteryLevels;
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
 };
@@ -306,91 +304,31 @@ export class ShellChromeLayer implements Layer {
   }
 
   private drawTopBar(image: GrayImage, state: ShellChromeState): void {
-    const font = getDefaultMediumFont();
-    // The bar sits at the top edge of the foreground window's band, wherever
-    // its height mode puts that (screen top for max height). It moves when
-    // the foreground switches to a window of a different height.
-    const barTop = windowTop(state.foregroundHeightMode);
-    // The bar spans the app viewport; with the sidebar overlaid (full-panel
-    // mode, sidebar focused) it still starts past the strip.
-    const barLeft = sidebarStripVisible(state.focus) ? SIDEBAR_WIDTH : 0;
-    image.fillRect(barLeft, barTop, G2_LENS_WIDTH - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
-
     const now = new Date();
-    const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
-      formatClockTime(now);
-    const clockX = barLeft + 10;
-    const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
-    image.drawText(font, clockX, textY, clock, 210);
-
-    const batteryLeft = this.drawTopBarBatteries(image, state, barTop);
-    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft, barTop);
-
-    const iconsX = clockX + font.measureText(clock) + 16;
-    const maxIcons = Math.max(0, ((trayLeft - 8 - iconsX) / (NOTIFICATION_ICON_SIZE + 4)) | 0);
-    if (maxIcons > 0) {
-      // Ignore-list aware: a muted source must not keep an icon in the top bar
-      // either, or "muted" would still cost field of view.
-      const { icons, stale } = readGlassesNotificationIcons(maxIcons, renderPassAllowsStaleData());
-      if (stale) {
-        noteStaleDataUsed();
-      }
-      const iconY = barTop + (((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0);
-      for (let index = 0; index < icons.length; index++) {
-        image.drawImage(icons[index]!, iconsX + index * (NOTIFICATION_ICON_SIZE + 4), iconY);
-      }
-    }
-  }
-
-  /**
-   * Labelled battery indicators for the phone and the G2, right-aligned in
-   * the top bar, following the dashboard card's icon/percentage setting.
-   * Returns the left edge of the battery block.
-   */
-  private drawTopBarBatteries(image: GrayImage, state: ShellChromeState, barTop: number): number {
-    const font = getDefaultSmallFont();
-    const percentageMode = batteryDisplayModeSetting.get() === "percentage";
-    type BatteryItem = { label: string; percent: number; charging: boolean };
-    const items: BatteryItem[] = [];
-    const phone = readPhoneBatteryState();
-    if (phone.battery !== null && Number.isFinite(phone.battery)) {
-      items.push({ label: "Phone", percent: phone.battery, charging: Boolean(phone.charging) });
-    }
-    if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
-      items.push({ label: "G2", percent: state.battery.headset, charging: Boolean(state.battery.headsetCharging) });
-    }
-    if (!items.length) return G2_LENS_WIDTH;
-
-    const labelGap = 5;
-    const itemGap = 12;
-    const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
-    let x = G2_LENS_WIDTH - 8;
-    for (let index = items.length - 1; index >= 0; index--) {
-      const item = items[index]!;
-      const percentText = `${Math.max(0, Math.min(100, Math.round(item.percent)))}%`;
-      const valueWidth = percentageMode ? font.measureText(percentText) : BATTERY_ICON_WIDTH;
-      const labelWidth = font.measureText(item.label);
-      x -= labelWidth + labelGap + valueWidth;
-      image.drawText(font, x, textY, item.label, 150);
-      const valueX = x + labelWidth + labelGap;
-      if (percentageMode) {
-        if (item.charging) {
-          // Inverted text marks charging, matching the dashboard card.
-          image.fillRect(valueX - 2, textY - 1, valueWidth + 4, font.lineHeight + 2, 255);
-          image.drawText(font, valueX, textY, percentText, 1);
-        } else {
-          image.drawText(font, valueX, textY, percentText, 200);
+    paintTopBar(image, {
+      // The bar sits at the top edge of the foreground window's band, wherever
+      // its height mode puts that (screen top for max height). It moves when
+      // the foreground switches to a window of a different height.
+      barTop: windowTop(state.foregroundHeightMode),
+      // The bar spans the app viewport; with the sidebar overlaid (full-panel
+      // mode, sidebar focused) it still starts past the strip.
+      barLeft: sidebarStripVisible(state.focus) ? SIDEBAR_WIDTH : 0,
+      clockText: `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` + formatClockTime(now),
+      clockFont: getDefaultMediumFont(),
+      batteryFont: getDefaultSmallFont(),
+      percentageMode: batteryDisplayModeSetting.get() === "percentage",
+      batteries: topBarBatteryItems(readPhoneBatteryState(), state.battery, now.getTime()),
+      trayIcons: state.trayIcons,
+      notificationIcons: (maxIcons) => {
+        // Ignore-list aware: a muted source must not keep an icon in the top bar
+        // either, or "muted" would still cost field of view.
+        const { icons, stale } = readGlassesNotificationIcons(maxIcons, renderPassAllowsStaleData());
+        if (stale) {
+          noteStaleDataUsed();
         }
-      } else {
-        const icon = drawBattery(item.percent, item.charging);
-        image.bitBlt(icon, valueX, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
-          transparentZero: true,
-        });
-      }
-      x -= itemGap;
-    }
-    return x + itemGap;
+        return icons;
+      },
+    });
   }
 }
 
@@ -436,20 +374,6 @@ function drawAmbientCards(image: GrayImage): void {
     }
     bottom = y - AMBIENT_CARD_GAP;
   }
-}
-
-/**
- * Draw app tray icons right-to-left, ending just left of the battery block;
- * returns the left edge of the tray region.
- */
-function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number, barTop: number): number {
-  let x = rightEdge;
-  for (let index = trayIcons.length - 1; index >= 0; index--) {
-    const icon = trayIcons[index]!;
-    x -= icon.width + 10;
-    image.drawImage(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0));
-  }
-  return x;
 }
 
 /** The sidebar attention marker, cached per fill value (deferred-image source). */
