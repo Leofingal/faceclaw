@@ -77,15 +77,19 @@ public final class FaceclawVoiceCaptureReceipt {
         final String kind;
         final long audioMs;
         final float peak;
+        /** Loudest 50 ms window RMS, full scale 1.0; NaN when not measured. */
+        final float level;
         final long decodeMs;
         final boolean gated;
         final int chars;
 
-        Segment(int index, String kind, long audioMs, float peak, long decodeMs, boolean gated, int chars) {
+        Segment(int index, String kind, long audioMs, float peak, float level, long decodeMs, boolean gated,
+                int chars) {
             this.index = index;
             this.kind = kind;
             this.audioMs = audioMs;
             this.peak = peak;
+            this.level = level;
             this.decodeMs = decodeMs;
             this.gated = gated;
             this.chars = chars;
@@ -159,6 +163,17 @@ public final class FaceclawVoiceCaptureReceipt {
     private boolean isWearer;
     private float similarity;
 
+    // On-device recognizer: loaded for this capture, or already resident.
+    private String recognizerModel;
+    private boolean recognizerLoaded;
+    private int recognizerThreads;
+    private long recognizerLoadMs;
+    private long recognizerIdleMs;
+    private long rssKbBefore = -1;
+    private long rssKbAfter = -1;
+    private long nativeHeapKbBefore = -1;
+    private long nativeHeapKbAfter = -1;
+
     private String transcript;
     private String outcome = "unfinished";
     private String error;
@@ -167,7 +182,7 @@ public final class FaceclawVoiceCaptureReceipt {
 
     /**
      * @param mode     "onboard" or "cloud"
-     * @param model    "moonshine" / "whisper" for onboard, null for cloud
+     * @param model    "moonshine" / "whisper" / "parakeet-v2" / "parakeet-110m" for onboard, null for cloud
      * @param phoneMic true when AudioRecord is the source, false for the G2 over BLE
      */
     public FaceclawVoiceCaptureReceipt(long id, long startWallMs, long startElapsedMs, String provider,
@@ -277,6 +292,16 @@ public final class FaceclawVoiceCaptureReceipt {
      * @return the segment's index, or -1 for a partial
      */
     public synchronized int noteSegment(String kind, long audioMs, float peak, long decodeMs, boolean gated, int chars) {
+        return noteSegment(kind, audioMs, peak, Float.NaN, decodeMs, gated, chars);
+    }
+
+    /**
+     * As above, plus the segment's loudest 50 ms window RMS (full scale 1.0,
+     * pre-normalization; the value the Parakeet gate compares), written as
+     * "levelDbfs" at the end of the segment entry.
+     */
+    public synchronized int noteSegment(String kind, long audioMs, float peak, float level, long decodeMs,
+                                        boolean gated, int chars) {
         if ("partial".equals(kind)) {
             partialDecodes++;
             partialDecodeMs += decodeMs;
@@ -284,7 +309,7 @@ public final class FaceclawVoiceCaptureReceipt {
         }
         int index = segmentCount++;
         if (segments.size() < MAX_SEGMENTS) {
-            segments.add(new Segment(index, kind, audioMs, peak, decodeMs, gated, chars));
+            segments.add(new Segment(index, kind, audioMs, peak, level, decodeMs, gated, chars));
         }
         if (gated) {
             gatedSegments.add(index);
@@ -304,6 +329,30 @@ public final class FaceclawVoiceCaptureReceipt {
             return;
         }
         tagsDropped.add(new TagDrop(index, kind, tag));
+    }
+
+    /**
+     * This capture built the on-device recognizer: load time and process
+     * memory (VmRSS, native heap) either side of it, in kB (-1 = unknown).
+     */
+    public synchronized void setRecognizerLoad(String model, int threads, long loadMs, long rssKbBefore,
+                                               long rssKbAfter, long nativeHeapKbBefore, long nativeHeapKbAfter) {
+        this.recognizerModel = model;
+        this.recognizerLoaded = true;
+        this.recognizerThreads = threads;
+        this.recognizerLoadMs = loadMs;
+        this.rssKbBefore = rssKbBefore;
+        this.rssKbAfter = rssKbAfter;
+        this.nativeHeapKbBefore = nativeHeapKbBefore;
+        this.nativeHeapKbAfter = nativeHeapKbAfter;
+    }
+
+    /** This capture reused the resident recognizer, idle for idleMs since the last capture. */
+    public synchronized void setRecognizerResident(String model, int threads, long idleMs) {
+        this.recognizerModel = model;
+        this.recognizerLoaded = false;
+        this.recognizerThreads = threads;
+        this.recognizerIdleMs = idleMs;
     }
 
     public synchronized void noteBeamDrop() {
@@ -439,8 +488,11 @@ public final class FaceclawVoiceCaptureReceipt {
                     .append(",\"peakDbfs\":").append(dbfs(s.peak))
                     .append(",\"decodeMs\":").append(s.decodeMs)
                     .append(",\"gated\":").append(s.gated)
-                    .append(",\"chars\":").append(s.chars)
-                    .append('}');
+                    .append(",\"chars\":").append(s.chars);
+            if (!Float.isNaN(s.level)) {
+                out.append(",\"levelDbfs\":").append(dbfs(s.level));
+            }
+            out.append('}');
         }
         out.append(']');
         out.append(",\"segmentCount\":").append(segmentCount);
@@ -470,6 +522,20 @@ public final class FaceclawVoiceCaptureReceipt {
         if (tagsDroppedOmitted > 0) {
             out.append(",\"tagsDroppedOmitted\":").append(tagsDroppedOmitted);
         }
+        if (recognizerModel != null) {
+            out.append(",\"recognizer\":{\"model\":").append(json(recognizerModel))
+                    .append(",\"threads\":").append(recognizerThreads)
+                    .append(",\"loaded\":").append(recognizerLoaded);
+            if (recognizerLoaded) {
+                out.append(",\"loadMs\":").append(recognizerLoadMs)
+                        .append(",\"rssMb\":[").append(mbOrNull(rssKbBefore)).append(',').append(mbOrNull(rssKbAfter))
+                        .append("],\"nativeHeapMb\":[").append(mbOrNull(nativeHeapKbBefore)).append(',')
+                        .append(mbOrNull(nativeHeapKbAfter)).append(']');
+            } else {
+                out.append(",\"idleMs\":").append(recognizerIdleMs);
+            }
+            out.append('}');
+        }
         out.append(",\"speechEnd\":").append(speechEnd);
         out.append(",\"verify\":");
         if (verified) {
@@ -484,6 +550,27 @@ public final class FaceclawVoiceCaptureReceipt {
         out.append(",\"error\":").append(json(error));
         out.append('}');
         return out.toString();
+    }
+
+    /**
+     * The resident recognizer was released between captures (idle timeout or a
+     * model switch): memory either side of the release, in MB ([before, after]).
+     */
+    public static String recognizerUnloadLine(long wallMs, String model, String reason, long rssKbBefore,
+                                              long rssKbAfter, long nativeHeapKbBefore, long nativeHeapKbAfter) {
+        return "{\"type\":\"recognizerUnload\""
+                + ",\"at\":" + json(localStamp(wallMs))
+                + ",\"atMs\":" + wallMs
+                + ",\"model\":" + json(model)
+                + ",\"reason\":" + json(reason)
+                + ",\"rssMb\":[" + mbOrNull(rssKbBefore) + "," + mbOrNull(rssKbAfter) + "]"
+                + ",\"nativeHeapMb\":[" + mbOrNull(nativeHeapKbBefore) + "," + mbOrNull(nativeHeapKbAfter) + "]"
+                + "}";
+    }
+
+    /** kB to whole MB, or JSON null when unknown (negative). */
+    static String mbOrNull(long kb) {
+        return kb < 0 ? "null" : String.valueOf(Math.round(kb / 1024.0));
     }
 
     /** What the wearer did with capture {@code captureId}'s transcript. */

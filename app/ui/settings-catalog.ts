@@ -59,6 +59,7 @@ import {
   timeFormatSetting,
   useMicControlSetting,
   verticalPositionSetting,
+  voiceModelIdleUnloadSetting,
   voiceProviderSetting,
   wakeWordActionSetting,
   watchCanUnlockSetting,
@@ -86,6 +87,8 @@ export type CatalogSpecialId =
   | "terminal-font"
   | "asr-moonshine"
   | "asr-whisper"
+  | "asr-parakeet-v2"
+  | "asr-parakeet-110m"
   | "local-model";
 
 export type CatalogEntry =
@@ -141,6 +144,9 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
       value(voiceProviderSetting),
       special("asr-moonshine"),
       special("asr-whisper"),
+      special("asr-parakeet-v2"),
+      special("asr-parakeet-110m"),
+      value(voiceModelIdleUnloadSetting),
     ],
   },
   {

@@ -160,7 +160,7 @@ public class OfflineModelConfig {
     }
 
     public static class Builder {
-        private OfflineTransducerModelConfig transducer = new OfflineTransducerModelConfig();
+        private OfflineTransducerModelConfig transducer = OfflineTransducerModelConfig.builder().build();
         private OfflineParaformerModelConfig paraformer = new OfflineParaformerModelConfig();
         private OfflineWhisperModelConfig whisper = OfflineWhisperModelConfig.builder().build();
         private OfflineFireRedAsrModelConfig fireRedAsr = new OfflineFireRedAsrModelConfig();
@@ -185,6 +185,11 @@ public class OfflineModelConfig {
         private String tokens = "";
         private String modelingUnit = "";
         private String bpeVocab = "";
+
+        public Builder setTransducer(OfflineTransducerModelConfig transducer) {
+            this.transducer = transducer;
+            return this;
+        }
 
         public Builder setMoonshine(OfflineMoonshineModelConfig moonshine) {
             this.moonshine = moonshine;
@@ -220,12 +225,6 @@ public class OfflineModelConfig {
             return new OfflineModelConfig(this);
         }
     }
-}
-
-class OfflineTransducerModelConfig {
-    private final String encoder = "";
-    private final String decoder = "";
-    private final String joiner = "";
 }
 
 class OfflineParaformerModelConfig {

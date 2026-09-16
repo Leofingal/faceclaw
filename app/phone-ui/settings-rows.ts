@@ -293,6 +293,10 @@ function specialRows(id: CatalogSpecialId): PhoneSettingsRow[] {
       return [asrModelRow("moonshine")];
     case "asr-whisper":
       return [asrModelRow("whisper-base-en")];
+    case "asr-parakeet-v2":
+      return [asrModelRow("parakeet-v2")];
+    case "asr-parakeet-110m":
+      return [asrModelRow("parakeet-110m")];
     case "local-model":
       return [localModelRow()];
   }
