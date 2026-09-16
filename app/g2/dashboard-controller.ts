@@ -489,7 +489,7 @@ class DashboardController {
           window.relayout();
           await this.configureWindowSurface(
             window.surfaceId,
-            window.windowId === foregroundWindowId,
+            this.isForegroundWindow(window.windowId),
             window.heightMode,
           );
         } else if (window.closeable) {
@@ -514,12 +514,11 @@ class DashboardController {
     const position = verticalPositionSetting.get();
     if (position === this.lastVerticalPosition) return;
     this.lastVerticalPosition = position;
-    const foregroundWindowId = shell.foregroundWindow()?.windowId;
     void (async () => {
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
         );
       }
@@ -1135,11 +1134,10 @@ class DashboardController {
         zOrder: 1,
         transparency: "color-key",
       });
-      const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
           target,
         );
@@ -1416,11 +1414,10 @@ class DashboardController {
         transparency: "color-key",
       });
       await this.configureLockSurface(communicator);
-      const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
         );
       }
@@ -2080,8 +2077,7 @@ class DashboardController {
       reconfigureSurface: (heightMode) => {
         // Resize the surface rect to the new band; a foreground window stays
         // visible. The shell re-renders so the chrome (top bar) follows.
-        const visible = shell.foregroundWindow()?.windowId === windowId;
-        void this.configureWindowSurface(surfaceId, visible, heightMode);
+        void this.configureWindowSurface(surfaceId, this.isForegroundWindow(windowId), heightMode);
         this.requestShellRender();
       },
       onClosed: () => {
@@ -2263,10 +2259,23 @@ class DashboardController {
     }
   }
 
-  /** Create/refresh a window surface on the compositor, if a display target exists. */
+  /**
+   * Create/refresh a window surface on the compositor, if a display target exists.
+   *
+   * `visible` may be a function, asked only after the surface is configured,
+   * right when the visibility call is queued. Callers that loop over windows
+   * or resize one in place must pass one (isForegroundWindow): the configure
+   * call yields, the foreground can change meanwhile, and a visibility decided
+   * before the await then lands AFTER the focus change's own calls, since the
+   * bridge runs Java calls in order. On 2026-09-16 that happened at startup:
+   * restoreOpenApps focused Ghost while connect() was registering surfaces
+   * with a foreground read before its loop, so Java kept Health visible and
+   * Ghost hidden while the shell showed Ghost; Health then covered Exocortex,
+   * which shares its z and composites before it (surfaces sort by id).
+   */
   private async configureWindowSurface(
     surfaceId: string,
-    visible: boolean,
+    visible: boolean | (() => boolean),
     heightMode: WindowHeightMode = "min",
     // ensurePreviewDisplay passes its not-yet-published target explicitly.
     target: DisplayTarget | null = this.display,
@@ -2277,7 +2286,12 @@ class DashboardController {
       zOrder: 0,
       transparency: "opaque",
     });
-    await target.setSurfaceVisible(surfaceId, visible);
+    await target.setSurfaceVisible(surfaceId, typeof visible === "function" ? visible() : visible);
+  }
+
+  /** A late answer to "is this window in front?", for configureWindowSurface. */
+  private isForegroundWindow(windowId: string): () => boolean {
+    return () => shell.foregroundWindow()?.windowId === windowId;
   }
 
   private removeWindowSurface(surfaceId: string): void {
