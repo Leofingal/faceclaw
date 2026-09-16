@@ -58,7 +58,8 @@ public class FaceclawVoiceController {
     private static final String LEGACY_KWS_ROOT = "faceclaw-voice";
     // Unload a resident recognizer after this long without a capture (see
     // setIdleUnloadMinutes); the TS side overrides it from Settings > Voice.
-    private static final long DEFAULT_IDLE_UNLOAD_MS = 5L * 60_000L;
+    // 0 = never, matching the TS default (asr-model-defs.ts).
+    private static final long DEFAULT_IDLE_UNLOAD_MS = 0L;
 
     private enum VoiceInputMode {
         ONBOARD,  // on-phone transcription (see onboardModel)

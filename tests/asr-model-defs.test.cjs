@@ -88,16 +88,17 @@ test("provider values map to on-device models; cloud and box providers do not", 
   }
 });
 
-test("idle unload: default 5 minutes, never = 0, junk falls back to the default", () => {
-  assert.equal(DEFAULT_IDLE_UNLOAD_CHOICE, "5");
+test("idle unload: default never, never = 0, junk falls back to the default", () => {
+  assert.equal(DEFAULT_IDLE_UNLOAD_CHOICE, "never");
   assert.ok(IDLE_UNLOAD_CHOICES.includes(DEFAULT_IDLE_UNLOAD_CHOICE));
   assert.equal(idleUnloadMinutes("5"), 5);
   assert.equal(idleUnloadMinutes("1"), 1);
   assert.equal(idleUnloadMinutes("30"), 30);
   assert.equal(idleUnloadMinutes("never"), 0);
-  assert.equal(idleUnloadMinutes("7"), 5);
-  assert.equal(idleUnloadMinutes("-1"), 5);
-  assert.equal(idleUnloadMinutes(""), 5);
+  assert.equal(idleUnloadMinutes("7"), 0);
+  assert.equal(idleUnloadMinutes("-1"), 0);
+  assert.equal(idleUnloadMinutes(""), 0);
+  assert.ok(Number.isFinite(idleUnloadMinutes("junk")), "the default never becomes NaN");
   assert.equal(formatIdleUnloadChoice("1"), "After 1 minute");
   assert.equal(formatIdleUnloadChoice("5"), "After 5 minutes");
   assert.equal(formatIdleUnloadChoice("never"), "Never");

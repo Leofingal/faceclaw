@@ -204,13 +204,18 @@ export type IdleUnloadChoice = "1" | "2" | "5" | "10" | "30" | "never";
 
 export const IDLE_UNLOAD_CHOICES: readonly IdleUnloadChoice[] = ["1", "2", "5", "10", "30", "never"];
 
-export const DEFAULT_IDLE_UNLOAD_CHOICE: IdleUnloadChoice = "5";
+/**
+ * "never" while Chris tests Parakeet on the phone (seat, 2026-09-16): a reload
+ * loses the words spoken while "Loading transcription model..." shows, because
+ * the recognizer loads before the mic opens. Revisit once the phone test has
+ * load times and memory numbers.
+ */
+export const DEFAULT_IDLE_UNLOAD_CHOICE: IdleUnloadChoice = "never";
 
-/** Minutes for FaceclawVoiceController.setIdleUnloadMinutes(); 0 means never unload. */
+/** Minutes for FaceclawVoiceController.setIdleUnloadMinutes(); 0 means never unload. Unknown values take the default. */
 export function idleUnloadMinutes(choice: string): number {
-  if (choice === "never") return 0;
-  const minutes = Number(choice);
-  return (IDLE_UNLOAD_CHOICES as readonly string[]).includes(choice) && minutes > 0 ? minutes : Number(DEFAULT_IDLE_UNLOAD_CHOICE);
+  const known = (IDLE_UNLOAD_CHOICES as readonly string[]).includes(choice) ? choice : DEFAULT_IDLE_UNLOAD_CHOICE;
+  return known === "never" ? 0 : Number(known);
 }
 
 export function formatIdleUnloadChoice(choice: IdleUnloadChoice): string {
