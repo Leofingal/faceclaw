@@ -49,6 +49,8 @@ export type AppRunEntry = {
    * null, means the row draws exactly as it did before status lines existed.
    */
   statusLine?: () => string | null;
+  /** When `statusLine` next changes its text; see `apps/app-definition.ts`. */
+  statusLineChangesInMs?: () => number | null;
 };
 
 export type AppRunGeometry = {

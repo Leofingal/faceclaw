@@ -31,6 +31,7 @@ import { type InputEvent } from "../../ui/gestures";
 import { type Plane } from "../../graphics/plane";
 import { createInProcessWindow, YieldAtRootLayer } from "../../ui/shell/in-process-window";
 import { type ShellWindow } from "../../ui/shell/shell";
+import { nextStatusChangeMs, statusRepaintDelayMs } from "./status-line";
 
 export const EXOCORTEX_WINDOW_ID = "exocortex";
 export const EXOCORTEX_SURFACE_ID = "window:exocortex";
@@ -512,5 +513,24 @@ export function createExocortexWindow(options: ExocortexOptions): ShellWindow {
   // so the subscription never needs tearing down (the stock launcher's
   // settings subscription is unhooked for the same reason).
   onAndroidNotificationPosted(() => created.requestRender());
+  // Aging status lines (Ghost's "12m ago") are worked out at paint time, but
+  // nothing else repaints a home screen that is just being looked at, so the
+  // age would freeze until the next input or notification. Repaint when the
+  // soonest row's text changes, and look again at least once a minute so a
+  // first message is picked up. Lives as long as the window, like the
+  // subscription above.
+  const repaintWhenStatusAges = () => {
+    let wait = statusRepaintDelayMs(null);
+    try {
+      wait = statusRepaintDelayMs(nextStatusChangeMs(options.apps()));
+    } catch (error) {
+      console.warn("home screen status repaint schedule failed", error);
+    }
+    setTimeout(() => {
+      created.requestRender();
+      repaintWhenStatusAges();
+    }, wait);
+  };
+  repaintWhenStatusAges();
   return created.window;
 }

@@ -226,6 +226,62 @@ export function formatGhostStatus(lastMessageMs: number | null, nowMs: number): 
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Milliseconds until `formatGhostStatus(lastMessageMs, …)` next changes its
+ * text, or null when it shows nothing.
+ *
+ * The age is computed at paint time from the stored timestamp, but a paint
+ * only happens when something asks for one: a home screen left open would keep
+ * showing "3m ago" until the next input or notification. The home screen asks
+ * this when to repaint, so the row changes at the moment its text does.
+ */
+export function msUntilGhostStatusChange(lastMessageMs: number | null, nowMs: number): number | null {
+  if (lastMessageMs === null || !Number.isFinite(lastMessageMs) || lastMessageMs <= 0) return null;
+  const age = Math.max(0, nowMs - lastMessageMs);
+  const unit = age < HOUR_MS ? MINUTE_MS : age < DAY_MS ? HOUR_MS : DAY_MS;
+  return unit - (age % unit);
+}
+
+/**
+ * The soonest change among the rows' aging status lines, or null when none
+ * ages. An app that throws or answers with something that is not a positive
+ * finite number is skipped rather than allowed to stop the others.
+ */
+export function nextStatusChangeMs(
+  entries: ReadonlyArray<{ statusLineChangesInMs?: () => number | null }>,
+): number | null {
+  let soonest: number | null = null;
+  for (const entry of entries) {
+    if (!entry.statusLineChangesInMs) continue;
+    let wait: number | null;
+    try {
+      wait = entry.statusLineChangesInMs();
+    } catch {
+      continue;
+    }
+    if (wait === null || !Number.isFinite(wait) || wait <= 0) continue;
+    if (soonest === null || wait < soonest) soonest = wait;
+  }
+  return soonest;
+}
+
+/** Never re-check the rows less often than this, so a first message is picked up. */
+export const STATUS_REPAINT_MAX_MS = MINUTE_MS;
+/** Never repaint more often than this, whatever an app answers. */
+export const STATUS_REPAINT_MIN_MS = 1_000;
+/** Land just past the boundary rather than on it. */
+export const STATUS_REPAINT_MARGIN_MS = 250;
+
+/** The home screen's next status repaint delay, from `nextStatusChangeMs`. */
+export function statusRepaintDelayMs(nextChangeMs: number | null): number {
+  if (nextChangeMs === null) return STATUS_REPAINT_MAX_MS;
+  return Math.min(STATUS_REPAINT_MAX_MS, Math.max(STATUS_REPAINT_MIN_MS, Math.ceil(nextChangeMs) + STATUS_REPAINT_MARGIN_MS));
+}
+
 /**
  * A `GhostItem.ts` as milliseconds, or null.
  *

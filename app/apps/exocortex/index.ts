@@ -86,6 +86,7 @@ const exocortexApp: AppDefinition = {
               // The app answers for its own row. Passed as the function, not
               // as its result: it is called at PAINT time, not here.
               statusLine: app.statusLine,
+              statusLineChangesInMs: app.statusLineChangesInMs,
               // Curated apps are in the list on a fresh install; the rest of
               // faceclaw's stock apps are not, until let in from the phone.
               // They stay installed and launchable either way.

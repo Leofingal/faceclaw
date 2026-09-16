@@ -48,6 +48,13 @@ export type AppDefinition = {
    */
   statusLine?: () => string | null;
   /**
+   * For a status that ages on its own (Ghost's "12m ago"): milliseconds until
+   * `statusLine()` would return different text, or null when it will not.
+   * The home screen repaints then, so an open menu never shows a stale age.
+   * Cheap and synchronous, like `statusLine`.
+   */
+  statusLineChangesInMs?: () => number | null;
+  /**
    * The expensive half of `statusLine`: whatever has to be fetched, read or
    * pulled so the cheap read above has something to return.
    *

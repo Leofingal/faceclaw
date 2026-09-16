@@ -17,7 +17,13 @@ const {
   formatWeatherStatus,
   groupDigits,
   layoutRowStatus,
+  msUntilGhostStatusChange,
+  nextStatusChangeMs,
   parseGhostTimestamp,
+  statusRepaintDelayMs,
+  STATUS_REPAINT_MAX_MS,
+  STATUS_REPAINT_MIN_MS,
+  STATUS_REPAINT_MARGIN_MS,
 } = require("../.test-build/app/apps/exocortex/status-line.js");
 
 // A font with arithmetic anyone can do in their head: every character is
@@ -182,4 +188,66 @@ test("parseGhostTimestamp takes all three shapes the box emits", () => {
   assert.equal(parseGhostTimestamp("1757000000000"), 1_757_000_000_000);
   assert.equal(parseGhostTimestamp("2026-09-15T12:00:00.000Z"), Date.parse("2026-09-15T12:00:00.000Z"));
   assert.equal(parseGhostTimestamp("not a date"), null);
+});
+
+// ---------------------------------------------------------------------------
+// Ghost's age repaints (Chris, 2026-09-16: never a stale age on an open menu)
+
+test("msUntilGhostStatusChange: known-good waits on each rung of the ladder", () => {
+  const last = 10_000_000_000;
+  assert.equal(msUntilGhostStatusChange(last, last), 60_000);
+  assert.equal(msUntilGhostStatusChange(last, last + 30_000), 30_000);
+  assert.equal(msUntilGhostStatusChange(last, last + 12 * 60_000 + 5_000), 55_000);
+  assert.equal(msUntilGhostStatusChange(last, last + 59 * 60_000 + 59_000), 1_000);
+  assert.equal(msUntilGhostStatusChange(last, last + 60 * 60_000), 3_600_000);
+  assert.equal(msUntilGhostStatusChange(last, last + 3 * 3_600_000 + 1), 3_599_999);
+  assert.equal(msUntilGhostStatusChange(last, last + 25 * 3_600_000), 23 * 3_600_000);
+  // A stamp from the future reads as age 0, as formatGhostStatus does.
+  assert.equal(msUntilGhostStatusChange(last, last - 5_000), 60_000);
+});
+
+test("msUntilGhostStatusChange is null exactly when formatGhostStatus shows nothing", () => {
+  for (const stamp of [null, 0, -1, NaN, Infinity]) {
+    assert.equal(msUntilGhostStatusChange(stamp, 10_000_000_000), null);
+    assert.equal(formatGhostStatus(stamp, 10_000_000_000), null);
+  }
+});
+
+test("the text changes at the returned moment and not one millisecond before", () => {
+  const last = 10_000_000_000;
+  const ages = [0, 1, 59_999, 60_000, 61_000, 30 * 60_000 + 7, 59 * 60_000 + 59_999, 3_600_000, 5 * 3_600_000 + 123, 23 * 3_600_000 + 59 * 60_000, 86_400_000, 3 * 86_400_000 + 17];
+  for (const age of ages) {
+    const now = last + age;
+    const wait = msUntilGhostStatusChange(last, now);
+    const text = formatGhostStatus(last, now);
+    assert.equal(formatGhostStatus(last, now + wait - 1), text, `age ${age}: unchanged 1 ms early`);
+    assert.notEqual(formatGhostStatus(last, now + wait), text, `age ${age}: changed on time`);
+  }
+});
+
+test("nextStatusChangeMs takes the soonest real answer and skips the rest", () => {
+  assert.equal(nextStatusChangeMs([]), null);
+  assert.equal(nextStatusChangeMs([{}, { statusLineChangesInMs: () => null }]), null);
+  assert.equal(
+    nextStatusChangeMs([
+      { statusLineChangesInMs: () => 50_000 },
+      {},
+      { statusLineChangesInMs: () => 20_000 },
+      { statusLineChangesInMs: () => NaN },
+      { statusLineChangesInMs: () => 0 },
+      { statusLineChangesInMs: () => -3 },
+      { statusLineChangesInMs: () => { throw new Error("broken app"); } },
+    ]),
+    20_000,
+  );
+});
+
+test("statusRepaintDelayMs clamps to one second .. one minute with a margin past the boundary", () => {
+  assert.equal(STATUS_REPAINT_MAX_MS, 60_000);
+  assert.equal(STATUS_REPAINT_MIN_MS, 1_000);
+  assert.equal(statusRepaintDelayMs(null), 60_000);
+  assert.equal(statusRepaintDelayMs(30), 1_000);
+  assert.equal(statusRepaintDelayMs(30_000), 30_000 + STATUS_REPAINT_MARGIN_MS);
+  assert.equal(statusRepaintDelayMs(59_999.2), 60_000);
+  assert.equal(statusRepaintDelayMs(3_600_000), 60_000);
 });

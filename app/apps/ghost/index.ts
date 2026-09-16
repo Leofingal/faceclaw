@@ -1,5 +1,5 @@
 import { type AppDefinition } from "../app-definition";
-import { formatGhostStatus } from "../exocortex/status-line";
+import { formatGhostStatus, msUntilGhostStatusChange } from "../exocortex/status-line";
 import { createGhostAppWindow, GHOST_SURFACE_ID, GHOST_WINDOW_ID } from "./ghost-app";
 import { ghostLastMessageMs } from "./ghost-companion-store";
 
@@ -28,6 +28,8 @@ const ghostApp: AppDefinition = {
    * No `refreshStatus`: there is nothing to refresh. The row simply ages.
    */
   statusLine: () => formatGhostStatus(ghostLastMessageMs(), Date.now()),
+  /** The row ages by itself, so tell the home screen when to repaint it. */
+  statusLineChangesInMs: () => msUntilGhostStatusChange(ghostLastMessageMs(), Date.now()),
 };
 
 export default ghostApp;
