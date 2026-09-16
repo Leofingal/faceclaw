@@ -30,6 +30,12 @@ export type AppDefinition = {
   boot?: (ctx: AppContext) => void;
   /** False for apps that must not appear in the launcher grid (the launcher itself). */
   showInLauncher?: boolean;
+  /**
+   * False for apps whose launch is itself a request to act (News starts
+   * narrating when its window opens). The open-apps restore at startup skips
+   * them, so restarting the phone app never acts on Chris's behalf.
+   */
+  restoreOnStart?: boolean;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
 };
