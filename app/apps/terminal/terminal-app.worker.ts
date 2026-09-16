@@ -39,6 +39,7 @@ import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
+import { JavaDirectBuffer } from "../../native/java-direct-buffer";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
@@ -52,6 +53,11 @@ import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
+
+// Reused Java-side buffers for this worker's frames: passing a
+// JS ArrayBuffer to Java leaks it (native/java-direct-buffer.ts).
+const framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+const frameDrawsBuffer = new JavaDirectBuffer();
 
 declare const global: any;
 declare const com: any;
@@ -1694,7 +1700,7 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
-      buffer.buffer,
+      framePixelsBuffer.load(buffer),
       window.surfaceId,
       0,
       0,
@@ -1703,7 +1709,9 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      frameDrawsBuffer.loadOptional(
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      ),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {
