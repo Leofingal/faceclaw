@@ -42,16 +42,26 @@ class FileBackend implements HealthStorageBackend {
   }
 
   append(name: string, text: string): void {
+    // `File.fromPath` creates the file when it is missing, and
+    // `appendTextSync` is the durable single-call append - deliberately not
+    // read-modify-write, which would put every record already on disk at
+    // risk on every new one.
+    //
+    // THROWS on failure (2026-09-16). NativeScript's appendTextSync catches its
+    // own Java exception and only reports it to the callback, so the callback
+    // records it and it is rethrown here. This used to warn and return, and
+    // the store then counted the lines as written: a silent loss.
+    const errors: unknown[] = [];
     try {
-      // `File.fromPath` creates the file when it is missing, and
-      // `appendTextSync` is the durable single-call append - deliberately not
-      // read-modify-write, which would put every record already on disk at
-      // risk on every new one.
       File.fromPath(pathFor(name)).appendTextSync(text, (error) => {
-        console.warn(`health store append failed (${name})`, error);
+        errors.push(error ?? "unknown error");
       });
     } catch (error) {
-      console.warn(`health store append threw (${name})`, error);
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      console.error(`health store append FAILED (${name})`, errors[0]);
+      throw new Error(`health store append failed (${name}): ${String(errors[0])}`);
     }
   }
 

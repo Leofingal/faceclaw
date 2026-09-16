@@ -123,6 +123,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String RING_SLEEP_RECEIPTS_FILE = "ring-sleep-receipts.jsonl";
     /** Hard stop on the receipt file. A sleep page is ~250 bytes and a pull line ~150. */
     private static final long RING_SLEEP_RECEIPTS_MAX_BYTES = 2L * 1024L * 1024L;
+    /**
+     * The write-ahead page journal (2026-09-16). Every page is in it, fsynced,
+     * before its ACK is written; the JS store ingests from it. Lazily bound,
+     * worker thread only. See {@link RingPageJournal}.
+     */
+    private RingPageJournal ringPageJournal;
+    /**
+     * Decoded pages as they arrive. Since the page journal (2026-09-16) this is
+     * a live view only: the store ingests from the journal, and the JS sync
+     * drains this buffer every tick so it stays small.
+     */
     private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
     /**
      * Total records ever appended to {@link #ringHealthRecords}, including every
@@ -1705,13 +1716,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         } else {
             synchronized (lock) {
                 if (ringHealthRecords.size() >= RING_HEALTH_MAX_RECORDS) {
-                    // This was silent. An eviction here drops a record that
-                    // nothing has ingested yet - real data lost inside the
-                    // phone, with no trace anywhere. Say so. With the consume
-                    // path in place the buffer should never reach this size;
-                    // if this line ever appears, the consumer has stopped.
+                    // The store no longer reads this buffer (it ingests from the
+                    // page journal), so an eviction loses nothing stored. The JS
+                    // sync drains it every tick; if this line ever appears, that
+                    // sync has stopped, and the journal is growing unread too.
                     logLine("ring health: buffer FULL at " + RING_HEALTH_MAX_RECORDS
-                        + " - dropping the oldest UNINGESTED record");
+                        + " - dropping the oldest live record; is the JS health sync running?");
                     ringHealthRecords.remove(0);
                 }
                 ringHealthRecords.add(record);
@@ -1722,7 +1732,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
         // Acknowledge the page regardless of whether we could decode it: the
         // ACK is what keeps the ring sending, and a decode gap must not stall
-        // the rest of the transfer.
+        // the rest of the transfer. The raw page is journaled before its ACK is
+        // written, decodable or not (flushRingOutbound).
         queueRingPageAck(frame, arrivalMs, arrivalWallMs);
         return true;
     }
@@ -2990,6 +3001,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * Drain queued ring frames (page ACKs). Worker-thread only. Returns true
      * when anything was written.
      *
+     * <p>Chris's rule (2026-09-16): nothing we send may make the ring discard
+     * data until the phone holds it durably. So everything queued is taken as
+     * one batch, its pages are appended to the {@link RingPageJournal} with one
+     * fsync, and only then are the ACKs written, back to back as before. The
+     * ACK bytes and the idle wait that times them are unchanged; the batch goes
+     * out one journal append later. If the append fails, none of the batch's
+     * ACKs are written: the ring keeps those pages and re-sends them on the
+     * next request.
+     *
      * <p>Logs one line per ACK with the page's arrival time and the time the
      * write completed, so "ACKed within tens of ms" is checkable from logcat,
      * and leaves a receipt for every sleep page.
@@ -2997,30 +3017,89 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean flushRingOutbound() {
         boolean wroteAny = false;
         while (true) {
-            PendingRingAck pending;
+            final List<PendingRingAck> batch = new ArrayList<>();
             synchronized (lock) {
                 if (!ringNotificationsReady || ringOutbound.isEmpty()) {
                     return wroteAny;
                 }
-                pending = ringOutbound.poll();
+                batch.addAll(ringOutbound);
+                ringOutbound.clear();
             }
-            if (pending == null) {
-                return wroteAny;
+            List<RingProtocol.Frame> pages = new ArrayList<>(batch.size());
+            long[] rxWallMs = new long[batch.size()];
+            for (int i = 0; i < batch.size(); i++) {
+                pages.add(batch.get(i).page);
+                rxWallMs[i] = batch.get(i).arrivalWallMs;
             }
-            boolean ok = writeRingFrame(pending.frame, "page ack");
-            wroteAny |= ok;
-            long writtenWallMs = System.currentTimeMillis();
-            long latencyMs = SystemClock.elapsedRealtime() - pending.arrivalElapsedMs;
-            logLine(String.format(Locale.US,
-                "ring page ack %s pageSeq=%02x arrived %tT.%tL written %tT.%tL (+%dms)%s",
-                pending.page.commandLabel(), pending.page.seq & 0xff,
-                pending.arrivalWallMs, pending.arrivalWallMs, writtenWallMs, writtenWallMs,
-                latencyMs, ok ? "" : " WRITE FAILED"));
-            if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
-                appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
-                    pending.page, pending.arrivalWallMs, writtenWallMs, latencyMs, ok, null));
+            final boolean[] wrote = {false};
+            RingPageJournal.Appended journaled = RingPageJournal.journalThenAck(
+                ringPageJournal(), pages, rxWallMs, (index) -> {
+                    if (writeRingPageAck(batch.get(index))) {
+                        wrote[0] = true;
+                    }
+                });
+            wroteAny |= wrote[0];
+            if (journaled.ok()) {
+                logLine("ring page journal: " + journaled.pages + " page(s) n=" + journaled.firstN
+                    + ".." + journaled.lastN + " fsynced in " + journaled.durationMs + "ms");
+                continue;
+            }
+            logLine("ring page journal append FAILED after " + journaled.durationMs + "ms ("
+                + safeMessage(journaled.error) + "): " + batch.size()
+                + " ACK(s) NOT written; the ring keeps the page(s) for the next request");
+            for (PendingRingAck pending : batch) {
+                if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                    appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                        pending.page, pending.arrivalWallMs, -1L, -1L, false, "ACK withheld: journal append failed"));
+                }
             }
         }
+    }
+
+    /** The page journal under files/health, bound on first use. Worker thread. */
+    private RingPageJournal ringPageJournal() {
+        if (ringPageJournal == null) {
+            try {
+                ringPageJournal = RingPageJournal.forDirectory(new java.io.File(appContext.getFilesDir(), "health"));
+            } catch (Throwable t) {
+                logLine("ring page journal unavailable: " + safeMessage(t));
+                return null;
+            }
+        }
+        return ringPageJournal;
+    }
+
+    /**
+     * Write one ACK whose page is already journaled. A link that dropped since
+     * the batch was taken gets the same drop receipt clearRingOutboundLocked
+     * leaves. Worker thread. Returns true when the ACK was written.
+     */
+    private boolean writeRingPageAck(PendingRingAck pending) {
+        boolean ready;
+        synchronized (lock) {
+            ready = ringNotificationsReady;
+        }
+        if (!ready) {
+            logLine("ring page ack: dropping unsent ACK, link dropped: " + pending.page.describe());
+            if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+                appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                    pending.page, pending.arrivalWallMs, -1L, -1L, false, "ACK dropped: link dropped"));
+            }
+            return false;
+        }
+        boolean ok = writeRingFrame(pending.frame, "page ack");
+        long writtenWallMs = System.currentTimeMillis();
+        long latencyMs = SystemClock.elapsedRealtime() - pending.arrivalElapsedMs;
+        logLine(String.format(Locale.US,
+            "ring page ack %s pageSeq=%02x arrived %tT.%tL written %tT.%tL (+%dms)%s",
+            pending.page.commandLabel(), pending.page.seq & 0xff,
+            pending.arrivalWallMs, pending.arrivalWallMs, writtenWallMs, writtenWallMs,
+            latencyMs, ok ? "" : " WRITE FAILED"));
+        if (pending.page.cmdHi == RingProtocol.CMD_HI_SLEEP) {
+            appendSleepReceipt(RingProtocol.sleepPageReceiptLine(
+                pending.page, pending.arrivalWallMs, writtenWallMs, latencyMs, ok, null));
+        }
+        return ok;
     }
 
     private int nextRingSeqLocked() {
