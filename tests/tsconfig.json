@@ -12,6 +12,7 @@
   },
   "include": [
     "../app/g2/glasses-hardware-identity.ts",
+    "../app/native/java-direct-buffer.ts",
     "../app/g2/ble-proximity.ts",
     "../app/g2/even-advertisement.ts",
     "../app/g2/glasses-artwork.ts",
