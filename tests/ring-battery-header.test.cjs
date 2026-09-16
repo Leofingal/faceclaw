@@ -41,16 +41,16 @@ const font = {
 // ---------------------------------------------------------------------------
 // Reading -> item
 
-test("known-good 51, not charging: Ring 51, no charging mark, fresh", () => {
-  assert.deepEqual(ringBatteryItem(OFF_51, NOW), { label: "Ring", percent: 51, charging: false, stale: false });
+test("known-good 51, not charging: R1 51, no charging mark, fresh", () => {
+  assert.deepEqual(ringBatteryItem(OFF_51, NOW), { label: "R1", percent: 51, charging: false, stale: false });
 });
 
-test("known-good 49, charging: Ring 49 with the charging mark", () => {
-  assert.deepEqual(ringBatteryItem(ON_49, NOW), { label: "Ring", percent: 49, charging: true, stale: false });
+test("known-good 49, charging: R1 49 with the charging mark", () => {
+  assert.deepEqual(ringBatteryItem(ON_49, NOW), { label: "R1", percent: 49, charging: true, stale: false });
 });
 
-test("known-good 59, not charging: Ring 59", () => {
-  assert.deepEqual(ringBatteryItem(OFF_59, NOW), { label: "Ring", percent: 59, charging: false, stale: false });
+test("known-good 59, not charging: R1 59", () => {
+  assert.deepEqual(ringBatteryItem(OFF_59, NOW), { label: "R1", percent: 59, charging: false, stale: false });
 });
 
 test("no reading draws nothing", () => {
@@ -73,7 +73,7 @@ test("stale starts just past two hours, and a stale reading never shows charging
   assert.equal(atEdge.stale, false);
   assert.equal(atEdge.charging, true);
   const past = ringBatteryItem({ ...ON_49, atMs: NOW - RING_BATTERY_STALE_MS - 1 }, NOW);
-  assert.deepEqual(past, { label: "Ring", percent: 49, charging: false, stale: true });
+  assert.deepEqual(past, { label: "R1", percent: 49, charging: false, stale: true });
 });
 
 test("a reading stamped slightly in the future (clock skew) is fresh", () => {
@@ -83,27 +83,27 @@ test("a reading stamped slightly in the future (clock skew) is fresh", () => {
 // ---------------------------------------------------------------------------
 // The battery block's items
 
-test("items run Phone, G2, Ring, each only when known", () => {
+test("items run Ph, G2, R1, each only when known", () => {
   const phone = { battery: 83, charging: false };
   const levels = { headset: 64, headsetCharging: false, ring: OFF_51 };
   assert.deepEqual(
     topBarBatteryItems(phone, levels, NOW).map((item) => item.label),
-    ["Phone", "G2", "Ring"],
+    ["Ph", "G2", "R1"],
   );
   assert.deepEqual(
     topBarBatteryItems(phone, { ...levels, ring: null }, NOW).map((item) => item.label),
-    ["Phone", "G2"],
+    ["Ph", "G2"],
   );
   assert.deepEqual(
     topBarBatteryItems({ battery: null, charging: null }, { headset: null, headsetCharging: null, ring: ON_49 }, NOW),
-    [{ label: "Ring", percent: 49, charging: true, stale: false }],
+    [{ label: "R1", percent: 49, charging: true, stale: false }],
   );
 });
 
-test("Phone and G2 items are unchanged by the ring: never stale, same fields", () => {
+test("Ph and G2 items are unchanged by the ring: never stale, same fields", () => {
   const items = topBarBatteryItems({ battery: 83, charging: true }, { headset: 64, headsetCharging: false, ring: null }, NOW);
   assert.deepEqual(items, [
-    { label: "Phone", percent: 83, charging: true, stale: false },
+    { label: "Ph", percent: 83, charging: true, stale: false },
     { label: "G2", percent: 64, charging: false, stale: false },
   ]);
 });
@@ -148,7 +148,7 @@ test("no items: nothing drawn, block edge is the screen edge", () => {
   assert.equal(pixels.some((value) => value !== 0), false);
 });
 
-test("the ring takes label + gap + value + item gap to the left of G2, and G2/Phone keep their pixels", () => {
+test("the ring takes label + gap + value + item gap to the left of G2, and G2/Ph keep their pixels", () => {
   const phone = { battery: 83, charging: false };
   const without = topBarBatteryItems(phone, { headset: 64, headsetCharging: false, ring: null }, NOW);
   const withRing = topBarBatteryItems(phone, { headset: 64, headsetCharging: false, ring: OFF_51 }, NOW);
@@ -156,9 +156,9 @@ test("the ring takes label + gap + value + item gap to the left of G2, and G2/Ph
     const a = draw(without, percentageMode);
     const b = draw(withRing, percentageMode);
     const ringValueWidth = percentageMode ? "51%".length * 6 : BATTERY_ICON_WIDTH;
-    const ringWidth = "Ring".length * 6 + 5 + ringValueWidth + 12;
+    const ringWidth = "R1".length * 6 + 5 + ringValueWidth + 12;
     assert.equal(a.left - b.left, ringWidth, `percentageMode ${percentageMode}`);
-    // Phone and G2 shifted left by exactly ringWidth, pixel for pixel.
+    // Ph and G2 shifted left by exactly ringWidth, pixel for pixel.
     for (let y = 0; y < TOP_BAR_HEIGHT; y++) {
       for (let x = a.left; x < G2_LENS_WIDTH - 8; x++) {
         assert.equal(

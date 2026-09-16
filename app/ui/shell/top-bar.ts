@@ -1,6 +1,6 @@
 /**
  * The shell's top bar: clock on the left, notification icons after it, app
- * tray icons, then the battery block right-aligned (Phone, G2, Ring).
+ * tray icons, then the battery block right-aligned (Ph, G2, R1).
  *
  * Split out of chrome-layer.ts (2026-09-16, for the ring battery) so it
  * imports nothing from NativeScript. The chrome layer reads the settings, the
@@ -40,6 +40,14 @@ const STALE_ICON_SCALE = 0.45;
  */
 export const RING_BATTERY_STALE_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * Item labels, kept short to save bar width (Chris, 2026-09-16): "Ph" for the
+ * phone (was "Phone"), "G2" for the glasses, "R1" for the ring.
+ */
+export const PHONE_LABEL = "Ph";
+export const GLASSES_LABEL = "G2";
+export const RING_LABEL = "R1";
+
 /** Latest ring battery, as the communicator reports it (see RingBatteryState). */
 export type RingBatteryReading = {
   level: number;
@@ -75,10 +83,10 @@ export function ringBatteryItem(reading: RingBatteryReading | null | undefined, 
   const atMs = Number(reading.atMs);
   if (!Number.isInteger(level) || level < 0 || level > 100 || !Number.isFinite(atMs)) return null;
   const stale = nowMs - atMs > RING_BATTERY_STALE_MS;
-  return { label: "Ring", percent: level, charging: !stale && Boolean(reading.charging), stale };
+  return { label: RING_LABEL, percent: level, charging: !stale && Boolean(reading.charging), stale };
 }
 
-/** The battery block's items, left to right: Phone, G2, Ring; each only when known. */
+/** The battery block's items, left to right: Ph, G2, R1; each only when known. */
 export function topBarBatteryItems(
   phone: { battery: number | null; charging: boolean | null },
   levels: TopBarBatteryLevels,
@@ -86,10 +94,10 @@ export function topBarBatteryItems(
 ): TopBarBatteryItem[] {
   const items: TopBarBatteryItem[] = [];
   if (phone.battery !== null && Number.isFinite(phone.battery)) {
-    items.push({ label: "Phone", percent: phone.battery, charging: Boolean(phone.charging), stale: false });
+    items.push({ label: PHONE_LABEL, percent: phone.battery, charging: Boolean(phone.charging), stale: false });
   }
   if (levels.headset !== null && Number.isFinite(levels.headset)) {
-    items.push({ label: "G2", percent: levels.headset, charging: Boolean(levels.headsetCharging), stale: false });
+    items.push({ label: GLASSES_LABEL, percent: levels.headset, charging: Boolean(levels.headsetCharging), stale: false });
   }
   const ring = ringBatteryItem(levels.ring, nowMs);
   if (ring) items.push(ring);

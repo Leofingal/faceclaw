@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Render the glasses top bar (clock, notification icons, Phone / G2 / Ring
+ * Render the glasses top bar (clock, notification icons, Ph / G2 / R1
  * batteries) to PNGs, under plain node, with no emulator.
  *
  * Same approach as `tools/health-preview.cjs`: the bar's drawing lives in
@@ -32,7 +32,7 @@
  *
  * 1. The bar's pixels are identical at both modes' positions (it only moves).
  * 2. No reading, and an unusable level (255), draw exactly what the bar drew
- *    before the ring existed: Phone and G2 only.
+ *    before the ring existed: Ph and G2 only.
  * 3. A stale reading that says "charging" draws exactly the same as a stale
  *    one that doesn't: no charging mark on an old reading.
  * 4. Worst-case width (12h clock, three 100% batteries in percentage mode, a
@@ -205,13 +205,13 @@ function sheet(rows) {
 // 1. The scenarios, painted at the band position.
 const scenarios = [
   ["icon", false, "none", "no ring reading (today's bar)"],
-  ["icon", false, "off51", "Ring 51, not charging (025233020100000000)"],
-  ["icon", false, "on49", "Ring 49, charging (d98531010000000000)"],
-  ["icon", false, "stale59", "Ring 59, 3 h old: stale (feab3b020000000000)"],
+  ["icon", false, "off51", "R1 51, not charging (025233020100000000)"],
+  ["icon", false, "on49", "R1 49, charging (d98531010000000000)"],
+  ["icon", false, "stale59", "R1 59, 3 h old: stale (feab3b020000000000)"],
   ["pct", true, "none", "no ring reading (today's bar)"],
-  ["pct", true, "off51", "Ring 51, not charging"],
-  ["pct", true, "on49", "Ring 49, charging"],
-  ["pct", true, "stale59", "Ring 59, 3 h old: stale"],
+  ["pct", true, "off51", "R1 51, not charging"],
+  ["pct", true, "on49", "R1 49, charging"],
+  ["pct", true, "stale59", "R1 59, 3 h old: stale"],
 ];
 const rows = [];
 let positionIdentical = true;
@@ -254,7 +254,7 @@ writePng("top-bar-sheet-2x", sheetImage, 2);
 function frame(barTop, bandHeight, name) {
   const { image } = paintBar({ barTop, percentageMode: false, ring: RING.on49 });
   image.drawRect(0, barTop, G2_LENS_WIDTH, bandHeight, 40);
-  image.drawText(captionFont, 10, barTop + TOP_BAR_HEIGHT + 8, `${name}: bar top ${barTop}, band ${bandHeight}px; Ring 49 charging`, 110);
+  image.drawText(captionFont, 10, barTop + TOP_BAR_HEIGHT + 8, `${name}: bar top ${barTop}, band ${bandHeight}px; R1 49 charging`, 110);
   writePng(`frame-${name}`, image.withDrawsBaked());
 }
 frame(BAND_TOP, 288, "band-576x288");
@@ -272,6 +272,8 @@ console.log(`wrote ${written.length} PNGs to ${OUT}`);
 for (const entry of written) console.log(`  ${entry.name.padEnd(34)} ${entry.size}`);
 console.log("\nchecks");
 
+const labels = topBarBatteryItems(PHONE, { ...HEADSET, ring: RING.off51 }, NOW).map((item) => item.label).join(" ");
+check(`battery labels left to right: ${labels}`, labels === "Ph G2 R1");
 check("every scenario's bar is pixel-identical at band (top 96) and panel (top 0)", positionIdentical);
 
 for (const percentageMode of [false, true]) {
