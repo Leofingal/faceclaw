@@ -18,7 +18,7 @@ import { ghostLastMessageMs } from "./ghost-companion-store";
 const ghostApp: AppDefinition = {
   appId: "ghost",
   title: "Ghost",
-  icon: "activity",
+  icon: "tlc",
   launch: (ctx) => ctx.launchInProcessApp(GHOST_WINDOW_ID, GHOST_SURFACE_ID, createGhostAppWindow),
   /**
    * How long ago Ghost's last message arrived. Chris's own observation when
