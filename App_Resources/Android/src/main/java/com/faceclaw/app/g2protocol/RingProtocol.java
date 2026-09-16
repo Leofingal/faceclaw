@@ -1211,14 +1211,38 @@ public final class RingProtocol {
     /**
      * 00:01 / 00:7F level: the first payload byte after the 2-byte nonce, as
      * 0-255 (0x3c = 60 in pkt 41306). -1 for 00:03 or a payload too short to
-     * hold it. Nothing after that byte is read or named here; the whole payload
-     * goes into the receipt, to be decoded against known charge times.
+     * hold it. The byte after it is the charge state ({@link #ringBatteryChargeState});
+     * nothing later is read or named here, and the whole payload still goes
+     * into the receipt.
      */
     public static int ringBatteryLevel(Frame frame) {
         if (frame == null || frame.cmdLo == 0x03 || frame.payload == null || frame.payload.length < 3) {
             return -1;
         }
         return frame.payload[2] & 0xff;
+    }
+
+    /** Charge-state byte on the ring's charger. */
+    public static final int RING_BATTERY_STATE_CHARGING = 0x01;
+    /** Charge-state byte off the charger. */
+    public static final int RING_BATTERY_STATE_NOT_CHARGING = 0x02;
+
+    /**
+     * 00:01 / 00:7F charge state: payload[3], the byte after the level, as
+     * 0-255. 0x01 on the charger, 0x02 off it: 01 in every 30 s push during the
+     * 2026-09-16 09:29-09:39 charge and 02 from 09:40:03 on, when it came off.
+     * -1 for 00:03 or a payload too short to hold it.
+     */
+    public static int ringBatteryChargeState(Frame frame) {
+        if (frame == null || frame.cmdLo == 0x03 || frame.payload == null || frame.payload.length < 4) {
+            return -1;
+        }
+        return frame.payload[3] & 0xff;
+    }
+
+    /** True only for the on-charger byte; 0x02, any other value and -1 are not charging. */
+    public static boolean ringBatteryCharging(Frame frame) {
+        return ringBatteryChargeState(frame) == RING_BATTERY_STATE_CHARGING;
     }
 
     /**

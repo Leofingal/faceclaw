@@ -64,6 +64,7 @@ import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEdi
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
+import { ringBatteryDisplayChanged } from "../ui/shell/top-bar";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, forcePhoneMicSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
@@ -283,6 +284,7 @@ class DashboardController {
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
+  private offRingBattery: (() => void) | null = null;
   private offSilentMode: (() => void) | null = null;
   private offWearState: (() => void) | null = null;
   private offPhoneLockState: (() => void) | null = null;
@@ -1330,6 +1332,21 @@ class DashboardController {
         // the watch state, so refresh both consumers on every report.
         this.emit();
       });
+      this.offRingBattery = communicator.onRingBatteryState((state) => {
+        // The ring's level and charger state for the top bar. The ring pushes
+        // a 00:01 about every 30 s while charging, so repaint only when what
+        // the bar draws changes; staleness is re-judged at every paint,
+        // including the once-a-minute clock refresh.
+        const previous = shell.getBatteryLevels().ring;
+        shell.setBatteryLevels({ ring: state });
+        if (
+          ringBatteryDisplayChanged(previous, state, Date.now()) &&
+          (this.phase === "connected" || this.phase === "charging") &&
+          this.communicator
+        ) {
+          this.requestShellRender();
+        }
+      });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
         this.refreshEvenAppStatus();
         if (!this.evenNotificationActive) {
@@ -1453,6 +1470,8 @@ class DashboardController {
       this.offRing = null;
       this.offBattery?.();
       this.offBattery = null;
+      this.offRingBattery?.();
+      this.offRingBattery = null;
       this.offSilentMode?.();
       this.offSilentMode = null;
       this.offWearState?.();
@@ -1593,6 +1612,8 @@ class DashboardController {
     this.offRing = null;
     this.offBattery?.();
     this.offBattery = null;
+    this.offRingBattery?.();
+    this.offRingBattery = null;
     this.offSilentMode?.();
     this.offSilentMode = null;
     this.offWearState?.();
