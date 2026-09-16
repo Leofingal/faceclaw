@@ -187,6 +187,24 @@ public class FaceclawVoiceController {
     private long lastPacketArrivalMs;
     private long maxInterPacketMs;
     private long lastStatsAtMs;
+    // Capture receipt log (files/voice/capture-receipts.jsonl, see
+    // FaceclawVoiceCaptureReceipt): one JSON line per capture, kept because
+    // logcat rotates within minutes and "sometimes great, sometimes terrible"
+    // dictation can only be diagnosed after the fact. The TS bridge sets the
+    // context per capture; a null provider means no receipt (the raw
+    // EvenHub/Microphones tap, which is not a dictation and can run for hours).
+    private volatile String receiptProvider;
+    private volatile String receiptHolder;
+    private volatile boolean receiptForcePhoneMic;
+    // The live capture's receipt, created in start() so its clock starts at the
+    // request, or null. Written and cleared by the worker's finally block.
+    private volatile FaceclawVoiceCaptureReceipt receipt;
+    // Id (start wall-clock ms) and provider of the most recently started
+    // receipted capture, for the outcome/cloudFinal lines the TS side appends.
+    private volatile long lastCaptureId;
+    private volatile String lastCaptureProvider;
+    // Worker thread only: the phone-mic routing listener, removed before release.
+    private android.media.AudioRouting.OnRoutingChangedListener phoneMicRoutingListener;
 
     public FaceclawVoiceController(Context context) {
         this.appContext = context.getApplicationContext();
@@ -203,6 +221,47 @@ public class FaceclawVoiceController {
     /** Source the next capture from the phone microphone (no glasses paired). */
     public void setUsePhoneMic(boolean usePhoneMic) {
         this.usePhoneMic = usePhoneMic;
+    }
+
+    /**
+     * Receipt context for the next capture: the provider setting it was
+     * started with ("onboard-whisper", "soniox", ...), whether Settings >
+     * Developer > Force phone microphone is on, and who holds the mic ("ptt" /
+     * "continuous"). Must be set before {@link #start}; a null provider (or
+     * {@link #clearReceiptContext}) means that capture leaves no receipt.
+     */
+    public void setReceiptContext(String provider, boolean forcePhoneMic, String holder) {
+        this.receiptProvider = provider;
+        this.receiptForcePhoneMic = forcePhoneMic;
+        this.receiptHolder = holder;
+    }
+
+    public void clearReceiptContext() {
+        this.receiptProvider = null;
+    }
+
+    /**
+     * What the wearer did with the most recent receipted capture's transcript
+     * ("sent", "cancelled", ...), as its own line keyed by capture id. The
+     * capture line is written when the worker ends, which can be after this
+     * call, so readers join on the id rather than on line order. Never throws.
+     */
+    public void appendCaptureOutcome(String outcome, String via) {
+        long id = lastCaptureId;
+        if (id == 0 || outcome == null) {
+            return;
+        }
+        appendReceiptLine(FaceclawVoiceCaptureReceipt.outcomeLine(id, System.currentTimeMillis(), outcome, via));
+    }
+
+    /** A cloud provider's final text, which arrives after the capture line is written. Never throws. */
+    public void appendCloudFinal(String text) {
+        long id = lastCaptureId;
+        if (id == 0) {
+            return;
+        }
+        appendReceiptLine(FaceclawVoiceCaptureReceipt.cloudFinalLine(
+                id, System.currentTimeMillis(), lastCaptureProvider, text));
     }
 
     /** When true, the decoded mic PCM for each session is saved as a WAV. */
@@ -306,6 +365,26 @@ public class FaceclawVoiceController {
             activePhoneMic = usePhoneMic;
             started = true;
             audioStarted = false;
+            String provider = receiptProvider;
+            if (provider != null) {
+                long nowWall = System.currentTimeMillis();
+                long id = Math.max(nowWall, lastCaptureId + 1);
+                lastCaptureId = id;
+                lastCaptureProvider = provider;
+                receipt = new FaceclawVoiceCaptureReceipt(
+                        id,
+                        nowWall,
+                        SystemClock.elapsedRealtime(),
+                        provider,
+                        receiptHolder,
+                        receiptForcePhoneMic,
+                        mode == VoiceInputMode.CLOUD ? "cloud" : "onboard",
+                        mode == VoiceInputMode.CLOUD ? null
+                                : (onboardModelKind == OnboardModelKind.WHISPER ? "whisper" : "moonshine"),
+                        activePhoneMic);
+            } else {
+                receipt = null;
+            }
             workerThread = new Thread(this::runLoop, "FaceclawVoiceController");
             workerThread.start();
         }
@@ -403,9 +482,14 @@ public class FaceclawVoiceController {
     }
 
     private void runLoop() {
+        // This worker's own receipt (see finishReceipt()). A non-null failure is
+        // a Java-visible outcome that wins over "transcribed"/"empty".
+        FaceclawVoiceCaptureReceipt workerReceipt = receipt;
+        VoiceInputMode currentMode = mode;
+        String failure = null;
+        String failureMessage = null;
         try {
             deleteLegacyKwsFiles();
-            VoiceInputMode currentMode = mode;
             OnboardModelKind currentOnboardKind = onboardModelKind;
             if (currentMode == VoiceInputMode.ONBOARD) {
                 // The recognizer is kept resident across captures (see recognizerKind
@@ -422,6 +506,7 @@ public class FaceclawVoiceController {
                     File modelDir = findAsrModelDir(currentOnboardKind);
                     if (modelDir == null) {
                         emitStatus("Voice model not downloaded (see Settings > Voice).");
+                        failure = "no-model";
                         return;
                     }
                     emitStatus("Loading transcription model...");
@@ -440,9 +525,10 @@ public class FaceclawVoiceController {
             verifyBuffer = verifying ? new short[VERIFY_MAX_SAMPLES] : null;
             verifyCount = 0;
             if (activePhoneMic) {
-                android.media.AudioRecord record = openPhoneMic();
+                android.media.AudioRecord record = openPhoneMic(workerReceipt);
                 if (record == null) {
                     emitStatus("Could not start the phone microphone.");
+                    failure = "mic-failed";
                     return;
                 }
                 synchronized (lock) {
@@ -454,6 +540,15 @@ public class FaceclawVoiceController {
                 try {
                     processPhoneAudio(record);
                 } finally {
+                    sampleClientSilenced(record, workerReceipt);
+                    if (phoneMicRoutingListener != null) {
+                        try {
+                            record.removeOnRoutingChangedListener(phoneMicRoutingListener);
+                        } catch (Throwable ignored) {
+                            // Released below either way.
+                        }
+                        phoneMicRoutingListener = null;
+                    }
                     try {
                         record.stop();
                     } catch (Throwable ignored) {
@@ -465,6 +560,7 @@ public class FaceclawVoiceController {
                 lc3Decoder = new FaceclawLc3Decoder();
                 if (!startG2Audio()) {
                     emitStatus("Could not start G2 microphone input.");
+                    failure = "g2-audio-failed";
                     return;
                 }
                 synchronized (lock) {
@@ -487,9 +583,13 @@ public class FaceclawVoiceController {
         } catch (Throwable error) {
             Log.e(TAG, "Voice control failed", error);
             emitStatus("Voice control failed: " + error.getMessage());
+            failure = "error";
+            failureMessage = error.getClass().getSimpleName() + ": " + error.getMessage();
         } finally {
             stopG2Audio();
             writeRecordingIfAny();
+            // Before releaseLc3(): the G2 packet counters are read off the decoder.
+            finishReceipt(workerReceipt, currentMode, failure, failureMessage);
             // recognizer is NOT released here any more -- it stays resident across
             // captures (see the ONBOARD branch above). releaseSherpa() now runs only
             // from close(), on real app teardown.
@@ -692,6 +792,10 @@ public class FaceclawVoiceController {
             int angleDegrees = currentDecoder.getLastAngleDegrees();
             int ssr = currentDecoder.getLastSsr();
             if (beamFilterEnabled && ssr > 0 && !withinBeam(angleDegrees)) {
+                FaceclawVoiceCaptureReceipt r = receipt;
+                if (r != null) {
+                    r.noteBeamDrop();
+                }
                 emitFrameMeta(angleDegrees, ssr);
                 maybeEmitAudioStats(false);
                 continue;
@@ -707,6 +811,12 @@ public class FaceclawVoiceController {
      * which has no firmware DSP metadata to report.
      */
     private void processPcmChunk(short[] pcm, int count, int angleDegrees, int ssr, boolean hasFrameMeta) {
+        // Receipt levels are taken BEFORE noise suppression: they describe what
+        // the mic delivered, which is the routing/link question.
+        FaceclawVoiceCaptureReceipt r = receipt;
+        if (r != null) {
+            r.acceptPcm(pcm, count);
+        }
         if (suppressionEnabled) {
             applySuppression(pcm, count);
         }
@@ -719,6 +829,9 @@ public class FaceclawVoiceController {
             verifyCount += copied;
         }
         if (endpointing && endpointDetector.accept(pcm, count)) {
+            if (r != null) {
+                r.noteSpeechEnd();
+            }
             emitSpeechEnd();
         }
         // PCM and frame metadata flow in every mode so levels, recording,
@@ -757,7 +870,7 @@ public class FaceclawVoiceController {
      * the phone's own mic instead: a working toggle that solves nothing. See
      * knowledge/staging/exocortex-phone-mic-toggle-instruction.md.
      */
-    private android.media.AudioRecord openPhoneMic() {
+    private android.media.AudioRecord openPhoneMic(FaceclawVoiceCaptureReceipt r) {
         android.media.AudioRecord record = null;
         try {
             int minBytes = android.media.AudioRecord.getMinBufferSize(
@@ -782,19 +895,49 @@ public class FaceclawVoiceController {
                         + describeAudioDeviceType(preferredInput.getType())
                         + " name=" + preferredInput.getProductName()
                         + " accepted=" + accepted);
+                if (r != null) {
+                    r.setRequested(deviceOf(preferredInput), accepted);
+                }
             } else {
                 Log.i(TAG, "phone mic: no BLE/hearing-aid input device found among "
                         + "GET_DEVICES_INPUTS; falling back to Android's default input "
                         + "routing (likely the built-in mic)");
+                if (r != null) {
+                    r.setRequestedNoneFound();
+                }
+            }
+            if (r != null) {
+                // Every routing change for the life of this AudioRecord, stamped
+                // relative to the capture request. AudioRouting's listener is
+                // API 24 (minSdk, so no guard); it replaces API 23's deprecated
+                // AudioRecord.OnRoutingChangedListener. Delivered on the main
+                // looper; the receipt's mutators are synchronized.
+                final long startElapsed = r.startElapsedMs;
+                android.media.AudioRouting.OnRoutingChangedListener routingListener = router -> {
+                    try {
+                        r.addRoutingChange(SystemClock.elapsedRealtime() - startElapsed,
+                                deviceOf(router.getRoutedDevice()));
+                    } catch (Throwable ignored) {
+                        // A receipt must never break capture.
+                    }
+                };
+                record.addOnRoutingChangedListener(routingListener, mainHandler);
+                phoneMicRoutingListener = routingListener;
             }
             record.startRecording();
             if (record.getRecordingState() != android.media.AudioRecord.RECORDSTATE_RECORDING) {
+                phoneMicRoutingListener = null;
                 record.release();
                 return null;
+            }
+            if (r != null) {
+                // Often still null this early; routedAtFirstAudio is taken once audio flows.
+                r.setRoutedAfterStart(deviceOf(record.getRoutedDevice()));
             }
             return record;
         } catch (Throwable t) {
             Log.w(TAG, "phone mic open failed", t);
+            phoneMicRoutingListener = null;
             if (record != null) {
                 record.release();
             }
@@ -844,6 +987,92 @@ public class FaceclawVoiceController {
         return hearingAid != null ? hearingAid : bleHeadset;
     }
 
+    /** The receipt's plain-value view of an Android audio device; null stays null. */
+    private static FaceclawVoiceCaptureReceipt.Device deviceOf(android.media.AudioDeviceInfo device) {
+        if (device == null) {
+            return null;
+        }
+        CharSequence name = device.getProductName();
+        return new FaceclawVoiceCaptureReceipt.Device(
+                describeAudioDeviceType(device.getType()),
+                name == null ? null : name.toString(),
+                device.getId());
+    }
+
+    /**
+     * Whether Android is feeding this client silence instead of mic audio
+     * (another app holds the mic, or capture lost its foreground rights).
+     * AudioRecord.getActiveRecordingConfiguration() and
+     * AudioRecordingConfiguration.isClientSilenced() are both API 29; below
+     * that the receipt says null.
+     */
+    private static void sampleClientSilenced(android.media.AudioRecord record, FaceclawVoiceCaptureReceipt r) {
+        if (r == null || android.os.Build.VERSION.SDK_INT < 29) {
+            return;
+        }
+        try {
+            android.media.AudioRecordingConfiguration config = record.getActiveRecordingConfiguration();
+            if (config != null) {
+                r.noteClientSilenced(config.isClientSilenced());
+            }
+        } catch (Throwable ignored) {
+            // Diagnostic only.
+        }
+    }
+
+    /**
+     * Close out this worker's receipt and append it. Never throws. The outcome
+     * is only what Java can see: a failure to start, "transcribed" / "empty"
+     * on-device, or "cloud" when a cloud provider owns the transcript (its text
+     * follows as a cloudFinal line). Whether the wearer then sent or cancelled
+     * it arrives separately, via appendCaptureOutcome().
+     */
+    private void finishReceipt(FaceclawVoiceCaptureReceipt r, VoiceInputMode currentMode,
+                               String failure, String failureMessage) {
+        if (r == null) {
+            return;
+        }
+        try {
+            if (!r.phoneMic) {
+                FaceclawLc3Decoder decoder = lc3Decoder;
+                r.setG2Stats(queuedPackets,
+                        decoder == null ? 0 : decoder.getMissingPackets(),
+                        latePackets,
+                        queueDroppedPackets,
+                        maxInterPacketMs,
+                        decoder == null ? 0 : decoder.getDecodeErrors());
+            }
+            String transcript = null;
+            String outcome;
+            if (failure != null) {
+                outcome = failure;
+            } else if (currentMode == VoiceInputMode.CLOUD) {
+                outcome = "cloud";
+            } else {
+                transcript = lastTranscript == null ? "" : lastTranscript;
+                outcome = transcript.trim().length() == 0 ? "empty" : "transcribed";
+            }
+            r.finish(transcript, outcome, failureMessage, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            appendReceiptLine(r.toJsonLine());
+        } catch (Throwable t) {
+            Log.w(TAG, "capture receipt failed", t);
+        } finally {
+            if (receipt == r) {
+                receipt = null;
+            }
+        }
+    }
+
+    private void appendReceiptLine(String line) {
+        try {
+            File dir = new File(appContext.getFilesDir(), FaceclawVoiceCaptureReceipt.DIR);
+            boolean written = FaceclawVoiceCaptureReceipt.appendLine(dir, line, FaceclawVoiceCaptureReceipt.MAX_BYTES);
+            Log.i(TAG, (written ? "capture receipt: " : "capture receipt NOT written (dir, cap or I/O): ") + line);
+        } catch (Throwable t) {
+            Log.w(TAG, "capture receipt write failed", t);
+        }
+    }
+
     /** Human-readable label for logcat; falls back to the raw int for any type not named here. */
     private static String describeAudioDeviceType(int type) {
         if (type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC) return "BUILTIN_MIC";
@@ -888,6 +1117,11 @@ public class FaceclawVoiceController {
                 Log.i(TAG, "phone mic capture active; routedDevice=" + (routed == null
                         ? "unknown (not yet reported)"
                         : describeAudioDeviceType(routed.getType()) + " " + routed.getProductName()));
+                FaceclawVoiceCaptureReceipt r = receipt;
+                if (r != null) {
+                    r.setRoutedAtFirstAudio(deviceOf(routed));
+                    sampleClientSilenced(record, r);
+                }
             }
             decodedSamples += read;
             processPcmChunk(pcm, read, 0, 0, false);
@@ -942,7 +1176,7 @@ public class FaceclawVoiceController {
             return;
         }
         int segmentSampleCount = transcriptSampleCount;
-        String segmentText = recognizeTranscriptSegment(segmentSampleCount);
+        String segmentText = recognizeTranscriptSegment(segmentSampleCount, isFinal ? "final" : "partial");
         if (segmentText.length() > 0) {
             currentSegmentTranscript = segmentText;
         } else {
@@ -961,7 +1195,7 @@ public class FaceclawVoiceController {
      */
     private void commitTranscriptSegment() {
         int cut = findSegmentCutPoint();
-        String segmentText = recognizeTranscriptSegment(cut);
+        String segmentText = recognizeTranscriptSegment(cut, "commit");
         if (segmentText.length() == 0) {
             // Fallback text came from partial decodes of the full buffer, so it
             // may include words from the carried-over tail; rare now that decode
@@ -1010,28 +1244,57 @@ public class FaceclawVoiceController {
         return bestStart + win / 2;
     }
 
-    private String recognizeTranscriptSegment(int sampleCount) {
+    /**
+     * @param kind "partial" (Moonshine live preview), "commit" (a full 8 s
+     *             segment) or "final" (the utterance end), for the receipt
+     */
+    private String recognizeTranscriptSegment(int sampleCount, String kind) {
         OfflineRecognizer currentRecognizer = recognizer;
         if (currentRecognizer == null || sampleCount <= 0) {
             return "";
         }
+        FaceclawVoiceCaptureReceipt r = receipt;
+        long segmentAudioMs = sampleCount * 1000L / SAMPLE_RATE;
         float[] segment = Arrays.copyOf(transcriptSamples, sampleCount);
         // Whisper hallucinates text on near-silent input (a known quirk of the
         // model, not this pipeline); gate it on the PRE-normalization peak, since
         // normalizePeak() below would otherwise amplify true silence right up to
         // the target level and hide the very thing being checked for. Moonshine
         // does not share this failure mode in practice, so it is left unchanged.
-        if (onboardModelKind == OnboardModelKind.WHISPER && peakAmplitude(segment) < WHISPER_SILENCE_PEAK_THRESHOLD) {
+        float peak = peakAmplitude(segment);
+        if (onboardModelKind == OnboardModelKind.WHISPER && peak < WHISPER_SILENCE_PEAK_THRESHOLD) {
+            if (r != null) {
+                r.noteSegment(kind, segmentAudioMs, peak, 0, true, 0);
+            }
             return "";
         }
         normalizePeak(segment);
+        long decodeStartMs = SystemClock.elapsedRealtime();
         OfflineStream offlineStream = currentRecognizer.createStream();
         try {
             offlineStream.acceptWaveform(segment, SAMPLE_RATE);
             currentRecognizer.decode(offlineStream);
             OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
             String raw = result == null ? "" : result.getText();
-            return raw == null ? "" : raw.trim();
+            String text = raw == null ? "" : raw.trim();
+            // Whisper writes non-speech as bracketed tags ([BLANK_AUDIO],
+            // [ Silence ], (wind blowing)). A segment that is nothing but tags
+            // is not words: drop it before it reaches the transcript. Tags
+            // inside real speech stay; see FaceclawNonSpeechTags.
+            String droppedTag = null;
+            if (FaceclawNonSpeechTags.isNonSpeechOnly(text)) {
+                droppedTag = text;
+                text = "";
+                Log.i(TAG, "dropped non-speech segment kind=" + kind + " text=\"" + droppedTag + "\"");
+            }
+            if (r != null) {
+                int index = r.noteSegment(kind, segmentAudioMs, peak, SystemClock.elapsedRealtime() - decodeStartMs,
+                        false, text.length());
+                if (droppedTag != null) {
+                    r.noteTagDropped(index, kind, droppedTag);
+                }
+            }
+            return text;
         } finally {
             offlineStream.release();
         }
@@ -1169,6 +1432,10 @@ public class FaceclawVoiceController {
     }
 
     private void emitSpeakerVerified(boolean isWearer, float similarity) {
+        FaceclawVoiceCaptureReceipt r = receipt;
+        if (r != null) {
+            r.setVerification(isWearer, similarity);
+        }
         FaceclawVoiceControllerListener currentListener = listener;
         if (currentListener == null) {
             return;
