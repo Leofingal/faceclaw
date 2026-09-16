@@ -15,6 +15,12 @@ import {
   type AssistantModel,
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
+import {
+  DEFAULT_IDLE_UNLOAD_CHOICE,
+  IDLE_UNLOAD_CHOICES,
+  formatIdleUnloadChoice,
+  type IdleUnloadChoice,
+} from "../native/asr-model-defs";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
@@ -458,11 +464,23 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
 // cloud providers, but NOT a phone-stays-offline option like the two On-device
 // ones: audio still leaves the phone, just to Chris's own box rather than a
 // vendor. Home-network use only (needs the box reachable); see native/ghost-stt.ts.
-export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "ghost";
+// "onboard-parakeet-v2" / "onboard-parakeet-110m" are NVIDIA Parakeet TDT on
+// the phone (native/asr-model-defs.ts maps every on-device value to its model).
+export type VoiceProvider =
+  | "onboard"
+  | "onboard-whisper"
+  | "onboard-parakeet-v2"
+  | "onboard-parakeet-110m"
+  | "elevenlabs"
+  | "whisper"
+  | "soniox"
+  | "ghost";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
   onboard: "On-device (Moonshine)",
   "onboard-whisper": "On-device (Whisper)",
+  "onboard-parakeet-v2": "On-device (Parakeet v2 0.6B)",
+  "onboard-parakeet-110m": "On-device (Parakeet 110M)",
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
@@ -474,7 +492,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox", "ghost"],
+  values: ["onboard", "onboard-whisper", "onboard-parakeet-v2", "onboard-parakeet-110m", "elevenlabs", "whisper", "soniox", "ghost"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -482,7 +500,18 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Ghost box transcribes on your own box over Tailscale (Settings > Voice; needs a Session id set below, home network only). The two On-device options need their voice model downloaded (below) and never leave the phone.",
+  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Ghost box transcribes on your own box over Tailscale (Settings > Voice; needs a Session id set below, home network only). The On-device options need their voice model downloaded (below) and never leave the phone.",
+});
+
+export const voiceModelIdleUnloadSetting = new ConfigSettingEnum<IdleUnloadChoice>({
+  id: "voice-model-idle-unload",
+  label: "Unload idle voice model",
+  storageKey: "voice.modelIdleUnload",
+  defaultValue: DEFAULT_IDLE_UNLOAD_CHOICE,
+  values: IDLE_UNLOAD_CHOICES,
+  formatValue: (value) => formatIdleUnloadChoice(value),
+  description:
+    "An on-device voice model stays loaded in memory between dictations so the next one starts fast. After this long without a dictation it is unloaded to give the memory back (Parakeet v2 holds about 1 GB), and the next dictation loads it again first. Takes effect after the next dictation.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {

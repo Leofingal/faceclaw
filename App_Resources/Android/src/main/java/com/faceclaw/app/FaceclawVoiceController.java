@@ -13,12 +13,12 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OfflineStream;
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
-import java.util.Arrays;
 
 public class FaceclawVoiceController {
     private static final String TAG = "FaceclawVoice";
@@ -44,76 +44,25 @@ public class FaceclawVoiceController {
     // G2/BLE path only: the phone mic (activePhoneMic) reads AudioRecord's own
     // local buffer directly, with no BLE transit hop to race against.
     private static final long AUDIO_STOP_GRACE_MS = 450;
-    // Push-to-talk utterance boundaries come from the button. We re-decode the
-    // current audio segment in full for each live partial and emit the complete
-    // utterance text (REPLACE, never a delta). The sherpa Moonshine v2 decoder
-    // used here fails once a single input grows past roughly 9.1 seconds, so
-    // longer utterances are committed in model-safe segments.
-    private static final int TRANSCRIPT_DECODE_INTERVAL_MS = 700;
-    private static final int TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 3;
-    private static final int TRANSCRIPT_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * 8;
-    // When a segment fills, cut at the quietest window within the last
-    // TRANSCRIPT_CUT_SEARCH_SAMPLES rather than mid-word at the 8s mark; the
-    // audio after the cut carries over into the next segment.
-    private static final int TRANSCRIPT_CUT_SEARCH_SAMPLES = SAMPLE_RATE * 2;
-    private static final int TRANSCRIPT_CUT_WINDOW_SAMPLES = SAMPLE_RATE * 30 / 1000;
-    // Glasses-mic PCM peaks around 0.1 full scale, and at that level the
-    // quantized Moonshine model often returns empty or garbled text. Boost
-    // each decode window toward this peak, with a gain cap so near-silent
-    // buffers aren't amplified into pure noise.
-    private static final float TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f;
-    private static final float TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f;
+    // Transcript segmenting, normalization and the per-model decode policy
+    // live in FaceclawTranscriptSegmenter and FaceclawOnboardAsr (pure Java,
+    // tested off-device in notes/voice-asr-selftest).
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
-    // Model directory shared with the TS-side download flow (asr-model.ts),
-    // which fetches the Moonshine files here on demand; they are no longer
-    // bundled in the APK.
+    // Model directories shared with the TS-side download flow (asr-model.ts),
+    // which fetches each model's files into ASR_ROOT/<Model.dirName> on
+    // demand; none are bundled in the APK.
     private static final String ASR_ROOT = "faceclaw-voice-asr";
-    private static final String ASR_MODEL_DIR = "sherpa-onnx-moonshine-base-en-quantized-2026-02-27";
     // Model files for the retired on-phone wake-word spotter, copied to
     // filesDir by earlier releases; deleted on sight to reclaim the space.
     // (The wakeword is now detected by the glasses firmware itself.)
     private static final String LEGACY_KWS_ROOT = "faceclaw-voice";
-    private static final String[] ASR_MODEL_FILES = {
-            "encoder_model.ort",
-            "decoder_model_merged.ort",
-            "tokens.txt"
-    };
-    // Second on-device model: sherpa-onnx's offline Whisper backend (base.en,
-    // int8-quantized -- see the model-choice note in asr-model.ts). Directory
-    // shared with the TS-side download flow, same convention as ASR_MODEL_DIR.
-    //
-    // Whisper's ONNX export always runs its encoder over a fixed ~30s-equivalent
-    // window per call, independent of how much audio is actually in it -- a
-    // property of Whisper's architecture (fixed positional embeddings sized for
-    // 30s of mel frames), not a sherpa-onnx choice, and NOT something Moonshine
-    // shares. Re-decoding on Moonshine's TRANSCRIPT_DECODE_INTERVAL_MS live-partial
-    // cadence would pay that fixed cost roughly 1.4x/second while the user is
-    // still speaking, so onboardModelKind gates that loop off for Whisper --
-    // see processRecognizer(). Whisper is also known to hallucinate text on
-    // near-silent input; recognizeTranscriptSegment() gates that too.
-    private static final String ASR_WHISPER_MODEL_DIR = "sherpa-onnx-whisper-base-en-int8";
-    private static final String[] ASR_WHISPER_MODEL_FILES = {
-            "base.en-encoder.int8.onnx",
-            "base.en-decoder.int8.onnx",
-            "base.en-tokens.txt"
-    };
-    // Below this peak amplitude (pre-normalization, of a full-scale +/-1.0f
-    // buffer) a segment is treated as silence and never reaches the Whisper
-    // recognizer at all, rather than risking a hallucinated non-answer. Picked
-    // conservatively low (well under typical mic noise floor already seen in
-    // this pipeline's normalization target) -- UNTESTED on real hardware, tune
-    // against real glasses captures rather than trusting this number.
-    private static final float WHISPER_SILENCE_PEAK_THRESHOLD = 0.01f;
+    // Unload a resident recognizer after this long without a capture (see
+    // setIdleUnloadMinutes); the TS side overrides it from Settings > Voice.
+    private static final long DEFAULT_IDLE_UNLOAD_MS = 5L * 60_000L;
 
     private enum VoiceInputMode {
-        ONBOARD,  // on-phone transcription (Moonshine or Whisper; see onboardModelKind)
+        ONBOARD,  // on-phone transcription (see onboardModel)
         CLOUD     // decode locally, emit PCM for a cloud recognizer on the TS side
-    }
-
-    /** Which on-device model ONBOARD mode uses. Set via setOnboardModelKind() before start(). */
-    private enum OnboardModelKind {
-        MOONSHINE,
-        WHISPER
     }
 
     private final Context appContext;
@@ -141,20 +90,27 @@ public class FaceclawVoiceController {
     private volatile boolean usePhoneMic;
     private boolean activePhoneMic;
     private VoiceInputMode mode = VoiceInputMode.CLOUD;
-    private volatile OnboardModelKind onboardModelKind = OnboardModelKind.MOONSHINE;
+    /** Which on-device model ONBOARD mode uses. Set via setOnboardModelKind() before start(). */
+    private volatile FaceclawOnboardAsr.Model onboardModel = FaceclawOnboardAsr.Model.MOONSHINE;
+    // Kept resident across captures; loaded by the worker (runLoop), released on
+    // a model switch (worker), on idle unload (main thread, see
+    // unloadIdleRecognizer) or on close(). Every release off the worker holds
+    // `lock` and requires activeWorkers == 0, so no worker is using it.
     private OfflineRecognizer recognizer;
-    // Which model kind `recognizer` above was actually built with. Read/written only
-    // from the worker thread (runLoop and its finally block), same as `recognizer`
-    // itself -- start() allows only one worker at a time, so no extra locking needed.
-    private OnboardModelKind recognizerKind;
+    // Which model `recognizer` above was actually built with.
+    private FaceclawOnboardAsr.Model recognizerModel;
+    // Workers started and not yet through their finally block. Counted under
+    // `lock`; can briefly exceed 1 when stop()'s join times out and a new
+    // start() follows (workerThread alone would not show the old worker).
+    private int activeWorkers;
+    // Idle unload of the resident recognizer: <= 0 means never. elapsedRealtime
+    // of the end of the last on-device capture, for the idle check.
+    private volatile long idleUnloadMs = DEFAULT_IDLE_UNLOAD_MS;
+    private volatile long lastRecognizerUseEndMs;
+    private final Runnable idleUnloadRunnable = this::unloadIdleRecognizer;
     private FaceclawLc3Decoder lc3Decoder;
-    private final float[] transcriptSamples = new float[TRANSCRIPT_SEGMENT_MAX_SAMPLES];
-    private int transcriptSampleCount;
-    private long committedTranscriptSampleCount;
-    private String committedTranscript = "";
-    private String currentSegmentTranscript = "";
-    private long lastTranscriptDecodeAtMs;
-    private String lastTranscript = "";
+    // The on-device transcript for the current capture (worker thread only).
+    private final FaceclawTranscriptSegmenter transcript = new FaceclawTranscriptSegmenter(new SegmenterHost());
     private volatile boolean saveRecordings;
     private volatile boolean endpointing;
     private final EndpointDetector endpointDetector = new EndpointDetector();
@@ -270,14 +226,24 @@ public class FaceclawVoiceController {
     }
 
     /**
-     * Which on-device model {@link #start}("onboard") should load: "whisper"
-     * selects the second on-device model (sherpa-onnx offline Whisper); any
+     * Which on-device model {@link #start}("onboard") should load: "whisper",
+     * "parakeet-v2" or "parakeet-110m" (see FaceclawOnboardAsr.Model); any
      * other value (including null/absent) keeps the existing Moonshine model,
      * so callers that never call this see unchanged behavior. Must be set
      * before {@link #start}; has no effect in CLOUD mode.
      */
     public void setOnboardModelKind(String kind) {
-        this.onboardModelKind = "whisper".equals(kind) ? OnboardModelKind.WHISPER : OnboardModelKind.MOONSHINE;
+        this.onboardModel = FaceclawOnboardAsr.Model.fromId(kind);
+    }
+
+    /**
+     * Release the resident on-device recognizer after this many minutes
+     * without a capture; the next on-device capture loads it again. Zero or
+     * less keeps it loaded until the app closes. Takes effect from the end of
+     * the next capture.
+     */
+    public void setIdleUnloadMinutes(int minutes) {
+        this.idleUnloadMs = minutes <= 0 ? 0 : minutes * 60_000L;
     }
 
     /**
@@ -365,6 +331,9 @@ public class FaceclawVoiceController {
             activePhoneMic = usePhoneMic;
             started = true;
             audioStarted = false;
+            activeWorkers++;
+            // A capture is starting: whatever the idle timer planned no longer holds.
+            mainHandler.removeCallbacks(idleUnloadRunnable);
             String provider = receiptProvider;
             if (provider != null) {
                 long nowWall = System.currentTimeMillis();
@@ -379,8 +348,7 @@ public class FaceclawVoiceController {
                         receiptHolder,
                         receiptForcePhoneMic,
                         mode == VoiceInputMode.CLOUD ? "cloud" : "onboard",
-                        mode == VoiceInputMode.CLOUD ? null
-                                : (onboardModelKind == OnboardModelKind.WHISPER ? "whisper" : "moonshine"),
+                        mode == VoiceInputMode.CLOUD ? null : onboardModel.id,
                         activePhoneMic);
             } else {
                 receipt = null;
@@ -464,14 +432,18 @@ public class FaceclawVoiceController {
     }
 
     /**
-     * Real app teardown -- the only other place (besides an on-device model-kind
-     * change, handled inline in runLoop()) the resident recognizer is released.
-     * stop() above joins the worker thread first, so by the time releaseSherpa()
-     * runs here the worker is no longer touching `recognizer` in the common case.
+     * Real app teardown. Releases the resident recognizer unless a worker is
+     * somehow still running after stop()'s join (then the process is going
+     * away anyway, and releasing under it could crash in native code).
      */
     public void close() {
         stop();
-        releaseSherpa();
+        mainHandler.removeCallbacks(idleUnloadRunnable);
+        synchronized (lock) {
+            if (activeWorkers == 0) {
+                releaseSherpa();
+            }
+        }
     }
 
     private VoiceInputMode parseMode(String requestedMode) {
@@ -490,31 +462,34 @@ public class FaceclawVoiceController {
         String failureMessage = null;
         try {
             deleteLegacyKwsFiles();
-            OnboardModelKind currentOnboardKind = onboardModelKind;
+            FaceclawOnboardAsr.Model currentModel = onboardModel;
             if (currentMode == VoiceInputMode.ONBOARD) {
-                // The recognizer is kept resident across captures (see recognizerKind
-                // below) -- constructing an OfflineRecognizer loads the ONNX model from
+                // The recognizer is kept resident across captures (see recognizerModel
+                // above) -- constructing an OfflineRecognizer loads the ONNX model from
                 // disk, which used to happen fresh on every single push-to-talk press
                 // (measured as the dominant cost in the startup-latency investigation).
-                // Only rebuild it here if it's missing (first capture since app start)
-                // or the wearer just switched on-device models in Settings.
-                if (recognizer != null && recognizerKind != currentOnboardKind) {
-                    recognizer.release();
-                    recognizer = null;
+                // Only rebuild it here if it's missing (first capture since app start,
+                // or unloaded after idling) or the wearer switched on-device models.
+                if (recognizer != null && recognizerModel != currentModel) {
+                    String switchLine = logRecognizerRelease("switch to " + currentModel.id);
+                    if (switchLine != null) {
+                        appendReceiptLine(switchLine);
+                    }
                 }
                 if (recognizer == null) {
-                    File modelDir = findAsrModelDir(currentOnboardKind);
+                    File modelDir = findAsrModelDir(currentModel);
                     if (modelDir == null) {
                         emitStatus("Voice model not downloaded (see Settings > Voice).");
                         failure = "no-model";
                         return;
                     }
                     emitStatus("Loading transcription model...");
-                    recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir, currentOnboardKind));
-                    recognizerKind = currentOnboardKind;
+                    loadRecognizer(modelDir, currentModel, workerReceipt);
+                } else if (workerReceipt != null) {
+                    workerReceipt.setRecognizerResident(currentModel.id, FaceclawOnboardAsr.RECOGNIZER_THREADS,
+                            SystemClock.elapsedRealtime() - lastRecognizerUseEndMs);
                 }
-                resetTranscriptState();
-                lastTranscript = "";
+                transcript.reset(currentModel);
             }
             endpointDetector.reset();
             if (suppressor != null) {
@@ -578,7 +553,7 @@ public class FaceclawVoiceController {
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
             if (currentMode == VoiceInputMode.ONBOARD) {
-                decodeTranscript(true);
+                transcript.finish();
             }
         } catch (Throwable error) {
             Log.e(TAG, "Voice control failed", error);
@@ -598,8 +573,115 @@ public class FaceclawVoiceController {
                 started = false;
                 audioStarted = false;
                 workerThread = null;
+                activeWorkers--;
+                if (currentMode == VoiceInputMode.ONBOARD && recognizer != null) {
+                    lastRecognizerUseEndMs = SystemClock.elapsedRealtime();
+                    scheduleIdleUnload(idleUnloadMs);
+                }
             }
         }
+    }
+
+    /** Build the recognizer, logging how long it took and what it cost in memory. */
+    private void loadRecognizer(File modelDir, FaceclawOnboardAsr.Model model, FaceclawVoiceCaptureReceipt r) {
+        long rssBeforeKb = readVmRssKb();
+        long heapBeforeKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+        long startMs = SystemClock.elapsedRealtime();
+        recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir, model));
+        recognizerModel = model;
+        long loadMs = SystemClock.elapsedRealtime() - startMs;
+        long rssAfterKb = readVmRssKb();
+        long heapAfterKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+        Log.i(TAG, "ASR recognizer loaded model=" + model.id
+                + " threads=" + FaceclawOnboardAsr.RECOGNIZER_THREADS
+                + " loadMs=" + loadMs
+                + " rssMb=" + mb(rssBeforeKb) + "->" + mb(rssAfterKb)
+                + " nativeHeapMb=" + mb(heapBeforeKb) + "->" + mb(heapAfterKb));
+        if (r != null) {
+            r.setRecognizerLoad(model.id, FaceclawOnboardAsr.RECOGNIZER_THREADS, loadMs,
+                    rssBeforeKb, rssAfterKb, heapBeforeKb, heapAfterKb);
+        }
+    }
+
+    /**
+     * Release the recognizer and log what came back. Caller guarantees no
+     * worker is using it: the worker itself, or `lock` held with
+     * activeWorkers == 0.
+     *
+     * @return the receipt side line describing the release, or null if nothing was loaded
+     */
+    private String logRecognizerRelease(String reason) {
+        OfflineRecognizer current = recognizer;
+        if (current == null) {
+            return null;
+        }
+        FaceclawOnboardAsr.Model model = recognizerModel;
+        long rssBeforeKb = readVmRssKb();
+        long heapBeforeKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+        current.release();
+        recognizer = null;
+        recognizerModel = null;
+        long rssAfterKb = readVmRssKb();
+        long heapAfterKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+        Log.i(TAG, "ASR recognizer released model=" + (model == null ? "?" : model.id)
+                + " reason=" + reason
+                + " rssMb=" + mb(rssBeforeKb) + "->" + mb(rssAfterKb)
+                + " nativeHeapMb=" + mb(heapBeforeKb) + "->" + mb(heapAfterKb));
+        return FaceclawVoiceCaptureReceipt.recognizerUnloadLine(System.currentTimeMillis(),
+                model == null ? null : model.id, reason, rssBeforeKb, rssAfterKb, heapBeforeKb, heapAfterKb);
+    }
+
+    /** Main-thread timer; call with `lock` held or from the main thread. */
+    private void scheduleIdleUnload(long delayMs) {
+        mainHandler.removeCallbacks(idleUnloadRunnable);
+        if (delayMs > 0) {
+            mainHandler.postDelayed(idleUnloadRunnable, delayMs);
+        }
+    }
+
+    /**
+     * Idle-unload timer (main thread). Releases the resident recognizer when no
+     * worker is running and none has finished within idleUnloadMs; otherwise
+     * does nothing (a running worker reschedules from its finally block) or
+     * waits out the remainder.
+     */
+    private void unloadIdleRecognizer() {
+        String line;
+        synchronized (lock) {
+            long idleMs = idleUnloadMs;
+            if (recognizer == null || idleMs <= 0 || started || activeWorkers > 0) {
+                return;
+            }
+            long idleForMs = SystemClock.elapsedRealtime() - lastRecognizerUseEndMs;
+            if (idleForMs < idleMs) {
+                scheduleIdleUnload(idleMs - idleForMs);
+                return;
+            }
+            line = logRecognizerRelease("idle " + (idleForMs / 1000) + "s");
+        }
+        if (line != null) {
+            appendReceiptLine(line);
+        }
+    }
+
+    /** VmRSS of this process from /proc/self/status, in kB, or -1. */
+    private static long readVmRssKb() {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader("/proc/self/status"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("VmRSS:")) {
+                    String[] parts = line.substring(6).trim().split("\\s+");
+                    return Long.parseLong(parts[0]);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Diagnostic only.
+        }
+        return -1;
+    }
+
+    private static String mb(long kb) {
+        return kb < 0 ? "?" : String.valueOf(Math.round(kb / 1024.0));
     }
 
     private void appendRecording(short[] pcm, int count) {
@@ -665,10 +747,24 @@ public class FaceclawVoiceController {
         return b.array();
     }
 
-    private OfflineRecognizerConfig buildRecognizerConfig(File modelDir, OnboardModelKind kind) {
+    private OfflineRecognizerConfig buildRecognizerConfig(File modelDir, FaceclawOnboardAsr.Model model) {
         OfflineModelConfig.Builder modelConfig = OfflineModelConfig.builder()
-                .setNumThreads(1);
-        if (kind == OnboardModelKind.WHISPER) {
+                .setNumThreads(FaceclawOnboardAsr.RECOGNIZER_THREADS);
+        if (model.isTransducer()) {
+            // The same config the desktop benchmark scored (sherpa_onnx
+            // OfflineRecognizer.from_transducer(..., model_type="nemo_transducer"),
+            // greedy search). Feature dim and NeMo normalization come from the
+            // model's own metadata (offline-recognizer-transducer-nemo-impl.h
+            // PostInit at v1.13.0), overriding FEATURE_DIM below.
+            modelConfig
+                    .setTransducer(OfflineTransducerModelConfig.builder()
+                            .setEncoder(new File(modelDir, "encoder.int8.onnx").getAbsolutePath())
+                            .setDecoder(new File(modelDir, "decoder.int8.onnx").getAbsolutePath())
+                            .setJoiner(new File(modelDir, "joiner.int8.onnx").getAbsolutePath())
+                            .build())
+                    .setTokens(new File(modelDir, "tokens.txt").getAbsolutePath())
+                    .setModelType("nemo_transducer");
+        } else if (model == FaceclawOnboardAsr.Model.WHISPER) {
             modelConfig
                     .setWhisper(OfflineWhisperModelConfig.builder()
                             .setEncoder(new File(modelDir, "base.en-encoder.int8.onnx").getAbsolutePath())
@@ -701,12 +797,9 @@ public class FaceclawVoiceController {
      * already complete for that model). Null when any expected file is
      * missing, i.e. the model still needs to be downloaded.
      */
-    private File findAsrModelDir(OnboardModelKind kind) {
-        boolean whisper = kind == OnboardModelKind.WHISPER;
-        String dirName = whisper ? ASR_WHISPER_MODEL_DIR : ASR_MODEL_DIR;
-        String[] fileNames = whisper ? ASR_WHISPER_MODEL_FILES : ASR_MODEL_FILES;
-        File modelDir = new File(appContext.getFilesDir(), ASR_ROOT + File.separator + dirName);
-        for (String fileName : fileNames) {
+    private File findAsrModelDir(FaceclawOnboardAsr.Model model) {
+        File modelDir = new File(appContext.getFilesDir(), ASR_ROOT + File.separator + model.dirName);
+        for (String fileName : model.files) {
             File file = new File(modelDir, fileName);
             if (!file.exists() || file.length() == 0) {
                 return null;
@@ -845,7 +938,7 @@ public class FaceclawVoiceController {
             for (int i = 0; i < count; i++) {
                 samples[i] = pcm[i] / 32768.0f;
             }
-            processRecognizer(samples);
+            transcript.accept(samples);
         }
     }
 
@@ -1042,17 +1135,17 @@ public class FaceclawVoiceController {
                         maxInterPacketMs,
                         decoder == null ? 0 : decoder.getDecodeErrors());
             }
-            String transcript = null;
+            String transcriptText = null;
             String outcome;
             if (failure != null) {
                 outcome = failure;
             } else if (currentMode == VoiceInputMode.CLOUD) {
                 outcome = "cloud";
             } else {
-                transcript = lastTranscript == null ? "" : lastTranscript;
-                outcome = transcript.trim().length() == 0 ? "empty" : "transcribed";
+                transcriptText = this.transcript.lastTranscript();
+                outcome = transcriptText.trim().length() == 0 ? "empty" : "transcribed";
             }
-            r.finish(transcript, outcome, failureMessage, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            r.finish(transcriptText, outcome, failureMessage, System.currentTimeMillis(), SystemClock.elapsedRealtime());
             appendReceiptLine(r.toJsonLine());
         } catch (Throwable t) {
             Log.w(TAG, "capture receipt failed", t);
@@ -1128,232 +1221,78 @@ public class FaceclawVoiceController {
         }
     }
 
-    private void processRecognizer(float[] samples) {
-        appendTranscriptSamples(samples);
-        // Whisper pays a fixed, non-trivial cost per call regardless of how
-        // much audio is in the buffer (see the ASR_WHISPER_* comment above),
-        // so it skips the live-partial redecode Moonshine does on this
-        // interval and only decodes when a segment commits (8s buffer fill)
-        // or the utterance ends (decodeTranscript(true) in runLoop()). This
-        // means no live preview text while speaking in Whisper mode -- status
-        // stays "Listening..." until release. A real, deliberate UX tradeoff,
-        // not an oversight; flagged in the dispatch return doc.
-        if (onboardModelKind == OnboardModelKind.WHISPER) {
-            return;
-        }
-        long now = SystemClock.elapsedRealtime();
-        if (transcriptSampleCount >= TRANSCRIPT_MIN_SAMPLES
-                && now - lastTranscriptDecodeAtMs >= TRANSCRIPT_DECODE_INTERVAL_MS) {
-            decodeTranscript(false);
-            lastTranscriptDecodeAtMs = now;
-        }
-    }
-
-    private void appendTranscriptSamples(float[] samples) {
-        int sourceOffset = 0;
-        while (sourceOffset < samples.length) {
-            int available = TRANSCRIPT_SEGMENT_MAX_SAMPLES - transcriptSampleCount;
-            int count = Math.min(available, samples.length - sourceOffset);
-            System.arraycopy(samples, sourceOffset, transcriptSamples, transcriptSampleCount, count);
-            transcriptSampleCount += count;
-            sourceOffset += count;
-
-            if (transcriptSampleCount == TRANSCRIPT_SEGMENT_MAX_SAMPLES) {
-                commitTranscriptSegment();
-            }
-        }
-    }
-
     /**
-     * Decode the current model-safe segment and emit the best transcript of the
-     * complete utterance (REPLACE semantics — the caller displays it as-is).
+     * The segmenter's view of this controller: the recognizer, the receipt,
+     * logcat and the listener. Called on the capture worker thread only.
      */
-    private void decodeTranscript(boolean isFinal) {
-        if (recognizer == null || transcriptSampleCount <= 0) {
-            if (isFinal) {
-                emitTranscript(lastTranscript, true);
-            }
-            return;
+    private final class SegmenterHost implements FaceclawTranscriptSegmenter.Host {
+        @Override
+        public boolean hasRecognizer() {
+            return recognizer != null;
         }
-        int segmentSampleCount = transcriptSampleCount;
-        String segmentText = recognizeTranscriptSegment(segmentSampleCount, isFinal ? "final" : "partial");
-        if (segmentText.length() > 0) {
-            currentSegmentTranscript = segmentText;
-        } else {
-            segmentText = currentSegmentTranscript;
-        }
-        String text = joinTranscript(committedTranscript, segmentText);
-        lastTranscript = text;
-        logTranscriptDecode(isFinal, segmentSampleCount, text);
-        emitTranscript(text, isFinal);
-    }
 
-    /**
-     * Finalize a full segment before accepting more audio. This keeps every
-     * Moonshine invocation below its failing sequence length while retaining
-     * all earlier text in the replace-semantics preview.
-     */
-    private void commitTranscriptSegment() {
-        int cut = findSegmentCutPoint();
-        String segmentText = recognizeTranscriptSegment(cut, "commit");
-        if (segmentText.length() == 0) {
-            // Fallback text came from partial decodes of the full buffer, so it
-            // may include words from the carried-over tail; rare now that decode
-            // windows are peak-normalized.
-            segmentText = currentSegmentTranscript;
-        }
-        committedTranscript = joinTranscript(committedTranscript, segmentText);
-        currentSegmentTranscript = "";
-        committedTranscriptSampleCount += cut;
-        int tail = transcriptSampleCount - cut;
-        System.arraycopy(transcriptSamples, cut, transcriptSamples, 0, tail);
-        transcriptSampleCount = tail;
-        lastTranscript = committedTranscript;
-        lastTranscriptDecodeAtMs = SystemClock.elapsedRealtime();
-        logTranscriptDecode(false, cut, committedTranscript);
-        emitTranscript(committedTranscript, false);
-    }
-
-    /**
-     * Pick where to end the committed segment: the center of the quietest
-     * window within the search region at the end of the buffer, so the cut
-     * lands between words instead of splitting one.
-     */
-    private int findSegmentCutPoint() {
-        int count = transcriptSampleCount;
-        int searchStart = Math.max(0, count - TRANSCRIPT_CUT_SEARCH_SAMPLES);
-        int win = TRANSCRIPT_CUT_WINDOW_SAMPLES;
-        if (count - searchStart <= win) {
-            return count;
-        }
-        double sum = 0;
-        for (int i = searchStart; i < searchStart + win; i++) {
-            sum += (double) transcriptSamples[i] * transcriptSamples[i];
-        }
-        double best = sum;
-        int bestStart = searchStart;
-        for (int start = searchStart + 1; start + win <= count; start++) {
-            float dropped = transcriptSamples[start - 1];
-            float added = transcriptSamples[start + win - 1];
-            sum += (double) added * added - (double) dropped * dropped;
-            if (sum < best) {
-                best = sum;
-                bestStart = start;
+        @Override
+        public String recognize(float[] normalized, String kind, FaceclawOnboardAsr.GateResult gate) {
+            OfflineRecognizer currentRecognizer = recognizer;
+            if (currentRecognizer == null) {
+                return "";
             }
-        }
-        return bestStart + win / 2;
-    }
-
-    /**
-     * @param kind "partial" (Moonshine live preview), "commit" (a full 8 s
-     *             segment) or "final" (the utterance end), for the receipt
-     */
-    private String recognizeTranscriptSegment(int sampleCount, String kind) {
-        OfflineRecognizer currentRecognizer = recognizer;
-        if (currentRecognizer == null || sampleCount <= 0) {
-            return "";
-        }
-        FaceclawVoiceCaptureReceipt r = receipt;
-        long segmentAudioMs = sampleCount * 1000L / SAMPLE_RATE;
-        float[] segment = Arrays.copyOf(transcriptSamples, sampleCount);
-        // Whisper hallucinates text on near-silent input (a known quirk of the
-        // model, not this pipeline); gate it on the PRE-normalization peak, since
-        // normalizePeak() below would otherwise amplify true silence right up to
-        // the target level and hide the very thing being checked for. Moonshine
-        // does not share this failure mode in practice, so it is left unchanged.
-        float peak = peakAmplitude(segment);
-        if (onboardModelKind == OnboardModelKind.WHISPER && peak < WHISPER_SILENCE_PEAK_THRESHOLD) {
-            if (r != null) {
-                r.noteSegment(kind, segmentAudioMs, peak, 0, true, 0);
-            }
-            return "";
-        }
-        normalizePeak(segment);
-        long decodeStartMs = SystemClock.elapsedRealtime();
-        OfflineStream offlineStream = currentRecognizer.createStream();
-        try {
-            offlineStream.acceptWaveform(segment, SAMPLE_RATE);
-            currentRecognizer.decode(offlineStream);
-            OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
-            String raw = result == null ? "" : result.getText();
-            String text = raw == null ? "" : raw.trim();
-            // Whisper writes non-speech as bracketed tags ([BLANK_AUDIO],
-            // [ Silence ], (wind blowing)). A segment that is nothing but tags
-            // is not words: drop it before it reaches the transcript. Tags
-            // inside real speech stay; see FaceclawNonSpeechTags.
-            String droppedTag = null;
-            if (FaceclawNonSpeechTags.isNonSpeechOnly(text)) {
-                droppedTag = text;
-                text = "";
-                Log.i(TAG, "dropped non-speech segment kind=" + kind + " text=\"" + droppedTag + "\"");
-            }
-            if (r != null) {
-                int index = r.noteSegment(kind, segmentAudioMs, peak, SystemClock.elapsedRealtime() - decodeStartMs,
-                        false, text.length());
-                if (droppedTag != null) {
-                    r.noteTagDropped(index, kind, droppedTag);
+            FaceclawVoiceCaptureReceipt r = receipt;
+            long segmentAudioMs = normalized.length * 1000L / SAMPLE_RATE;
+            long decodeStartMs = SystemClock.elapsedRealtime();
+            OfflineStream offlineStream = currentRecognizer.createStream();
+            try {
+                offlineStream.acceptWaveform(normalized, SAMPLE_RATE);
+                currentRecognizer.decode(offlineStream);
+                OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
+                String raw = result == null ? "" : result.getText();
+                String text = raw == null ? "" : raw.trim();
+                // Whisper writes non-speech as bracketed tags ([BLANK_AUDIO],
+                // [ Silence ], (wind blowing)). A segment that is nothing but tags
+                // is not words: drop it before it reaches the transcript. Tags
+                // inside real speech stay; see FaceclawNonSpeechTags.
+                String droppedTag = null;
+                if (FaceclawNonSpeechTags.isNonSpeechOnly(text)) {
+                    droppedTag = text;
+                    text = "";
+                    Log.i(TAG, "dropped non-speech segment kind=" + kind + " text=\"" + droppedTag + "\"");
                 }
-            }
-            return text;
-        } finally {
-            offlineStream.release();
-        }
-    }
-
-    private static float peakAmplitude(float[] samples) {
-        float peak = 0f;
-        for (float s : samples) {
-            float a = Math.abs(s);
-            if (a > peak) {
-                peak = a;
+                if (r != null) {
+                    int index = r.noteSegment(kind, segmentAudioMs, gate.peak, gate.level,
+                            SystemClock.elapsedRealtime() - decodeStartMs, false, text.length());
+                    if (droppedTag != null) {
+                        r.noteTagDropped(index, kind, droppedTag);
+                    }
+                }
+                return text;
+            } finally {
+                offlineStream.release();
             }
         }
-        return peak;
-    }
 
-    private static void normalizePeak(float[] samples) {
-        float peak = peakAmplitude(samples);
-        if (peak <= 0f) {
-            return;
+        @Override
+        public void gated(String kind, int sampleCount, FaceclawOnboardAsr.GateResult gate) {
+            FaceclawVoiceCaptureReceipt r = receipt;
+            if (r != null) {
+                r.noteSegment(kind, sampleCount * 1000L / SAMPLE_RATE, gate.peak, gate.level, 0, true, 0);
+            }
         }
-        float gain = Math.min(TRANSCRIPT_NORMALIZE_TARGET_PEAK / peak, TRANSCRIPT_NORMALIZE_MAX_GAIN);
-        if (gain <= 1f) {
-            return;
-        }
-        for (int i = 0; i < samples.length; i++) {
-            samples[i] *= gain;
-        }
-    }
 
-    private void logTranscriptDecode(boolean isFinal, int segmentSampleCount, String text) {
-        double totalAudioSec =
-                (committedTranscriptSampleCount + transcriptSampleCount) / (double) SAMPLE_RATE;
-        String preview = text.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
-                ? text : text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
-        Log.i(TAG, (onboardModelKind == OnboardModelKind.WHISPER ? "Whisper" : "Moonshine") + " decode final=" + isFinal
-                + " audioSec=" + String.format(java.util.Locale.US, "%.2f", totalAudioSec)
-                + " segmentAudioSec=" + String.format(java.util.Locale.US, "%.2f", segmentSampleCount / (double) SAMPLE_RATE)
-                + " textLen=" + text.length() + " text=\"" + preview + "\"");
-    }
-
-    private static String joinTranscript(String prefix, String suffix) {
-        if (prefix == null || prefix.length() == 0) {
-            return suffix == null ? "" : suffix;
+        @Override
+        public void transcript(String text, boolean isFinal, int segmentSampleCount, double totalAudioSec) {
+            String preview = text.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
+                    ? text : text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
+            Log.i(TAG, transcript.model().logLabel + " decode final=" + isFinal
+                    + " audioSec=" + String.format(java.util.Locale.US, "%.2f", totalAudioSec)
+                    + " segmentAudioSec=" + String.format(java.util.Locale.US, "%.2f", segmentSampleCount / (double) SAMPLE_RATE)
+                    + " textLen=" + text.length() + " text=\"" + preview + "\"");
+            emitTranscript(text, isFinal);
         }
-        if (suffix == null || suffix.length() == 0) {
-            return prefix;
-        }
-        char first = suffix.charAt(0);
-        boolean attachesToPrevious = ".,!?;:%)]}".indexOf(first) >= 0;
-        return prefix + (attachesToPrevious ? "" : " ") + suffix;
-    }
 
-    private void resetTranscriptState() {
-        transcriptSampleCount = 0;
-        committedTranscriptSampleCount = 0;
-        committedTranscript = "";
-        currentSegmentTranscript = "";
-        lastTranscriptDecodeAtMs = 0;
+        @Override
+        public long elapsedMs() {
+            return SystemClock.elapsedRealtime();
+        }
     }
 
     private void emitPcm(short[] pcm, int count) {

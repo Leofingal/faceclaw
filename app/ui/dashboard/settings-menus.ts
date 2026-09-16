@@ -139,6 +139,10 @@ function specialMenuItem(id: CatalogSpecialId): MenuItem {
       return asrModelMenuItem("moonshine");
     case "asr-whisper":
       return asrModelMenuItem("whisper-base-en");
+    case "asr-parakeet-v2":
+      return asrModelMenuItem("parakeet-v2");
+    case "asr-parakeet-110m":
+      return asrModelMenuItem("parakeet-110m");
     case "local-model":
       return localModelMenuItem();
   }

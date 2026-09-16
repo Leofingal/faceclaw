@@ -13,6 +13,22 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+On-device speech recognition uses sherpa-onnx by k2-fsa:
+https://github.com/k2-fsa/sherpa-onnx (Apache License 2.0). The speech models
+are not bundled; each is downloaded when you choose it in Settings > Voice:
+
+- NVIDIA Parakeet TDT 0.6B v2 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+  and NVIDIA Parakeet TDT_CTC 110M (https://huggingface.co/nvidia/parakeet-tdt_ctc-110m),
+  created by NVIDIA and licensed under the Creative Commons Attribution 4.0
+  International License: https://creativecommons.org/licenses/by/4.0/
+  The files Faceclaw downloads are modified versions: the sherpa-onnx project
+  exported them to ONNX and quantized them to int8. They are offered as-is,
+  without warranties of any kind (see the license's Section 5).
+- OpenAI Whisper base.en (https://github.com/openai/whisper), MIT License,
+  Copyright (c) 2022 OpenAI; exported to ONNX and quantized by sherpa-onnx.
+- Moonshine Base by Useful Sensors, Inc. (https://github.com/moonshine-ai/moonshine),
+  MIT License; converted for sherpa-onnx by the sherpa-onnx project.
+
 The Terminus font is by Dimitar Zhekov's Terminus: https://framagit.org/ohnonot/terv-terc
 and is distributed under the SIL Open Font License; see app/fonts/terminus/LICENSE.
 

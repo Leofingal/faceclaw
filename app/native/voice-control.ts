@@ -5,7 +5,8 @@ import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
 import { SonioxSttClient } from "./soniox-stt";
 import { GhostSttClient } from "./ghost-stt";
-import { ghostSessionSetting } from "../ui/dashboard-settings";
+import { ghostSessionSetting, voiceModelIdleUnloadSetting } from "../ui/dashboard-settings";
+import { idleUnloadMinutes, onboardModelKindForProvider } from "./asr-model-defs";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -20,7 +21,17 @@ export type VoiceControlState = {
 // Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
 // renamed, since it's a persisted settings value on real installs already.
 // "ghost" transcribes on Chris's own Ghost box over Tailscale -- see ghost-stt.ts.
-export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "ghost";
+// "onboard-parakeet-v2" / "onboard-parakeet-110m" run NVIDIA Parakeet TDT on the
+// phone; asr-model-defs.ts maps each "onboard*" value to its model.
+export type VoiceProviderKind =
+  | "onboard"
+  | "onboard-whisper"
+  | "onboard-parakeet-v2"
+  | "onboard-parakeet-110m"
+  | "elevenlabs"
+  | "whisper"
+  | "soniox"
+  | "ghost";
 
 export type VoiceTranscriptEvent = {
   /**
@@ -305,9 +316,11 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
-    // Which on-device model to load; a no-op setter for every provider except
-    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
-    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+    // Which on-device model to load. A cloud provider that fell back here
+    // (missing key) gets Moonshine, as before.
+    this.controller?.setOnboardModelKind(onboardModelKindForProvider(options.provider) ?? "moonshine");
+    // How long the loaded model may sit idle before Java releases it.
+    this.controller?.setIdleUnloadMinutes(idleUnloadMinutes(voiceModelIdleUnloadSetting.get()));
     this.controller?.start("onboard");
   }
 
@@ -317,7 +330,7 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
+    if (onboardModelKindForProvider(options.provider) !== null) return null;
     const sttOptions = {
       apiKey: "",
       onTranscript: (event: { text: string; isFinal: boolean }) => {
