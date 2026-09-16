@@ -11,6 +11,7 @@ import java.util.List;
  *
  * <pre>
  *   javac -d /tmp/rpt App_Resources/Android/src/main/java/com/faceclaw/app/g2protocol/RingProtocol.java \
+ *                     App_Resources/Android/src/main/java/com/faceclaw/app/RingPageJournal.java \
  *                     notes/ring-protocol-selftest/RingProtocolSelfTest.java
  *   java -cp /tmp/rpt com.faceclaw.app.RingProtocolSelfTest
  * </pre>
@@ -38,6 +39,7 @@ public final class RingProtocolSelfTest {
         testEvenConnectFramesAgainstCapture();
         testReconnectGuardAndBootReceipts();
         testRingBatteryReceipts();
+        testPageJournal();
 
         System.out.println();
         System.out.println(failures == 0
@@ -596,6 +598,192 @@ public final class RingProtocolSelfTest {
         expect("00:03 push line: level null, raw payload, unknown link",
             stateLine.endsWith(",\"cmd\":\"00:03\",\"kind\":\"push\",\"level\":null"
                 + ",\"payloadHex\":\"472702\",\"link\":\"unknown\",\"linkAgeMs\":null}"));
+    }
+
+    /**
+     * 2026-09-16 page journal (RingPageJournal): every page is on disk, fsynced,
+     * before its ACK is written, and the store's watermark is what trims it.
+     * Known-good bytes are the ring's own captured 09-15 00:7F hourly push
+     * (pkt 4502) and 00:08 boot push (pkt 41285): device-channel DATA frames
+     * with a real CRC and no biometric values. Health pages are synthetic, per
+     * this file's rule, and are checked against a live decode of the same frame.
+     */
+    private static void testPageJournal() {
+        section("page journal: durable before ACK, trimmed only past the store's watermark");
+        java.io.File root;
+        try {
+            root = java.nio.file.Files.createTempDirectory("ring-page-journal").toFile();
+        } catch (java.io.IOException e) {
+            expect("temp dir for the journal test: " + e, false);
+            return;
+        }
+        try {
+            final String pushHex = "00bc9f0945640164590002007f1300ea5e41020100000000";
+            final String bootHex = "004a4af65364016400000200080d00376d00";
+            RingProtocol.Frame push = RingProtocol.parse(unhex(pushHex));
+            RingProtocol.Frame boot = RingProtocol.parse(unhex(bootHex));
+            long anchor = 1788926400L;
+            RingProtocol.Frame heart = dataFrame(RingProtocol.CMD_HI_HEART_RATE,
+                hourlyBody(2, anchor, 12345L, 64, 1, new int[][] {{0, 61, 88, 55}, {1, 58, 71, 52}}));
+            long start = 1789295708L;
+            RingProtocol.Frame sleep = dataFrame(RingProtocol.CMD_HI_SLEEP,
+                sleepBody(1, start, start + 44 * 30, 40 * 30, 4 * 30, 0, 40 * 30, 0, new int[][] {{0, 4}, {2, 40}}));
+            final long rxPush = 1789453320403L;
+            final long rxHeart = 1789453321000L;
+            final long rxSleep = 1789453322000L;
+
+            // --- round trip of a captured frame, and the exact line shape
+            final java.io.File dirA = new java.io.File(root, "a/health");
+            RingPageJournal journal = new RingPageJournal(dirA);
+            final java.io.File fileA = new java.io.File(dirA, RingPageJournal.JOURNAL_FILE);
+            final List<RingProtocol.Frame> pages = Arrays.asList(push, heart, sleep, boot);
+            final long[] rx = {rxPush, rxHeart, rxSleep, rxPush + 5};
+            final int[] acks = {0};
+            final boolean[] ackAfterDurable = {true};
+            RingPageJournal.Appended appended = RingPageJournal.journalThenAck(journal, pages, rx, (index) -> {
+                acks[0]++;
+                // The page's line must already be in the file when its ACK step runs.
+                String onDisk = readFile(fileA);
+                ackAfterDurable[0] &= onDisk.contains(RingProtocol.hex(pages.get(index).raw));
+            });
+            expect("append ok, n=1..4", appended.ok() && appended.firstN == 1 && appended.lastN == 4);
+            expect("one ACK step per page, in order, each after its line is on disk",
+                acks[0] == 4 && ackAfterDurable[0]);
+            String firstLine = readFile(fileA).split("\n")[0];
+            System.out.println("JOURNAL " + firstLine);
+            expect("line shape, exact",
+                firstLine.equals("{\"n\":1,\"rxMs\":1789453320403,\"cmd\":\"00:7f\",\"pageSeq\":89,\"rawHex\":\""
+                    + pushHex + "\"}"));
+            RingPageJournal.Entry entry = RingPageJournal.parseLine(firstLine);
+            expectHex("pkt 4502 comes back byte for byte", pushHex, entry == null ? new byte[0] : entry.raw);
+            RingProtocol.Frame back = entry == null ? null : RingProtocol.parse(entry.raw);
+            expect("pkt 4502 from the journal parses CRC-clean with the captured CRC field (bc9f0945)",
+                back != null && back.crcOk && "bc9f0945".equals(RingProtocol.hex(Arrays.copyOfRange(back.raw, 1, 5)))
+                    && back.seq == 0x59 && "00:7f".equals(back.commandLabel()) && entry.rxWallMs == rxPush);
+            RingPageJournal.Entry bootBack = RingPageJournal.parseLine(readFile(fileA).split("\n")[3]);
+            expectHex("pkt 41285 comes back byte for byte", bootHex, bootBack == null ? new byte[0] : bootBack.raw);
+
+            // --- the store's view: decoded exactly as the live path decodes
+            RingPageJournal.Batch batch = journal.readBatch();
+            expect("batch: 4 lines, 2 health records, 2 device frames undecoded, 0 corrupt, watermark 4",
+                batch.getLines() == 4 && batch.getRecords().size() == 2 && batch.getUndecoded() == 2
+                    && batch.getCorrupt() == 0 && batch.getWatermark() == 4 && batch.getCommitted() == 0);
+            expect("journaled heart-rate page decodes identically to the live decode",
+                batch.getRecords().size() == 2
+                    && batch.getRecords().get(0).summary().equals(RingProtocol.decode(heart, rxHeart).summary())
+                    && batch.getRecords().get(0).receivedAtMs == rxHeart);
+            expect("journaled sleep page decodes identically to the live decode",
+                batch.getRecords().size() == 2
+                    && batch.getRecords().get(1).summary().equals(RingProtocol.decode(sleep, rxSleep).summary())
+                    && batch.getRecords().get(1).receivedAtMs == rxSleep);
+
+            // --- commit, then a restart (new instance on the same folder)
+            journal.commit(3);
+            expect("watermark file says 3", "3".equals(readFile(new java.io.File(dirA, RingPageJournal.COMMITTED_FILE)).trim()));
+            RingPageJournal restarted = new RingPageJournal(dirA);
+            RingPageJournal.Batch after = restarted.readBatch();
+            expect("after a restart only n=4 is read", after.getLines() == 1 && after.getWatermark() == 4
+                && after.getCommitted() == 3);
+            RingPageJournal.Appended next = restarted.append(Arrays.asList(push), new long[] {rxPush + 10});
+            expect("identities continue past the file's highest n after a restart", next.ok() && next.firstN == 5);
+            restarted.commit(2);
+            expect("a lower commit never moves the watermark back", restarted.committed() == 3);
+
+            // --- a torn last line (crash mid-append) does not swallow the next line
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(fileA, true)) {
+                out.write("{\"n\":6,\"rxMs\":17894533".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            RingPageJournal.Appended afterTear = restarted.append(Arrays.asList(boot), new long[] {rxPush + 20});
+            RingPageJournal.Batch torn = restarted.readBatch();
+            expect("torn line counted corrupt, the next append still reads back",
+                afterTear.ok() && torn.getCorrupt() == 1 && torn.getWatermark() == afterTear.lastN
+                    && torn.getLines() == 3);
+
+            // --- simulated append failures: no ACK, ever
+            final int[] failedAcks = {0};
+            RingPageJournal fsyncFails = new RingPageJournal(new java.io.File(root, "b/health")) {
+                @Override
+                protected void syncToDisk(java.io.FileOutputStream out) throws java.io.IOException {
+                    throw new java.io.IOException("simulated fsync failure");
+                }
+            };
+            RingPageJournal.Appended failed = RingPageJournal.journalThenAck(fsyncFails, Arrays.asList(push, sleep),
+                new long[] {rxPush, rxSleep}, (index) -> failedAcks[0]++);
+            expect("fsync failure: not ok, error carried, zero ACK steps",
+                !failed.ok() && failed.error != null && "simulated fsync failure".equals(failed.error.getMessage())
+                    && failedAcks[0] == 0);
+            RingPageJournal.Appended failedAgain = fsyncFails.append(Arrays.asList(push), new long[] {rxPush});
+            expect("identities are spent by a failed append (no reuse)", failedAgain.firstN == 3);
+
+            java.io.File notADir = new java.io.File(root, "c");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(notADir)) {
+                out.write(1);
+            }
+            RingPageJournal.Appended noFolder = RingPageJournal.journalThenAck(
+                new RingPageJournal(new java.io.File(notADir, "health")), Arrays.asList(push),
+                new long[] {rxPush}, (index) -> failedAcks[0]++);
+            expect("folder cannot be created (parent is a file): not ok, zero ACK steps",
+                !noFolder.ok() && failedAcks[0] == 0);
+            RingPageJournal.Appended noJournal = RingPageJournal.journalThenAck(
+                null, Arrays.asList(push), new long[] {rxPush}, (index) -> failedAcks[0]++);
+            expect("no journal at all: not ok, zero ACK steps", !noJournal.ok() && failedAcks[0] == 0);
+
+            // --- trimming: only past a watermark, only once that watermark has aged
+            final long[] clock = {0L};
+            java.io.File dirD = new java.io.File(root, "d/health");
+            RingPageJournal aging = new RingPageJournal(dirD) {
+                @Override
+                protected long monotonicMs() {
+                    return clock[0];
+                }
+            };
+            java.io.File fileD = new java.io.File(dirD, RingPageJournal.JOURNAL_FILE);
+            int bulk = 0;
+            while (fileD.length() <= RingPageJournal.COMPACT_AT_BYTES) {
+                aging.append(Arrays.asList(push, heart, sleep), new long[] {rxPush, rxHeart, rxSleep});
+                bulk += 3;
+            }
+            long bigLength = fileD.length();
+            aging.commit(bulk - 3);
+            expect("over the size threshold, a fresh commit trims nothing", fileD.length() == bigLength);
+            clock[0] = RingPageJournal.TRIM_DELAY_MS - 1;
+            aging.commit(bulk - 2);
+            expect("still nothing one ms before the first commit has aged", fileD.length() == bigLength);
+            clock[0] = RingPageJournal.TRIM_DELAY_MS;
+            aging.commit(bulk - 1);
+            RingPageJournal.Batch trimmed = aging.readBatch();
+            String[] kept = readFile(fileD).split("\n");
+            RingPageJournal.Entry firstKept = RingPageJournal.parseLine(kept[0]);
+            expect("once aged: lines at or below that commit (n <= " + (bulk - 3) + ") are gone, the rest kept",
+                fileD.length() < bigLength && kept.length == 3 && firstKept != null && firstKept.n == bulk - 2);
+            expect("uncommitted n=" + bulk + " survives the trim and is still read",
+                trimmed.getLines() == 1 && trimmed.getWatermark() == bulk && trimmed.getCommitted() == bulk - 1);
+            RingPageJournal reopened = new RingPageJournal(dirD);
+            RingPageJournal.Appended afterTrim = reopened.append(Arrays.asList(push), new long[] {rxPush});
+            expect("identities still continue after a trim and a restart", afterTrim.ok() && afterTrim.firstN == bulk + 1);
+        } catch (java.io.IOException e) {
+            expect("journal test threw " + e, false);
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private static String readFile(java.io.File file) {
+        try {
+            return new String(java.nio.file.Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            return "";
+        }
+    }
+
+    private static void deleteTree(java.io.File file) {
+        java.io.File[] children = file.listFiles();
+        if (children != null) {
+            for (java.io.File child : children) {
+                deleteTree(child);
+            }
+        }
+        file.delete();
     }
 
     // ------------------------------------------------------------------

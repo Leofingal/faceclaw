@@ -18,7 +18,9 @@
  * must NOT use `getRingHealthRecords()`, which is a pure copy and left the
  * Java-side buffer growing forever. It uses `takeRingHealthBatch()` and hands
  * the records back with `clearRingHealthRecordsBelow()` once the store write
- * has succeeded. Kept below for the reasoning, not as instructions.
+ * has succeeded. Since 2026-09-16 it reads neither: it ingests from the ring
+ * page journal (`RingPageJournal.java`), see `health-live.ts`. Kept below for
+ * the reasoning, not as instructions.
  *
  * `FaceclawBleCommunicator` already accumulates decoded records into a capped
  * in-memory list with a `getRingHealthRecords()` getter (implement-return,

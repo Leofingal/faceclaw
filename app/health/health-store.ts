@@ -71,7 +71,11 @@ import {
 export interface HealthStorageBackend {
   exists(name: string): boolean;
   read(name: string): string | null;
-  /** Must create the file if absent. Durable before returning. */
+  /**
+   * Must create the file if absent. Durable before returning. Throws when the
+   * text did not reach the file: the ring page journal's watermark advances
+   * only past appends that returned (2026-09-16).
+   */
   append(name: string, text: string): void;
   write(name: string, text: string): void;
   /** Every file in the health folder. Used to rebuild the rollup cache. */
@@ -152,28 +156,49 @@ export class HealthStore {
    *
    * So: do NOT add a second dedupe layer at a caller or in the file backend.
    * If the shard grows again, the value is changing and the question is why.
+   *
+   * ## A failed append throws, and marks nothing as held
+   *
+   * (2026-09-16.) The in-memory shard used to be updated before the append, and
+   * the file backend swallowed append errors, so a failed write was counted as
+   * written and the dedupe then refused the retry until the app restarted: a
+   * silent loss. Samples are now staged, the shard takes them only after their
+   * shard file's append returns, and the append's error propagates so the ring
+   * page journal's watermark does not advance past it.
    */
   ingestSamples(samples: readonly HealthSample[]): number {
     const byShard = new Map<string, HealthSample[]>();
+    const staged = new Map<string, Map<string, HealthSample>>();
     for (const sample of samples) {
       if (!Number.isFinite(sample.startMs) || sample.spanMs <= 0) continue;
       const name = shardName(sample.startMs);
       const shard = this.loadShard(name);
+      let stagedShard = staged.get(name);
+      if (!stagedShard) {
+        stagedShard = new Map();
+        staged.set(name, stagedShard);
+      }
       const key = sampleKey(sample);
-      const existing = shard.get(key);
+      const existing = stagedShard.get(key) ?? shard.get(key);
       if (existing && sameSample(existing, sample)) continue;
-      shard.set(key, sample);
+      stagedShard.set(key, sample);
       const pending = byShard.get(name);
       if (pending) pending.push(sample);
       else byShard.set(name, [sample]);
     }
     let written = 0;
-    for (const [name, list] of byShard) {
-      const text = list.map((sample) => `${JSON.stringify(toLine(sample))}\n`).join("");
-      this.backend.append(name, text);
-      written += list.length;
+    try {
+      for (const [name, list] of byShard) {
+        const text = list.map((sample) => `${JSON.stringify(toLine(sample))}\n`).join("");
+        this.backend.append(name, text);
+        const shard = this.loadShard(name);
+        for (const [key, sample] of staged.get(name) ?? []) shard.set(key, sample);
+        written += list.length;
+      }
+    } finally {
+      // Also on a throw: shards appended before the failing one are on disk.
+      if (written > 0) this.updateRollupsFor(samples);
     }
-    if (written > 0) this.updateRollupsFor(samples);
     return written;
   }
 
@@ -182,25 +207,29 @@ export class HealthStore {
    *
    * Deduped on the session's own start time, so a night re-delivered by a
    * later sync replaces rather than duplicates.
+   *
+   * A failed append throws and leaves the held sessions unchanged, so a retry
+   * writes the sessions again (see ingestSamples).
    */
   ingestSleep(sessions: readonly SleepSession[]): number {
-    const held = this.loadSleep();
+    const next = this.loadSleep().slice();
     const fresh: SleepSession[] = [];
     for (const session of sessions) {
-      const index = held.findIndex(
+      const index = next.findIndex(
         (candidate) =>
           candidate.startMs === session.startMs && candidate.timeResolved === session.timeResolved,
       );
       if (index >= 0) {
-        if (JSON.stringify(held[index]) === JSON.stringify(session)) continue;
-        held[index] = session;
+        if (JSON.stringify(next[index]) === JSON.stringify(session)) continue;
+        next[index] = session;
       } else {
-        held.push(session);
+        next.push(session);
       }
       fresh.push(session);
     }
     if (fresh.length > 0) {
       this.backend.append(SLEEP_FILE, fresh.map((s) => `${JSON.stringify(s)}\n`).join(""));
+      this.sleep = next;
     }
     return fresh.length;
   }

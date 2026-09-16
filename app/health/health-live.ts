@@ -11,10 +11,16 @@
  *
  * 1. **It pulls, it does not subscribe, and it CONSUMES.** There is no push
  *    event for health records, so both surfaces call this when they open and on
- *    their existing refresh tick. `takeRingHealthBatch()` hands over what the
- *    communicator is holding together with a watermark, and once the store
- *    write has succeeded `clearRingHealthRecordsBelow()` hands that much back
- *    as consumed. Cut and paste, not copy paste.
+ *    their existing refresh tick. Since 2026-09-16 the source is the ring page
+ *    journal (`RingPageJournal.java`, `files/health/ring-pages.jsonl`): every
+ *    page is appended there and fsynced BEFORE its ACK tells the ring it may
+ *    discard it. `readBatch()` hands over every page above the committed
+ *    watermark, decoded, and once both store writes have returned `commit()`
+ *    advances the watermark. A store write that throws leaves the watermark
+ *    where it was, so the next tick retries. Cut and paste, not copy paste.
+ *    (Before the journal this read the communicator's in-memory buffer, which
+ *    an app kill between ACK and store emptied for good; that buffer is now
+ *    only drained here.)
  *
  *    It used to be a pure copy, and nothing ever cleared the Java-side list, so
  *    every 60s tick re-processed the whole session's history. Measured
@@ -48,7 +54,7 @@ import {
 import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
 import { startOfLocalDay } from "./health-types";
-import { File, knownFolders } from "@nativescript/core";
+import { File, knownFolders, Utils } from "@nativescript/core";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
 const UNKNOWN_TIME = -1;
@@ -65,6 +71,25 @@ const HOURLY_METRIC: { [cmdHi: number]: WireHourlyRecord["metric"] } = {
   [CMD_SPO2]: "spo2",
   [CMD_HRV]: "hrv",
 };
+
+declare const java: any;
+
+/**
+ * The ring page journal under files/health. Built from the same
+ * `getFilesDir()` + "health" the communicator uses, and the Java side keys its
+ * shared instance by canonical path, so both reach one instance and one lock.
+ * Works without a communicator: pages journaled before an app kill are
+ * ingested on the next launch, before the glasses connect.
+ */
+function ringPageJournal(): any {
+  try {
+    const dir = new java.io.File(Utils.android.getApplicationContext().getFilesDir(), "health");
+    return (com as any).faceclaw.app.RingPageJournal.forDirectory(dir);
+  } catch (error) {
+    console.warn("health live: ring page journal unavailable", error);
+    return null;
+  }
+}
 
 function activeCommunicator(): any {
   try {
@@ -304,7 +329,7 @@ function toWire(record: any): WireRecord | null {
 }
 
 export type LiveSyncResult = {
-  /** Records the communicator was holding. 0 means no pull has landed yet. */
+  /** Decoded records read from the ring page journal this pass. */
   seen: number;
   /** Samples genuinely new to the store. */
   samplesWritten: number;
@@ -317,51 +342,65 @@ export type LiveSyncResult = {
 const EMPTY: LiveSyncResult = { seen: 0, samplesWritten: 0, sleepWritten: 0, skipped: [] };
 
 /**
- * Read the communicator's decoded records into the durable store.
- *
- * Safe to call on every open and every refresh: the store dedupes, and an
- * absent communicator (no glasses process, preview build) is a no-op rather
- * than an error.
+ * Empty the communicator's live record buffer. The store no longer reads it
+ * (the journal is the source), so this only keeps it from filling to its cap.
+ * Deliberately swallows its own failure: nothing stored depends on it.
  */
-/**
- * Tell the communicator the snapshot is durably stored and may be dropped.
- *
- * Deliberately swallows its own failure: a clear that does not happen costs a
- * little growth, and there is nothing useful to do about it here. The bias runs
- * one way throughout - under-clearing is cheap, over-clearing loses data.
- */
-function consumeUpTo(communicator: any, watermark: number): void {
+function drainLiveBuffer(): void {
+  const communicator = activeCommunicator();
+  if (!communicator) return;
   try {
-    const dropped = Number(communicator.clearRingHealthRecordsBelow(watermark));
-    if (dropped > 0) {
-      console.log(`health live: consumed ${dropped} records (watermark ${watermark})`);
-    }
+    const batch = communicator.takeRingHealthBatch();
+    if (batch) communicator.clearRingHealthRecordsBelow(batch.getWatermark());
   } catch (error) {
-    console.warn("health live: could not clear consumed records", error);
+    console.warn("health live: could not drain the live ring buffer", error);
   }
 }
 
+/**
+ * Mark the journal's pages up to `watermark` as stored. Swallows its own
+ * failure: a commit that does not happen means the same pages are read and
+ * deduped again next tick. The bias runs one way throughout - under-committing
+ * is cheap, over-committing loses data.
+ */
+function commitJournal(journal: any, watermark: number): void {
+  try {
+    journal.commit(watermark);
+  } catch (error) {
+    console.warn(`health live: journal commit to ${watermark} failed; pages will be re-read`, error);
+  }
+}
+
+/**
+ * Read the ring page journal's new pages into the durable store.
+ *
+ * Safe to call on every open and every refresh: the store dedupes, and an
+ * unavailable journal (preview build) is a no-op rather than an error.
+ */
 export function syncLiveRecords(): LiveSyncResult {
-  const communicator = activeCommunicator();
-  if (!communicator) return EMPTY;
+  drainLiveBuffer();
+  const journal = ringPageJournal();
+  if (!journal) return EMPTY;
 
   let batch: any;
   try {
-    batch = communicator.takeRingHealthBatch();
+    batch = journal.readBatch();
   } catch (error) {
-    console.warn("health live: could not read ring records", error);
+    console.warn("health live: could not read the ring page journal", error);
     return EMPTY;
   }
-  if (!batch) return EMPTY;
-  const records = batch.getRecords();
-  // Identifies exactly this snapshot. Anything the ring pushes from here on is
-  // numbered above it and therefore cannot be cleared by this pass - which is
-  // what keeps a page landing mid-ingest from being dropped.
+  if (!batch || Number(batch.getLines()) === 0) return EMPTY;
+  // Identifies exactly this batch. Pages journaled from here on are numbered
+  // above it, so this pass's commit can never cover a page it did not read.
   const watermark = Number(batch.getWatermark());
-  if (!records || !records.size || records.size() === 0) return EMPTY;
+  const records = batch.getRecords();
+  const size = records.size();
+  const journalNote =
+    `journal ${Number(batch.getCommitted()) + 1}..${watermark}` +
+    (Number(batch.getUndecoded()) ? `, ${batch.getUndecoded()} undecoded` : "") +
+    (Number(batch.getCorrupt()) ? `, ${batch.getCorrupt()} corrupt` : "");
 
   const wire: WireRecord[] = [];
-  const size = records.size();
   for (let i = 0; i < size; i++) {
     try {
       const converted = toWire(records.get(i));
@@ -370,10 +409,12 @@ export function syncLiveRecords(): LiveSyncResult {
       console.warn("health live: skipped an undecodable record", error);
     }
   }
-  if (wire.length === 0) return { ...EMPTY, seen: size };
-
   const { samples, sleep, skipped } = convertRecords(wire);
   if (samples.length === 0 && sleep.length === 0) {
+    // Nothing to store is not a failure: these pages are done with, exactly as
+    // records the conversion declined were before the journal.
+    commitJournal(journal, watermark);
+    console.log(`health live: ${size} records (${journalNote}) -> nothing to store`);
     return { seen: size, samplesWritten: 0, sleepWritten: 0, skipped };
   }
 
@@ -381,20 +422,29 @@ export function syncLiveRecords(): LiveSyncResult {
   purgeFixtureData();
 
   const store = healthStore();
-  const samplesWritten = store.ingestSamples(samples);
-  const sleepWritten = store.ingestSleep(sleep);
+  let samplesWritten: number;
+  let sleepWritten: number;
+  try {
+    samplesWritten = store.ingestSamples(samples);
+    sleepWritten = store.ingestSleep(sleep);
+  } catch (error) {
+    // The watermark stays put: the journal keeps these pages and the next tick
+    // retries them. Loud, because a store that cannot write is otherwise silent.
+    console.error(`health live: STORE WRITE FAILED (${journalNote}); journal not advanced`, error);
+    return { seen: size, samplesWritten: 0, sleepWritten: 0, skipped };
+  }
   if (samplesWritten > 0 || sleepWritten > 0) markLiveData();
 
-  // ONLY here. Both store writes have returned, so the records are durable.
-  // If either threw, or the process died above this line, nothing is cleared
-  // and the same records arrive again next tick - which costs one repeated
-  // ingest (a no-op, the store refuses identical re-writes) instead of losing
-  // a night. Note `samplesWritten === 0` is NOT a failure: it means the store
-  // already held all of it, which is the steady state this change creates.
-  consumeUpTo(communicator, watermark);
+  // ONLY here. Both store writes have returned, so the records are on disk.
+  // If the process dies above this line, nothing is committed and the same
+  // pages are read again next launch - one repeated ingest (a no-op, the store
+  // refuses identical re-writes) instead of losing a night. Note
+  // `samplesWritten === 0` is NOT a failure: it means the store already held
+  // all of it.
+  commitJournal(journal, watermark);
 
   console.log(
-    `health live: ${size} records -> ${samplesWritten} samples, ${sleepWritten} sleep` +
+    `health live: ${size} records (${journalNote}) -> ${samplesWritten} samples, ${sleepWritten} sleep` +
       (skipped.length ? `, ${skipped.length} skipped` : ""),
   );
   return { seen: size, samplesWritten, sleepWritten, skipped };
