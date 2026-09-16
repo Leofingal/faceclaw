@@ -11,6 +11,7 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "./globals.d.ts",
     "../app/g2/glasses-hardware-identity.ts",
     "../app/native/java-direct-buffer.ts",
     "../app/g2/ble-proximity.ts",
@@ -29,6 +30,9 @@
     "../app/phone-ui/transcript-turns.ts",
     "../app/phone-ui/markdown-render.ts",
     "../app/apps/news/news-deck.ts",
+    "../app/apps/exocortex/status-line.ts",
+    "../app/apps/exocortex/app-run.ts",
+    "../app/util/aligned-tick.ts",
     "../app/health/health-types.ts",
     "../app/health/health-derive.ts",
     "../app/health/health-store.ts",

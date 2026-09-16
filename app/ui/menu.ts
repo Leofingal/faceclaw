@@ -5,7 +5,20 @@ import { clamp } from "../util/numeric-util";
 import { Layer, LayerContext, PaintBelow } from "./layers";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
-import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
+import {
+  drawSelectionHighlight,
+  LIST_ROW_TEXT_INSET,
+  lineStep,
+  listRowHeight,
+  menuTitleHeight,
+  scrollToKeepSelectionVisible,
+} from "./metrics";
+
+// Both moved to ./metrics so that list UIs can be drawn under plain node
+// (tools/menu-preview.cjs, tools/health-preview.cjs): this module reaches
+// native/frame-timings through ./layers, that one reaches nothing.
+// Re-exported so every existing importer keeps working unchanged.
+export { drawSelectionHighlight, scrollToKeepSelectionVisible };
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
@@ -13,8 +26,6 @@ const DEFAULT_MENU_WIDTH = 272;
 // fixed quarter-screen-era look) up to the full screen, then scroll.
 const DEFAULT_MENU_MIN_HEIGHT = G2_LENS_HEIGHT / 2 - 2 * DEFAULT_MENU_Y;
 const MENU_BODY_PADDING = 8;
-const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
-const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
 export type MenuLayout = {
   x: number;
@@ -55,45 +66,6 @@ export type MenuItem = {
   onSelect: (ctx: LayerContext, menu: MenuLayer) => Promise<void> | void;
   render?: (args: MenuItemRenderArgs) => void;
 };
-
-/**
- * Draw a selection highlight for a list row. A focused list fills the row and
- * outlines it; a visible-but-unfocused list draws only the outline, so the
- * selection stays legible without implying it will receive input.
- */
-export function drawSelectionHighlight(
-  image: GrayImage,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  focused: boolean,
-  radius = 6,
-): void {
-  if (focused) {
-    image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL, radius);
-  }
-  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
-}
-
-/**
- * Move a list's scroll position the minimum distance needed to keep the
- * selected row inside the visible window, clamped to the list bounds.
- * Returns the new scroll row (the index of the first visible item).
- */
-export function scrollToKeepSelectionVisible(
-  scrollRow: number,
-  selectedIndex: number,
-  visibleRowCount: number,
-  itemCount: number,
-): number {
-  if (selectedIndex < scrollRow) {
-    scrollRow = selectedIndex;
-  } else if (selectedIndex >= scrollRow + visibleRowCount) {
-    scrollRow = selectedIndex - visibleRowCount + 1;
-  }
-  return clamp(scrollRow, 0, Math.max(0, itemCount - visibleRowCount));
-}
 
 /**
  * Draw a vertical scrollbar beside a row-scrolled list: a dim track with a
