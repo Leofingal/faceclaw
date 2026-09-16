@@ -51,10 +51,11 @@ import {
   type WireRecord,
   type WireStepsRecord,
 } from "./health-ingest";
+import { Utils } from "@nativescript/core";
 import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
 import { startOfLocalDay } from "./health-types";
-import { File, knownFolders, Utils } from "@nativescript/core";
+import { File, knownFolders } from "@nativescript/core";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
 const UNKNOWN_TIME = -1;
