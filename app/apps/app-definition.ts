@@ -58,6 +58,12 @@ export type AppDefinition = {
   refreshStatus?: () => void;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
+  /**
+   * False for apps whose launch is itself a request to act (News starts
+   * narrating when its window opens). The open-apps restore at startup skips
+   * them, so restarting the phone app never acts on Chris's behalf.
+   */
+  restoreOnStart?: boolean;
 };
 
 export type AppLaunchParams = {

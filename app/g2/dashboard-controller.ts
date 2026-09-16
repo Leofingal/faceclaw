@@ -182,6 +182,12 @@ const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
 // always there and never worth persisting as "open" (see persistOpenApps).
 const BOOT_PINNED_APP_IDS = new Set(ALL_APPS.filter((app) => app.boot).map((app) => app.appId));
 
+// Apps whose launch acts (News narrates on open): never saved as open and
+// never relaunched by restoreOpenApps. A restore is not an invocation.
+const NOT_RESTORED_APP_IDS = new Set(
+  ALL_APPS.filter((app) => app.restoreOnStart === false).map((app) => app.appId),
+);
+
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
 }
@@ -2156,6 +2162,7 @@ class DashboardController {
       // registry rather than hardcoded: this used to name "launcher", which
       // silently stopped covering the pinned window when Exocortex took over.
       if (BOOT_PINNED_APP_IDS.has(window.appId)) continue;
+      if (NOT_RESTORED_APP_IDS.has(window.appId)) continue;
       if (!open.includes(window.appId)) open.push(window.appId);
     }
     savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });
@@ -2178,6 +2185,9 @@ class DashboardController {
     try {
       for (const appId of saved.open) {
         if (!known.has(appId) && !getInstalledEvenHubAppById(appId)) continue;
+        // Also needed on the read side: a file saved by an older build can
+        // still list an app that has since opted out.
+        if (NOT_RESTORED_APP_IDS.has(appId)) continue;
         try {
           await this.launchApp(appId);
         } catch (error) {

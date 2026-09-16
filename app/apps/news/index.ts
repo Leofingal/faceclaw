@@ -20,6 +20,9 @@ const newsApp: AppDefinition = {
   appId: "news",
   title: "News",
   icon: "file-text",
+  // Opening News starts the spoken walk, so a restart must not reopen it:
+  // on 2026-09-16 the restore read the whole deck aloud behind Ghost.
+  restoreOnStart: false,
   launch: (ctx) => ctx.launchInProcessApp(NEWS_WINDOW_ID, NEWS_SURFACE_ID, createNewsAppWindow),
 };
 
