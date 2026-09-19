@@ -1217,6 +1217,42 @@ public final class RingProtocol {
     }
 
     /**
+     * The direct ring link's state in one word, for the resume receipt
+     * ({@code files/health/resume-receipts.jsonl}). Pure so the self-test can
+     * pin it, and so the word cannot drift from what the connect loop actually
+     * does.
+     *
+     * <p>Diagnostic only - nothing branches on this. It exists to answer one
+     * question (2026-09-19): does an EvenHub resume get slower when the phone
+     * is also holding, or dialling, a direct link to the ring? Which needs the
+     * three cases kept apart, not just connected/not.
+     *
+     * <ul>
+     *   <li>{@code off} - no ring address at all ("Only via glasses").
+     *   <li>{@code up} - connected with notifications subscribed.
+     *   <li>{@code handshaking} - connected, notifications not ready yet.
+     *   <li>{@code idle} - "Only when needed", and nothing wants the link.
+     *   <li>{@code backoff} - wanted and down, inside the reconnect delay.
+     *   <li>{@code dialling} - wanted and down, an attempt is due or in flight.
+     * </ul>
+     *
+     * @param reconnectAfterMs monotonic deadline of the reconnect delay; 0 = none pending.
+     */
+    public static String ringLinkState(boolean hasAddress, boolean ringConnected,
+            boolean ringNotificationsReady, boolean wanted, long nowMs, long reconnectAfterMs) {
+        if (!hasAddress) {
+            return "off";
+        }
+        if (ringConnected) {
+            return ringNotificationsReady ? "up" : "handshaking";
+        }
+        if (!wanted) {
+            return "idle";
+        }
+        return reconnectAfterMs > 0 && nowMs < reconnectAfterMs ? "backoff" : "dialling";
+    }
+
+    /**
      * The ring's boot signature: an intact device-channel 00:08 DATA push with
      * seq 00. The ring's DATA seq is one global push counter that carries
      * through reconnects and supervision timeouts and restarts at 00 only after

@@ -593,6 +593,34 @@ public final class RingProtocolSelfTest {
         expect("no activity stamp at all -> drop rather than hold forever",
             RingProtocol.ringLinkShouldDrop(true, true, false, false, true, now, 0L));
         expect("the linger is 5 s", RingProtocol.RING_ON_DEMAND_LINGER_MS == 5_000L);
+
+        // The resume receipt's ring-link word (2026-09-19). Diagnostic only,
+        // but the whole resume-latency exercise turns on telling "the phone
+        // was holding a direct ring link" from "it was dialling one" from
+        // "there was no link at all", so the classification is pinned rather
+        // than trusted.
+        section("ring link state word (resume receipt)");
+        final long t = 1_000_000L;
+        expect("no ring address -> off, whatever the rest of the state says",
+            "off".equals(RingProtocol.ringLinkState(false, true, true, true, t, 0L)));
+        expect("connected with notifications ready -> up",
+            "up".equals(RingProtocol.ringLinkState(true, true, true, true, t, 0L)));
+        expect("connected but notifications not ready yet -> handshaking",
+            "handshaking".equals(RingProtocol.ringLinkState(true, true, false, true, t, 0L)));
+        expect("down and nothing wants it -> idle",
+            "idle".equals(RingProtocol.ringLinkState(true, false, false, false, t, 0L)));
+        expect("down, wanted, inside the reconnect delay -> backoff",
+            "backoff".equals(RingProtocol.ringLinkState(true, false, false, true, t, t + 1L)));
+        expect("down, wanted, the reconnect delay has passed -> dialling",
+            "dialling".equals(RingProtocol.ringLinkState(true, false, false, true, t, t - 1L)));
+        expect("down, wanted, no delay pending at all -> dialling",
+            "dialling".equals(RingProtocol.ringLinkState(true, false, false, true, t, 0L)));
+        // In Direct the want gate is constant-true, so the receipt can only
+        // ever say up/handshaking/dialling there - never idle or backoff-from-
+        // unwanted. This is the same control the two gates above start with.
+        expect("in Direct (wanted always true) a down link reads dialling, never idle",
+            "dialling".equals(RingProtocol.ringLinkState(true, false, false,
+                RingProtocol.ringLinkWanted(false, false, t, 0L, 0), t, 0L)));
     }
 
     /**

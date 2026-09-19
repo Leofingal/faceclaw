@@ -691,6 +691,46 @@ export class FaceclawCommunicatorBridge {
     );
   }
 
+  /**
+   * Ms from the resume prelude to the content frame being acked, for the
+   * resume that just finished; -1 when this barrier replayed no prelude or
+   * never saw the frame. The receipt's comparable-to-449ms number.
+   *
+   * The next three are synchronous and off the Java call queue on purpose.
+   * They are read the instant a resume settles, and that queue's task hop
+   * measured ~18 ms on device - a fifth of the quantity being measured, and it
+   * would land inside the window. None of them touches BLE state, so there is
+   * nothing for the queue to order them against.
+   */
+  evenHubResumePreludeSpanMs(): number {
+    if (!global.isAndroid) return -1;
+    try {
+      return Number(this.communicator.evenHubResumePreludeSpanMs());
+    } catch {
+      return -1;
+    }
+  }
+
+  /** The direct ring link's state as a JSON object for a receipt; "" when unavailable. */
+  ringLinkReceiptJson(): string {
+    if (!global.isAndroid) return "";
+    try {
+      return String(this.communicator.ringLinkReceiptJson());
+    } catch {
+      return "";
+    }
+  }
+
+  /** Append one line to files/health/resume-receipts.jsonl. Never throws. */
+  appendResumeReceipt(line: string): void {
+    if (!global.isAndroid) return;
+    try {
+      this.communicator.appendResumeReceipt(String(line));
+    } catch {
+      // A receipt must never break a wake.
+    }
+  }
+
   /** Play a CFW mode-5 kind-4 tone sequence (complete wire payload). */
   async playBuzzerSequence(payload: Uint8Array): Promise<void> {
     const snapshot = new Uint8Array(payload);

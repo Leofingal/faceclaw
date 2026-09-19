@@ -141,6 +141,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /** Hard stop on the receipt file. A sleep page is ~250 bytes and a pull line ~150. */
     private static final long RING_SLEEP_RECEIPTS_MAX_BYTES = 2L * 1024L * 1024L;
     /**
+     * Append-only receipt of every EvenHub wake barrier (2026-09-19), beside
+     * the ring receipts and written by the same appender.
+     *
+     * <p>Chris: "we have it under 500 ms most of the time, but it is still
+     * sluggish sometimes, probably when I've had the ring connected directly?
+     * but not sure." The not-sure is the point. Resume latency had three
+     * hand-read samples in total, all from 2026-09-08 logcat, which is a spot
+     * check of the median on a build that predates the resident recognizer,
+     * the page journal and the startup battery query. A tail needs a
+     * population, so every resume now writes a line.
+     */
+    private static final String RESUME_RECEIPTS_FILE = "resume-receipts.jsonl";
+    /** Hard stop on the resume receipt file. A line is ~350 bytes. */
+    private static final long RESUME_RECEIPTS_MAX_BYTES = 2L * 1024L * 1024L;
+    /**
      * The write-ahead page journal (2026-09-16). Every page is in it, fsynced,
      * before its ACK is written; the JS store ingests from it. Lazily bound,
      * worker thread only. See {@link RingPageJournal}.
@@ -266,6 +281,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     private long ringLastDirectActivityAtMs;
     private boolean sessionReady;
+    /**
+     * Resume latency, monotonic, diagnostic only (2026-09-19). Stamped at the
+     * two events the 2026-09-08 hand-read 449 ms was measured between: where
+     * "replaying session prelude for EvenHub resume" is logged, and where
+     * {@link #awaitEvenHubSessionReady} first sees the content frame acked.
+     * Measuring it here rather than in JS keeps the receipt's number the same
+     * quantity as that one - a JS-side pair would additionally include the
+     * Java call queue's ~18 ms hop.
+     *
+     * <p>Both are cleared on entry to {@link #resumeEvenHubSession}, so a
+     * barrier that had no prelude to replay reports -1 instead of pairing this
+     * resume's ready stamp with the previous resume's prelude.
+     *
+     * <p>Volatile rather than {@code lock}-guarded on purpose: nothing branches
+     * on them, the reader is the JS thread, and taking the BLE lock to read a
+     * diagnostic would be the one way this could cost what it is measuring.
+     */
+    private volatile long evenHubResumePreludeAtMs;
+    /** @see #evenHubResumePreludeAtMs */
+    private volatile long evenHubResumeReadyAtMs;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
     // CFW firmware-debug-flags overlay (mode 7). Desired value pushed from TS; the
@@ -622,6 +657,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         && desiredFingerprint.equals(displayedFingerprint);
                 }
                 if (!shutdownRequested && fixedLayoutCreated && frameReady) {
+                    // The content frame is acked: the far end of the 449 ms.
+                    evenHubResumeReadyAtMs = SystemClock.elapsedRealtime();
                     if (faceclawWakePendingNonce >= 0) {
                         readyGeneration = enqueueFaceclawWakeControlLocked(
                             BleProtocol.FACECLAW_WAKE_OP_READY,
@@ -1265,6 +1302,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     public boolean resumeEvenHubSession() {
         int claimGeneration = 0;
+        // Diagnostic only. Cleared before the early returns below so that a
+        // resume which replays no prelude cannot report a stale span.
+        evenHubResumePreludeAtMs = 0L;
+        evenHubResumeReadyAtMs = 0L;
         synchronized (lock) {
             if (!running || !sessionReady || chargingMode) {
                 logLine("skip EvenHub resume; transport not ready");
@@ -1277,6 +1318,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     && hasPendingOrInflightKindLocked("wake-lease-control")) {
                 claimGeneration = faceclawWakeControlGeneration;
             }
+            evenHubResumePreludeAtMs = SystemClock.elapsedRealtime();
             logLine("replaying session prelude for EvenHub resume");
         }
 
@@ -1880,24 +1922,105 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     /** Append one line to the sleep receipt log. Never throws. */
     private void appendSleepReceipt(String line) {
+        appendHealthReceipt(RING_SLEEP_RECEIPTS_FILE, RING_SLEEP_RECEIPTS_MAX_BYTES,
+            "ring sleep receipt", line);
+    }
+
+    /** One resume receipt line. Never throws. @see #RESUME_RECEIPTS_FILE */
+    public void appendResumeReceipt(String line) {
+        appendHealthReceipt(RESUME_RECEIPTS_FILE, RESUME_RECEIPTS_MAX_BYTES, "resume receipt", line);
+    }
+
+    /**
+     * Append one line to a receipt log under {@code files/health/}. Never
+     * throws: a receipt must not break the path it is recording.
+     *
+     * <p>Lifted verbatim out of {@code appendSleepReceipt} so the resume
+     * receipts get the same semantics rather than a second, subtly different
+     * writer. Those semantics are weaker than they look and are worth stating
+     * rather than rediscovering: the size cap is tested BEFORE the write, so
+     * the file may pass it by one line, and there is <b>no fsync</b> - the
+     * stream is closed, not synced. That is deliberate for diagnostics. The
+     * page journal, which must survive a power loss, is the thing that fsyncs.
+     *
+     * <p>Not synchronized, for the same reason the sleep receipts never were:
+     * each caller owns its own file and its own stream, and the only shared
+     * step is an idempotent {@code mkdirs()}.
+     */
+    private void appendHealthReceipt(String fileName, long maxBytes, String label, String line) {
         try {
             java.io.File dir = new java.io.File(appContext.getFilesDir(), "health");
             if (!dir.isDirectory() && !dir.mkdirs()) {
-                logLine("ring sleep receipt: cannot create " + dir + ", NOT written: " + line);
+                logLine(label + ": cannot create " + dir + ", NOT written: " + line);
                 return;
             }
-            java.io.File file = new java.io.File(dir, RING_SLEEP_RECEIPTS_FILE);
-            if (file.length() > RING_SLEEP_RECEIPTS_MAX_BYTES) {
-                logLine("ring sleep receipt: file over " + RING_SLEEP_RECEIPTS_MAX_BYTES + " bytes, NOT written: " + line);
+            java.io.File file = new java.io.File(dir, fileName);
+            if (file.length() > maxBytes) {
+                logLine(label + ": file over " + maxBytes + " bytes, NOT written: " + line);
                 return;
             }
             try (java.io.FileOutputStream out = new java.io.FileOutputStream(file, true)) {
                 out.write((line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
-            logLine("ring sleep receipt: " + line);
+            logLine(label + ": " + line);
         } catch (Throwable t) {
-            logLine("ring sleep receipt write failed: " + safeMessage(t) + ", line was: " + line);
+            logLine(label + " write failed: " + safeMessage(t) + ", line was: " + line);
         }
+    }
+
+    /**
+     * Ms from the resume prelude to the content frame being acked for the
+     * resume that just finished, or -1 when this barrier replayed no prelude
+     * (the session was never suspended) or never saw the frame.
+     *
+     * <p>Exactly the pair of events the 2026-09-08 449 ms was read between.
+     * Diagnostic only; reads two volatile longs and takes no lock.
+     */
+    public long evenHubResumePreludeSpanMs() {
+        long prelude = evenHubResumePreludeAtMs;
+        long ready = evenHubResumeReadyAtMs;
+        if (prelude <= 0L || ready < prelude) {
+            return -1L;
+        }
+        return ready - prelude;
+    }
+
+    /**
+     * What the direct ring link is doing right now, as a JSON object for the
+     * resume receipt. This is the field the whole receipt exists for: the
+     * standing hypothesis is that a direct ring link contends for the radio
+     * and lengthens a resume, and two populations in one file is the only way
+     * to find out.
+     *
+     * <p>Read-only, and deliberately NOT on the JS call queue: the caller
+     * stamps it the instant a resume settles, and that queue's hop measured
+     * ~18 ms - which would be a fifth of the thing being measured. The lock is
+     * held for five field reads, and it is the same lock this same thread
+     * already takes twice inside the resume path.
+     */
+    public String ringLinkReceiptJson() {
+        boolean hasAddress = hasRingAddress();
+        long now = SystemClock.elapsedRealtime();
+        boolean connected;
+        boolean notificationsReady;
+        boolean wanted;
+        long reconnectAfterMs;
+        long linkAgeMs;
+        int abortedRetries;
+        synchronized (lock) {
+            connected = ringConnected;
+            notificationsReady = ringNotificationsReady;
+            wanted = ringLinkWantedLocked();
+            reconnectAfterMs = ringReconnectAfterMs;
+            linkAgeMs = ringLinkAgeMsLocked();
+            abortedRetries = ringHealthAbortedRetries;
+        }
+        return "{\"state\":\"" + RingProtocol.ringLinkState(
+                hasAddress, connected, notificationsReady, wanted, now, reconnectAfterMs) + "\""
+            + ",\"onDemand\":" + ringLinkOnDemand
+            + ",\"wanted\":" + wanted
+            + ",\"ageMs\":" + linkAgeMs
+            + ",\"abortedRetries\":" + abortedRetries + "}";
     }
 
     /** Ms since the ring's last connected callback, or -1 if none. Caller holds {@code lock}. */

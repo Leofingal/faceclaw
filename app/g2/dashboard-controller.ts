@@ -19,6 +19,7 @@ import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
+import { emptyResumeStamps, resumeReceiptLine, type ResumeStamps } from "./resume-receipt";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
 
 /** Who a synthetic (non-firmware) input stands for. */
@@ -276,6 +277,14 @@ class DashboardController {
   private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
   private evenHubSessionSuspended = false;
   private evenHubResumePromise: Promise<boolean> | null = null;
+  // Resume receipts (2026-09-19; see ./resume-receipt.ts). `phaseSinceMs` and
+  // `evenHubSuspendedAtMs` are the two context stamps a receipt reads;
+  // `evenHubResumeSeq`/`evenHubResumeId` key a coalesced joiner's line to the
+  // barrier it actually waited on, so the two populations can be rejoined.
+  private phaseSinceMs = Date.now();
+  private evenHubSuspendedAtMs = 0;
+  private evenHubResumeSeq = 0;
+  private evenHubResumeId = 0;
   private faceclawWakeLeaseSupported = false;
   private faceclawWakeLeaseState: boolean | null = null;
   private wearNotifySupported = false;
@@ -675,7 +684,30 @@ class DashboardController {
    * the first caller's spans.
    */
   private ensureEvenHubSessionActive(frameId = 0): Promise<boolean> {
-    if (this.evenHubResumePromise) return this.evenHubResumePromise;
+    if (this.evenHubResumePromise) {
+      // A joiner, not a resume: it starts no BLE work and settles when the
+      // barrier already in flight does. Receipted on its own line, tagged, and
+      // keyed to that barrier's id - counting these as resumes would bury the
+      // real distribution under near-zero "resumes" that never touched the
+      // radio.
+      const inFlight = this.evenHubResumePromise;
+      const joined: ResumeStamps = {
+        ...emptyResumeStamps(),
+        id: this.evenHubResumeId,
+        frameId,
+        coalesced: true,
+        startedAtMs: Date.now(),
+      };
+      const finish = (ready: boolean): void => {
+        joined.ready = ready;
+        this.scheduleResumeReceipt(joined);
+      };
+      void inFlight.then(
+        (ready) => finish(ready),
+        () => finish(false),
+      );
+      return inFlight;
+    }
     const communicator = this.communicator;
     if (!communicator) {
       // Preview mode has no plugin session to restore; waking is just
@@ -691,20 +723,46 @@ class DashboardController {
       return Promise.resolve(false);
     }
 
+    // Every assignment below is to a local object, read later off the wake
+    // path. Nothing here awaits, logs, or calls Java.
+    const startedAtMs = Date.now();
+    const stamps: ResumeStamps = {
+      ...emptyResumeStamps(),
+      id: ++this.evenHubResumeSeq,
+      frameId,
+      startedAtMs,
+      wasSuspended: this.evenHubSessionSuspended,
+      suspendedForMs:
+        this.evenHubSessionSuspended && this.evenHubSuspendedAtMs > 0
+          ? startedAtMs - this.evenHubSuspendedAtMs
+          : -1,
+      sessionUpMs: this.phase === "connected" ? startedAtMs - this.phaseSinceMs : -1,
+    };
+    this.evenHubResumeId = stamps.id;
+
     const operation = (async () => {
       await frameTimings.spanAsync(frameId, "wake:screen-on", () => communicator.setG2ScreenOn(true));
+      // Resume-start: the near end of the 2026-09-08 449 ms.
+      stamps.resumeStartedAtMs = Date.now();
       const resumed = await frameTimings.spanAsync(frameId, "wake:resume-session", () =>
         communicator.resumeEvenHubSession(),
       );
+      stamps.resumed = resumed;
+      stamps.resumeDoneAtMs = Date.now();
       if (!resumed) {
         return false;
       }
       // Resume first: setScreenBlanked(false) then recomposites retained state
       // as the desired first frame for the fresh layout.
       await frameTimings.spanAsync(frameId, "wake:unblank", () => communicator.setScreenBlanked(false));
+      stamps.unblankDoneAtMs = Date.now();
       const ready = await frameTimings.spanAsync(frameId, "wake:await-ready", () =>
         communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS),
       );
+      stamps.ready = ready;
+      // The far end: awaitEvenHubSessionReady returns once the content frame
+      // is acked.
+      stamps.readyDoneAtMs = Date.now();
       if (ready && this.communicator === communicator) {
         this.evenHubSessionSuspended = false;
       }
@@ -715,9 +773,45 @@ class DashboardController {
       if (this.evenHubResumePromise === operation) {
         this.evenHubResumePromise = null;
       }
+      if (this.evenHubResumeId === stamps.id) {
+        this.evenHubResumeId = 0;
+      }
+      this.scheduleResumeReceipt(stamps);
     };
     void operation.then(clearOperation, clearOperation);
     return operation;
+  }
+
+  /**
+   * Queue one resume receipt. Everything that costs anything - two Java reads
+   * and the file append - happens on the task this schedules, so the wake path
+   * itself pays one `Date.now()` and one `setTimeout`. That matters: this runs
+   * in the handler that resolves the barrier, ahead of the frame that was
+   * waiting on it.
+   *
+   * Never throws; a receipt must not break a wake.
+   */
+  private scheduleResumeReceipt(stamps: ResumeStamps): void {
+    stamps.endedAtMs = Date.now();
+    const communicator = this.communicator;
+    if (!communicator) return;
+    setTimeout(() => {
+      try {
+        // The prelude span is a latch in Java, not a live value, so reading it
+        // a task later is the same number. The ring state is live, but it
+        // moves on the scale of seconds, not of one task.
+        communicator.appendResumeReceipt(
+          resumeReceiptLine(
+            stamps,
+            communicator.evenHubResumePreludeSpanMs(),
+            communicator.ringLinkReceiptJson(),
+            ringConnectionModeSetting.get(),
+          ),
+        );
+      } catch {
+        // Diagnostics only.
+      }
+    }, 0);
   }
 
   private desiredFaceclawWakeLeaseState(): boolean {
@@ -825,6 +919,7 @@ class DashboardController {
           return;
         }
         this.evenHubSessionSuspended = true;
+        this.evenHubSuspendedAtMs = Date.now();
         return communicator.suspendEvenHubSession();
       })()
         .then((suspended) => {
@@ -2547,6 +2642,7 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    this.phaseSinceMs = Date.now();
     if (phase === "disconnected") {
       // Kept across "connecting": silent mode blocks app launches, so it can
       // itself cause the reconnect churn, and Java re-reports it either way.
