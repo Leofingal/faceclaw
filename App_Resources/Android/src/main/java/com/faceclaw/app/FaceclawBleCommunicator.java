@@ -61,6 +61,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final String rightAddress;
     private final String leftAddress;
     private final String ringAddress;
+    /**
+     * "Only when needed" (2026-09-18). The ring address is real - every
+     * direct-ring path below is live - but the link is raised only while a
+     * health pull is actually wanted and dropped again once it finishes, rather
+     * than being held for the whole session.
+     *
+     * <p>Chris's hypothesis this exists to test: the phone holding a permanent
+     * BLE link to the R1 is what contends with the glasses' own link to it
+     * (~3 glasses disconnects a day, each with an audible tone).
+     *
+     * <p><b>false is exactly the old behaviour.</b> Every gate added for this
+     * mode reads {@link #ringLinkWantedLocked()}, which returns true
+     * unconditionally when this is false, so "Direct" is unchanged; and
+     * "Only via glasses" still passes an empty address, which
+     * {@link #hasRingAddress()} turns everything off on.
+     */
+    private final boolean ringLinkOnDemand;
 
     private volatile FaceclawBleCommunicatorListener listener;
     private final java.util.List<FaceclawImuListener> imuListeners =
@@ -223,6 +240,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
      */
     private int ringHealthAbortedRetries;
+    /**
+     * {@link #ringLinkOnDemand} only: something has asked for a pull and the
+     * link may be raised for it. Set by {@link #requestRingHealthNow()} from the
+     * UI thread, cleared by the worker once that ask has been answered or
+     * refused. Guarded by {@code lock}.
+     */
+    private boolean ringLinkWantedExplicit;
+    /**
+     * Deadline for {@link #ringLinkWantedExplicit}. One ask may not keep the
+     * radio dialling forever if the ring simply is not there (out of range, on
+     * its charger, already busy with the glasses). Guarded by {@code lock}.
+     */
+    private long ringLinkWantedUntilMs;
+    /**
+     * elapsedRealtime() of the last notification that arrived on EITHER direct
+     * ring characteristic, and of the moment the ring link came up. The
+     * on-demand drop waits for this to go quiet, so a page landing after the
+     * pull's own idle window still finds a live link. 0 = nothing yet.
+     * Guarded by {@code lock}.
+     *
+     * <p>Deliberately NOT {@code lastIncomingAtMs}: that one is also stamped by
+     * every glasses notification, which never goes quiet, so it would hold the
+     * ring link up forever.
+     */
+    private long ringLastDirectActivityAtMs;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
@@ -363,6 +405,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private List<byte[]> prewrittenFrames = Collections.emptyList();
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
+        this(context, rightAddress, leftAddress, ringAddress, false);
+    }
+
+    /**
+     * @param ringLinkOnDemand the "Only when needed" ring mode. The address is
+     *     real - every direct-ring code path is enabled - but the link is raised
+     *     only when something asks for a health pull and dropped again when the
+     *     pull finishes. {@code false} is the old always-held Direct behaviour,
+     *     and an empty {@code ringAddress} is still "Only via glasses"
+     *     (everything off), so both older modes are bit-for-bit unchanged.
+     */
+    public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress,
+            boolean ringLinkOnDemand) {
+        this.ringLinkOnDemand = ringLinkOnDemand;
         this.appContext = context.getApplicationContext();
         FrameTimings.getInstance().init(appContext);
         this.powerManager = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
@@ -1375,7 +1431,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
 
     @Override public void run() {
-        logLine(String.format(Locale.US, "communicator start R=%s L=%s ring=%s", rightAddress, leftAddress, ringAddress));
+        logLine(String.format(Locale.US, "communicator start R=%s L=%s ring=%s%s", rightAddress, leftAddress,
+            ringAddress, ringLinkOnDemand ? " (on demand)" : ""));
         while (true) {
             try {
                 if (!running) {
@@ -1415,6 +1472,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
                 // immediately unless a pull actually failed to complete.
                 resumeAbortedRingHealthPull();
+                // "Only when needed" mode's other half: put the ring link back
+                // down once nothing wants it. Runs HERE, on the worker thread,
+                // after the two calls above, so it can never land in the middle
+                // of a pull - both of those block this thread for the whole
+                // pull, and flushRingOutbound() above has already written
+                // whatever ACKs the pull queued.
+                maybeDropOnDemandRingLink();
 
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
@@ -1591,6 +1655,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void handleDirectRingNotification(String characteristicUuid, byte[] data) {
+        // Stamped for EVERY direct-ring notification - health pages, gestures,
+        // device-channel pushes alike - before any of them is interpreted. It is
+        // the "the ring is still talking" clock the on-demand drop waits on.
+        synchronized (lock) {
+            ringLastDirectActivityAtMs = SystemClock.elapsedRealtime();
+        }
         if (handleRingHealthNotification(characteristicUuid, data)) {
             return;
         }
@@ -1912,6 +1982,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 if (connected) {
                     // Receipt-log only: link age for ringConnectSkipped/ringBoot lines.
                     ringLinkUpElapsedMs = SystemClock.elapsedRealtime();
+                    // Start the on-demand linger from the moment the link came
+                    // up, so a link that answers nothing still gets its grace
+                    // period before being dropped again.
+                    ringLastDirectActivityAtMs = ringLinkUpElapsedMs;
                 }
                 if (!connected) {
                     ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
@@ -2082,13 +2156,54 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 && sessionReady
                 && !ringNotificationsReady
                 && now >= ringReconnectAfterMs
+                && ringLinkWantedLocked()
                 && pendingMessages.isEmpty()
                 && inFlightMessages.isEmpty();
         }
     }
 
+    /**
+     * Whether the direct ring link should be up at all right now. Caller must
+     * hold {@code lock}.
+     *
+     * <p>Always true outside {@link #ringLinkOnDemand} - that is what keeps
+     * "Direct" behaving exactly as it did before this mode existed.
+     *
+     * <p>In on-demand mode there are two ways to want it:
+     * <ul>
+     *   <li>something asked for a pull and that ask has not been answered or
+     *       timed out yet ({@link #ringLinkWantedExplicit});
+     *   <li>a pull ABORTED and still has retry budget. Without this the
+     *       2026-09-12 aborted-pull retry would be dead in this mode: the link
+     *       would go down, nothing would raise it again, and
+     *       {@link #resumeAbortedRingHealthPull()} would return at its own
+     *       {@code !ringConnected} guard forever - which is precisely the "the
+     *       night's second sleep block was simply never requested again" bug
+     *       that retry budget was built to fix.
+     * </ul>
+     */
+    private boolean ringLinkWantedLocked() {
+        return RingProtocol.ringLinkWanted(
+            ringLinkOnDemand,
+            ringLinkWantedExplicit,
+            SystemClock.elapsedRealtime(),
+            ringLinkWantedUntilMs,
+            ringHealthAbortedRetries);
+    }
+
     private void tryConnectRing(String reason) {
         if (!hasRingAddress()) {
+            return;
+        }
+        // On-demand mode's first half: do not dial at connect time. The
+        // "initial" call from connectLoopOnce() lands here on every glasses
+        // connect, and in this mode nothing has asked for a pull yet.
+        boolean wanted;
+        synchronized (lock) {
+            wanted = ringLinkWantedLocked();
+        }
+        if (!wanted) {
+            logLine("ring link on demand: not dialling (" + reason + "), nothing is waiting on ring data");
             return;
         }
         // Guard (2026-09-15). connectRing() on a live ring link re-writes both
@@ -2295,9 +2410,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public void requestRingHealthNow() {
         synchronized (lock) {
             ringHealthPullRequested = true;
+            if (ringLinkOnDemand && !ringLinkWantedExplicit) {
+                long now = SystemClock.elapsedRealtime();
+                // Do not spend a dial on an ask the on-demand floor below is
+                // going to refuse anyway. Same test runRequestedRingHealthPull()
+                // makes; making it here too is what keeps open/close/open from
+                // raising and dropping the radio once a second.
+                if (ringHealthLastRequestedAtMs == 0
+                        || now - ringHealthLastRequestedAtMs >= RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS) {
+                    ringLinkWantedExplicit = true;
+                    ringLinkWantedUntilMs = now + RingProtocol.RING_ON_DEMAND_LINK_WAIT_MS;
+                }
+            }
         }
         interruptibleSleep.interrupt();
     }
+
+    // RING_ON_DEMAND_LINK_WAIT_MS and RING_ON_DEMAND_LINGER_MS, and the two
+    // gates that read them, live on RingProtocol so the self-test can pin them -
+    // the same place the 2026-09-15 reconnect guard went.
 
     /**
      * Whether an automatic pull may run now. Caller must hold {@code lock}.
@@ -2373,11 +2504,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!ringHealthPullRequested) {
                 return;
             }
-            ringHealthPullRequested = false;
             if (!ringConnected || !ringNotificationsReady) {
+                // In on-demand mode the link is very likely being raised for
+                // THIS request right now (a dial takes seconds, and our own
+                // disconnect leaves RING_RECONNECT_DELAY_MS on the clock), so
+                // the ask is held rather than consumed against a link that does
+                // not exist yet. Bounded by ringLinkWantedUntilMs, after which
+                // it is dropped exactly as before.
+                if (ringLinkOnDemand
+                        && ringLinkWantedExplicit
+                        && now < ringLinkWantedUntilMs) {
+                    return;
+                }
+                ringHealthPullRequested = false;
+                ringLinkWantedExplicit = false;
                 logLine("ring health: on-demand pull skipped, ring not ready");
                 return;
             }
+            ringHealthPullRequested = false;
+            // The ask is answered from here on, one way or the other: either the
+            // pull below runs, or the floor refuses it. Clearing the want here
+            // rather than after runRingHealthPull() is safe because this thread
+            // is the one that runs the pull - nothing can drop the link until it
+            // returns to the loop.
+            ringLinkWantedExplicit = false;
             if (ringHealthLastRequestedAtMs != 0
                     && now - ringHealthLastRequestedAtMs < RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS) {
                 logLine("ring health: on-demand pull skipped, last one was "
@@ -2388,6 +2538,47 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         logLine("ring health: on-demand pull requested");
         runRingHealthPull();
+    }
+
+    /**
+     * Put the direct ring link back down once nothing wants it
+     * ({@link #ringLinkOnDemand} only). Worker thread, called from the main loop
+     * after the pull entry points, never from inside a pull.
+     *
+     * <p>Every early return here is a reason to keep the link up, and they are
+     * deliberately biased that way - an extra few seconds of radio costs far
+     * less than a page the ring hands over and the phone loses.
+     *
+     * <p>In particular it will not drop the link while {@code ringOutbound} is
+     * non-empty. A queued page ACK means a page arrived and has not been
+     * journaled-and-acked yet, and {@code clearRingOutboundLocked} on the
+     * disconnect would throw it away - exactly what the 2026-09-16 page-journal
+     * rule (fsync before ACK, nothing discarded before it is durably stored)
+     * exists to prevent.
+     */
+    private void maybeDropOnDemandRingLink() {
+        if (!ringLinkOnDemand || !hasRingAddress()) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            if (!RingProtocol.ringLinkShouldDrop(
+                    ringLinkOnDemand,
+                    ringConnected,
+                    ringLinkWantedLocked(),
+                    ringHealthPullRequested,
+                    ringOutbound.isEmpty(),
+                    now,
+                    ringLastDirectActivityAtMs)) {
+                return;
+            }
+            ringLinkWantedExplicit = false;
+            // The same gap a dropped link gets, so an immediate new ask does not
+            // dial into a teardown still in flight.
+            ringReconnectAfterMs = now + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+        }
+        logLine("ring link on demand: nothing waiting on ring data, dropping the direct ring link");
+        bleManager.disconnect(ringAddress);
     }
 
     /**

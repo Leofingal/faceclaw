@@ -439,17 +439,26 @@ export const showBleBandwidthSetting = new ConfigSettingBoolean({
     "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
 });
 
-export type RingConnectionMode = "glasses" | "direct";
+// "on-demand" (2026-09-18) is "direct" with the link raised only while a health
+// pull is actually being run: the phone knows the ring's address, but the
+// communicator does not dial it at connect time and drops it again once the pull
+// finishes. The hypothesis it exists to test is that the phone's permanently-held
+// ring link is what contends with the glasses' own link to the ring (~3 glasses
+// disconnects a day). Gestures behave exactly as in "glasses" mode while the link
+// is down - the glasses relay them either way; see the comment in
+// dashboard-controller.ts's connect().
+export type RingConnectionMode = "glasses" | "direct" | "on-demand";
 
 export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({
   id: "ring-connection-mode",
   label: "Ring connection",
   storageKey: "developer.ringConnectionMode",
   defaultValue: "glasses",
-  values: ["glasses", "direct"],
-  formatValue: (value) => (value === "direct" ? "Direct" : "Only via glasses"),
+  values: ["glasses", "direct", "on-demand"],
+  formatValue: (value) =>
+    value === "direct" ? "Direct" : value === "on-demand" ? "Only when needed" : "Only via glasses",
   description:
-    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Only when needed: know the ring's address but open the link only while a health pull is running, and drop it again afterwards - health data still arrives, and the rest of the time the phone stays off the ring's radio as in Only via glasses. Takes effect on the next connection to the glasses.",
 });
 
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model

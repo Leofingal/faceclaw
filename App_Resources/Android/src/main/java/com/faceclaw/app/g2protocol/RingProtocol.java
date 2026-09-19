@@ -1146,6 +1146,77 @@ public final class RingProtocol {
     }
 
     /**
+     * How long one on-demand ask may keep the connect loop dialling the ring
+     * before it is given up on ("Only when needed" mode).
+     *
+     * <p>Sized off {@code ConnectionOptions.RING_CONNECT_TIMEOUT_MS} (20 s,
+     * itself generous because the ring connects with {@code autoConnect=true})
+     * plus its 2 s retry gap: roughly three attempts. <b>A guess, not a measured
+     * value</b> — nobody has measured how long a cold ring dial really takes
+     * from a phone that is also holding both glasses links.
+     */
+    public static final long RING_ON_DEMAND_LINK_WAIT_MS = 60_000L;
+
+    /**
+     * How quiet the ring has to have been before "Only when needed" drops the
+     * link.
+     *
+     * <p>The pull already waits {@code RING_HEALTH_DATA_IDLE_MS} per type before
+     * moving on, so this is a second, coarser net for a page that lands after
+     * the last type's window closed and after its ACK went out. Cheap insurance
+     * in the direction that matters: if in doubt, under-disconnect. <b>Also a
+     * guess</b> — the longest gap between a pull's last ACK and a straggling
+     * page has never been measured.
+     */
+    public static final long RING_ON_DEMAND_LINGER_MS = 5_000L;
+
+    /**
+     * Whether the direct ring link should be up at all ("Only when needed"
+     * mode's want gate). Pure so the self-test can pin it.
+     *
+     * <p><b>{@code onDemand == false} always returns true</b>, which is what
+     * keeps "Direct" behaving exactly as it did before the third mode existed.
+     *
+     * <p>{@code abortedRetries > 0} wants the link too. Without that the
+     * 2026-09-12 aborted-pull retry would be dead in this mode: the link would
+     * go down, nothing would raise it again, and the resume path would return at
+     * its own "not connected" guard forever — the "the night's second sleep
+     * block was simply never requested again" bug that retry budget was built to
+     * fix.
+     */
+    public static boolean ringLinkWanted(boolean onDemand, boolean explicitWant, long nowMs,
+            long wantUntilMs, int abortedRetries) {
+        if (!onDemand) {
+            return true;
+        }
+        if (abortedRetries > 0) {
+            return true;
+        }
+        return explicitWant && nowMs < wantUntilMs;
+    }
+
+    /**
+     * Whether "Only when needed" may drop the direct ring link now. Pure so the
+     * self-test can pin it; every false is a reason to keep the link up.
+     *
+     * <p>{@code ackQueueEmpty == false} is the load-bearing one: a queued page
+     * ACK means a page arrived and has not been journaled-and-acked yet, and the
+     * disconnect would throw it away — exactly what the 2026-09-16 page-journal
+     * rule (fsync before ACK, nothing discarded before it is durably stored)
+     * exists to prevent.
+     *
+     * @param lastActivityMs monotonic stamp of the last notification on either
+     *     direct ring characteristic, or of link-up; 0 = neither yet.
+     */
+    public static boolean ringLinkShouldDrop(boolean onDemand, boolean ringConnected, boolean wanted,
+            boolean pullRequested, boolean ackQueueEmpty, long nowMs, long lastActivityMs) {
+        if (!onDemand || !ringConnected || wanted || pullRequested || !ackQueueEmpty) {
+            return false;
+        }
+        return lastActivityMs == 0 || nowMs - lastActivityMs >= RING_ON_DEMAND_LINGER_MS;
+    }
+
+    /**
      * The ring's boot signature: an intact device-channel 00:08 DATA push with
      * seq 00. The ring's DATA seq is one global push counter that carries
      * through reconnects and supervision timeouts and restarts at 00 only after

@@ -165,7 +165,13 @@ export class FaceclawCommunicatorBridge {
   private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
   private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
 
-  constructor(addresses: { right: string; left: string; ring?: string }) {
+  /**
+   * `ringOnDemand` is the "Only when needed" ring mode: the address is real, so
+   * the communicator knows the ring, but it does not dial it at connect time and
+   * drops the link again once a health pull finishes. Passing `false` (or
+   * omitting it) with a real address is the old always-held "Direct" behaviour.
+   */
+  constructor(addresses: { right: string; left: string; ring?: string; ringOnDemand?: boolean }) {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
 
@@ -174,6 +180,7 @@ export class FaceclawCommunicatorBridge {
       addresses.right,
       addresses.left,
       addresses.ring ?? "",
+      addresses.ringOnDemand === true,
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
       onLog: (line: string) => {

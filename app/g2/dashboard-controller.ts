@@ -1220,9 +1220,19 @@ class DashboardController {
     // link to the ring: the glasses relay its gestures to us anyway, and the
     // direct link is currently unreliable. An empty address disables every
     // direct-ring code path in the communicator.
-    const ringAddress = ringConnectionModeSetting.get() === "direct" ? addresses.ring : "";
+    //
+    // "Only when needed" (2026-09-18) passes the REAL address plus a flag: the
+    // communicator knows the ring but does not dial it at connect time, and
+    // raises the link only when something asks for a health pull, dropping it
+    // when the pull finishes. Health still arrives; gestures ride the glasses
+    // in between, exactly as in "Only via glasses". The two older values are
+    // untouched on purpose - a control day on "glasses" depends on it.
+    const ringMode = ringConnectionModeSetting.get();
+    const ringAddress = ringMode === "glasses" ? "" : addresses.ring;
+    const ringOnDemand = ringMode === "on-demand";
     this.appendLog(
-      `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
+      `Using configured arms: R=${addresses.right} L=${addresses.left}` +
+        `${ringAddress ? ` ring=${ringAddress}${ringOnDemand ? " (on demand)" : ""}` : ""}`,
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
@@ -1240,6 +1250,7 @@ class DashboardController {
         right: addresses.right,
         left: addresses.left,
         ring: ringAddress,
+        ringOnDemand,
       });
       this.communicator = communicator;
       this.offLog = communicator.onLog((line) => {

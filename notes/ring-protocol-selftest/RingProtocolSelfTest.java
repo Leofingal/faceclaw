@@ -38,6 +38,7 @@ public final class RingProtocolSelfTest {
         testSleepReceiptLines();
         testEvenConnectFramesAgainstCapture();
         testReconnectGuardAndBootReceipts();
+        testOnDemandRingLinkGates();
         testRingBatteryChargeState();
         testRingBatteryReceipts();
         testPageJournal();
@@ -536,6 +537,62 @@ public final class RingProtocolSelfTest {
         expect("no link-up time and no earlier push -> unknown and nulls",
             RingProtocol.ringBootReceiptLine(1L, -1L, -1)
                 .endsWith(",\"link\":\"unknown\",\"linkAgeMs\":null,\"prevPushSeq\":null}"));
+    }
+
+    /**
+     * The "Only when needed" ring mode (2026-09-18): the link is raised only
+     * when a pull is wanted and dropped when it is not.
+     *
+     * <p>The first block is the control this whole mode is judged against —
+     * with {@code onDemand=false} the two gates must be constant, so "Direct"
+     * and "Only via glasses" cannot change behaviour no matter what the rest of
+     * the state is.
+     */
+    private static void testOnDemandRingLinkGates() {
+        section("on-demand ring link: want + drop gates");
+
+        // Control: off means off. Nothing below this line may alter Direct.
+        expect("onDemand=false always wants the link, whatever else is true",
+            RingProtocol.ringLinkWanted(false, false, 10_000L, 0L, 0));
+        expect("onDemand=false never drops the link, even fully idle and unwanted",
+            !RingProtocol.ringLinkShouldDrop(false, true, false, false, true, 10_000_000L, 1L));
+
+        // Want gate.
+        expect("no ask -> do not dial",
+            !RingProtocol.ringLinkWanted(true, false, 1_000L, 0L, 0));
+        expect("an ask inside its deadline -> dial",
+            RingProtocol.ringLinkWanted(true, true, 1_000L, 61_000L, 0));
+        expect("an ask at exactly its deadline has expired",
+            !RingProtocol.ringLinkWanted(true, true, 61_000L, 61_000L, 0));
+        expect("an ask past its deadline -> stop dialling",
+            !RingProtocol.ringLinkWanted(true, true, 61_001L, 61_000L, 0));
+        expect("an aborted pull with retry budget wants the link with no ask at all",
+            RingProtocol.ringLinkWanted(true, false, 10_000_000L, 0L, 1));
+        expect("retry budget spent and no ask -> stop",
+            !RingProtocol.ringLinkWanted(true, false, 10_000_000L, 0L, 0));
+        expect("the deadline is one RING_ON_DEMAND_LINK_WAIT_MS long",
+            RingProtocol.RING_ON_DEMAND_LINK_WAIT_MS == 60_000L);
+
+        // Drop gate. Baseline: idle, unwanted, nothing queued -> drop.
+        final long now = 1_000_000L;
+        final long quiet = now - RingProtocol.RING_ON_DEMAND_LINGER_MS;
+        expect("idle, unwanted, ACK queue empty -> drop",
+            RingProtocol.ringLinkShouldDrop(true, true, false, false, true, now, quiet));
+        expect("a link that is already down is not dropped again",
+            !RingProtocol.ringLinkShouldDrop(true, false, false, false, true, now, quiet));
+        expect("still wanted -> hold",
+            !RingProtocol.ringLinkShouldDrop(true, true, true, false, true, now, quiet));
+        expect("a pull request in flight -> hold",
+            !RingProtocol.ringLinkShouldDrop(true, true, false, true, true, now, quiet));
+        expect("UNACKED PAGES QUEUED -> hold; dropping here would discard a page the ring handed over",
+            !RingProtocol.ringLinkShouldDrop(true, true, false, false, false, now, quiet));
+        expect("the ring spoke 1 ms inside the linger -> hold",
+            !RingProtocol.ringLinkShouldDrop(true, true, false, false, true, now, quiet + 1));
+        expect("the linger boundary itself drops",
+            RingProtocol.ringLinkShouldDrop(true, true, false, false, true, now, quiet));
+        expect("no activity stamp at all -> drop rather than hold forever",
+            RingProtocol.ringLinkShouldDrop(true, true, false, false, true, now, 0L));
+        expect("the linger is 5 s", RingProtocol.RING_ON_DEMAND_LINGER_MS == 5_000L);
     }
 
     /**
