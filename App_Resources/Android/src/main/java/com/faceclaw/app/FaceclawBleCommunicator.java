@@ -2637,11 +2637,40 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Pulls that have finished on this communicator - completed or aborted,
+     * every exit of {@link #runRingHealthPull}. Written only by the worker
+     * thread, read by the phone Health tab (2026-09-24): in "Only when needed"
+     * the pull its open asked for lands ~20 s after the tab has drawn, and
+     * this moving is how the tab knows to draw again. Diagnostic-grade; nothing
+     * in here branches on it.
+     */
+    private volatile int ringHealthPullsFinished;
+
+    /** @see #ringHealthPullsFinished */
+    public int ringHealthPullsFinished() {
+        return ringHealthPullsFinished;
+    }
+
+    /** Whether this communicator was built in "Only when needed" mode. Read-only. */
+    public boolean isRingLinkOnDemand() {
+        return ringLinkOnDemand;
+    }
+
+    /**
      * Run a pull and account for whether it finished. The ONLY place
      * {@link #requestRingHealth(String)} may be called from, so that every path
-     * shares one definition of "aborted".
+     * shares one definition of "aborted". Counts every exit in
+     * {@link #ringHealthPullsFinished}.
      */
     private void runRingHealthPull(String trigger) {
+        try {
+            runRingHealthPullAccounted(trigger);
+        } finally {
+            ringHealthPullsFinished++;
+        }
+    }
+
+    private void runRingHealthPullAccounted(String trigger) {
         boolean completed = requestRingHealth(trigger);
         synchronized (lock) {
             if (completed) {

@@ -61,7 +61,8 @@ import {
 } from "../health/health-derive";
 import { stageLabel } from "../health/sleep-stages";
 import { healthStore } from "../health/health-store-files";
-import { requestFreshPull, syncLiveRecords } from "../health/health-live";
+import { requestFreshPull, ringPullProgress, syncLiveRecords } from "../health/health-live";
+import { watchOpenPull } from "../health/health-open-refresh";
 import { isFixtureData, seedFixturesIfNeeded } from "../health/health-seed";
 import {
   DAY_MS,
@@ -123,11 +124,27 @@ export class HealthViewModel extends Observable {
   private stats: StatRow[] = [];
   private fixture = false;
   private sleepCaption = "";
+  /** Stops the redraw-on-landing watch; see `health-open-refresh.ts`. */
+  private stopOpenPullWatch: (() => void) | null = null;
 
   attach(): void {
     // Live data first, so the purge happens before anything renders and
     // seeding is skipped entirely once real records exist. See health-live.ts.
     syncLiveRecords();
+    // "Only when needed" pulls only on an open, and that pull lands ~20 s
+    // after this method has drawn. Watch for it and draw again when it does
+    // (2026-09-24). Started BEFORE the ask, so a fast pull cannot slip past
+    // the starting count; a no-op in Direct and "Only via glasses".
+    this.stopOpenPullWatch?.();
+    this.stopOpenPullWatch = watchOpenPull({
+      progress: ringPullProgress,
+      redraw: () => {
+        syncLiveRecords();
+        this.rebuild();
+      },
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
     requestFreshPull("health-open");
     seedFixturesIfNeeded();
     refreshFoldTracking();
@@ -145,6 +162,8 @@ export class HealthViewModel extends Observable {
   }
 
   dispose(): void {
+    this.stopOpenPullWatch?.();
+    this.stopOpenPullWatch = null;
     this.unsubscribeFold?.();
     this.unsubscribeFold = null;
   }

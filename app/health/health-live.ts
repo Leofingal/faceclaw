@@ -57,6 +57,7 @@ import { healthStore } from "./health-store-files";
 import { startOfLocalDay } from "./health-types";
 import { File, knownFolders } from "@nativescript/core";
 import { onAlignedTick, startAlignedTick, __alignedTickInternals } from "../util/aligned-tick";
+import type { RingPullProgress } from "./health-open-refresh";
 
 /** `RingProtocol.UNKNOWN_TIME` — the decoder's "I will not guess" sentinel. */
 const UNKNOWN_TIME = -1;
@@ -476,6 +477,25 @@ export function requestFreshPull(trigger: RingPullTrigger): void {
     communicator.requestRingHealthNowFor(trigger);
   } catch (error) {
     console.warn("health live: on-demand pull request failed", error);
+  }
+}
+
+/**
+ * The live communicator's mode and finished-pull count, for the phone Health
+ * tab's redraw-on-landing watch (`health-open-refresh.ts`). Two cheap reads of
+ * Java fields; null when there is no communicator or the reads fail (preview
+ * build, or an APK older than the getters).
+ */
+export function ringPullProgress(): RingPullProgress | null {
+  const communicator = activeCommunicator();
+  if (!communicator) return null;
+  try {
+    return {
+      onDemand: Boolean(communicator.isRingLinkOnDemand()),
+      pullsFinished: Number(communicator.ringHealthPullsFinished()),
+    };
+  } catch {
+    return null;
   }
 }
 

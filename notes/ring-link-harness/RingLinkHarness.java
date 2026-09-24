@@ -320,6 +320,10 @@ public final class RingLinkHarness {
         expect("a ring-side drop is re-dialled and held again", back);
         rig.checkpoint(t, "ring-drop");
         expect("Direct wrote no stale-link receipt", rig.receipts("ringLinkStale").isEmpty());
+        if (rig.pullsFinished() >= 0) {
+            expect("Direct: three pulls finished, and the communicator says it is not on demand",
+                rig.pullsFinished() == 3 && !rig.isOnDemand());
+        }
         if (rig.hasTriggers()) {
             List<String> pulls = rig.receipts("\"type\":\"pull\"");
             expect("Direct's three pulls say connect, tick, health-open",
@@ -358,6 +362,7 @@ public final class RingLinkHarness {
         int pullsBefore = rig.receipts("\"type\":\"pull\"").size();
         int dialsBefore = rig.ble().dials;
         int skipsBefore = rig.receipts("ringConnectSkipped").size();
+        int finishedBefore = rig.pullsFinished();
         expect("open " + n + ": starts idle", "idle".equals(rig.state()));
         rig.requestPull(trigger);
         boolean done = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() > pullsBefore
@@ -375,6 +380,12 @@ public final class RingLinkHarness {
         expect("open " + n + ": the manager holds no ring client afterwards", !rig.ble().hasGattClient(RING));
         expect("open " + n + ": nothing wanted afterwards", rig.stateJson().contains("\"wanted\":false"));
         expect("open " + n + ": no ringConnectSkipped", rig.receipts("ringConnectSkipped").size() == skipsBefore);
+        if (finishedBefore >= 0) {
+            // The count the phone Health tab watches to redraw when the pull lands.
+            expect("open " + n + ": the finished-pull count moved by exactly one",
+                rig.pullsFinished() == finishedBefore + 1);
+            expect("open " + n + ": the communicator says it is on demand", rig.isOnDemand());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -419,6 +430,25 @@ public final class RingLinkHarness {
 
         boolean hasTriggers() {
             return requestFor != null;
+        }
+
+        /** The finished-pull count the phone tab reads, or -1 on a build without it. */
+        int pullsFinished() {
+            Method m = findMethod("ringHealthPullsFinished");
+            try {
+                return m == null ? -1 : (Integer) m.invoke(comm);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        boolean isOnDemand() {
+            Method m = findMethod("isRingLinkOnDemand");
+            try {
+                return m != null && (Boolean) m.invoke(comm);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
         }
 
         /** What connectLoopOnce() does for the ring once the glasses are up. */
