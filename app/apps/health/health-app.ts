@@ -80,7 +80,7 @@ class HealthLayer implements Layer {
     // Ask for something current rather than showing whatever the last
     // automatic 30-minute pull happened to catch. Returns immediately; the
     // pull takes ~15s and lands via the refresh tick below.
-    requestFreshPull();
+    requestFreshPull("health-open");
     seedFixturesIfNeeded();
     this.reload();
     this.timer = setInterval(() => this.reload(), REFRESH_INTERVAL_MS);

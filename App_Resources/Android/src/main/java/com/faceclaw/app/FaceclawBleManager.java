@@ -384,6 +384,23 @@ public class FaceclawBleManager {
         }
     }
 
+    /**
+     * Whether this manager holds a GATT client for {@code address} right now:
+     * from {@link #connect} until {@link #disconnect} or a DISCONNECTED
+     * callback removes it. It says nothing about the radio, only whether a
+     * write has anything to go to - with no client, {@link #writeFrames}
+     * throws "Not connected" before touching Bluetooth at all.
+     *
+     * <p>Added 2026-09-24 for the "Only when needed" ring link, whose deliberate
+     * drop goes through {@link #disconnect}: that closes the client, a closed
+     * client gets no more callbacks, so no DISCONNECTED ever tells the caller
+     * the link went down. This is how the caller checks instead. Read-only;
+     * no lock needed on the concurrent map.
+     */
+    public boolean hasGattClient(String address) {
+        return address != null && gattClients.containsKey(address);
+    }
+
     private BluetoothGatt requireGatt(String address) {
         BluetoothGatt gatt = gattClients.get(address);
         if (gatt == null) {

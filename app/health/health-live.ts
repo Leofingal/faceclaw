@@ -453,18 +453,27 @@ export function syncLiveRecords(): LiveSyncResult {
 }
 
 /**
+ * What is asking for a pull. It rides into the pull receipt as `trigger`, and
+ * in "Only when needed" it decides whether the ask is taken at all: that mode
+ * connects when Health opens, pulls and drops the link, and refuses the timed
+ * "tick" (Chris, 2026-09-24). The refusal is made in Java, which knows the
+ * mode the live communicator was actually built with.
+ */
+export type RingPullTrigger = "health-open" | "tick";
+
+/**
  * Ask the ring for a fresh pull now, rather than waiting out the automatic
  * 30-minute cycle. Returns immediately; the pull itself takes ~15s on the
  * communicator's worker thread and lands through the next `syncLiveRecords()`.
  *
  * Throttled communicator-side to one a minute — see
- * `requestRingHealthNow()`. Calling it on every open is fine.
+ * `requestRingHealthNowFor()`. Calling it on every open is fine.
  */
-export function requestFreshPull(): void {
+export function requestFreshPull(trigger: RingPullTrigger): void {
   const communicator = activeCommunicator();
   if (!communicator) return;
   try {
-    communicator.requestRingHealthNow();
+    communicator.requestRingHealthNowFor(trigger);
   } catch (error) {
     console.warn("health live: on-demand pull request failed", error);
   }
@@ -513,6 +522,10 @@ export function startLiveHealthSync(): void {
  *
  * This only *requests* a pull. The communicator still applies its own anti-spam
  * floor, so an extra call here can never hammer the ring.
+ *
+ * In "Only when needed" the communicator refuses these outright (2026-09-24):
+ * that mode pulls when Health opens and at no other time. The tick keeps
+ * running for the other modes and for the status lines that ride it.
  */
 let alignedPullSubscribed = false;
 
@@ -522,7 +535,7 @@ export function startAlignedRingPull(): void {
   startAlignedTick();
   onAlignedTick(() => {
     try {
-      requestFreshPull();
+      requestFreshPull("tick");
     } catch (error) {
       console.warn("health live: aligned ring pull failed", error);
     }

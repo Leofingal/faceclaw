@@ -1095,16 +1095,58 @@ public final class RingProtocol {
      */
     public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen,
                                               int pages, int otherPages, boolean newLink) {
+        return sleepPullReceiptLine(requestedWallMs, finishedWallMs, rspSeen, pages, otherPages, newLink, null);
+    }
+
+    /**
+     * As above, plus what asked for the pull ({@link #ringPullTrigger}); a null
+     * trigger leaves the field out, which is the line exactly as it was before
+     * 2026-09-24. The field goes BEFORE {@code link} so a reader keyed on the
+     * line's old tail still matches.
+     */
+    public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen,
+                                              int pages, int otherPages, boolean newLink, String trigger) {
         return "{\"type\":\"pull\",\"req\":\"" + localStamp(requestedWallMs) + "\""
             + ",\"reqMs\":" + requestedWallMs
             + ",\"doneMs\":" + finishedWallMs
             + ",\"rsp\":" + rspSeen
             + ",\"pages\":" + pages
             + ",\"otherPages\":" + otherPages
+            // trigger: what asked for this pull - "health-open", "tick",
+            // "connect", "retry". Added 2026-09-24 so "Only when needed" can be
+            // read off the receipts alone: in that mode every pull should say
+            // health-open (or retry, for an aborted one resumed).
+            + (trigger == null ? "" : ",\"trigger\":\"" + ringPullTrigger(trigger) + "\"")
             // link: "new" = first pull after a handshake (Even's connect-time
             // device REQs); "held" = pull over an already-held link (0daf44f's
             // pings). Added 2026-09-14 so a night's sleep pages can be
             // attributed without logcat.
+            + ",\"link\":\"" + (newLink ? "new" : "held") + "\"}";
+    }
+
+    /**
+     * One line per pull that ABORTED (2026-09-24). Until now an aborted pull
+     * left no receipt at all - the pull line is written at the sleep type, and
+     * an abort at the first write never gets there - which is how "Only when
+     * needed" went 26 hours with every pull dying on its first write and
+     * nothing in {@code files/health/} to say so.
+     *
+     * @param reason "write" (a write failed; {@code at} is the type), "link"
+     *     (the link dropped during the pull), or "silent" (the ring answered
+     *     none of the five)
+     * @param atCommand the health type whose write failed, or -1
+     */
+    public static String pullAbortedReceiptLine(long requestedWallMs, long finishedWallMs, String trigger,
+                                                String reason, int atCommand, int attempted, int answered,
+                                                boolean newLink) {
+        return "{\"type\":\"pullAborted\",\"req\":\"" + localStamp(requestedWallMs) + "\""
+            + ",\"reqMs\":" + requestedWallMs
+            + ",\"doneMs\":" + finishedWallMs
+            + ",\"trigger\":\"" + ringPullTrigger(trigger) + "\""
+            + ",\"reason\":\"" + (reason == null ? "unknown" : reason) + "\""
+            + (atCommand >= 0 ? ",\"atType\":\"" + String.format(Locale.US, "%02x", atCommand & 0xff) + "\"" : "")
+            + ",\"attempted\":" + attempted
+            + ",\"answered\":" + answered
             + ",\"link\":\"" + (newLink ? "new" : "held") + "\"}";
     }
 
@@ -1250,6 +1292,86 @@ public final class RingProtocol {
             return "idle";
         }
         return reconnectAfterMs > 0 && nowMs < reconnectAfterMs ? "backoff" : "dialling";
+    }
+
+    // ------------------------------------------------------------------
+    // "Only when needed" = "when Health opens" (2026-09-24)
+    // ------------------------------------------------------------------
+
+    /** A Health surface opened: the glasses app's start() or the phone tab's attach(). */
+    public static final String RING_PULL_TRIGGER_HEALTH_OPEN = "health-open";
+    /** The wall-clock :01/:31 tick (app/util/aligned-tick.ts). */
+    public static final String RING_PULL_TRIGGER_TICK = "tick";
+    /** connectRing()'s own pull on link-up, with no ask pending. */
+    public static final String RING_PULL_TRIGGER_CONNECT = "connect";
+    /** An aborted pull resumed from its retry budget. */
+    public static final String RING_PULL_TRIGGER_RETRY = "retry";
+    /** A caller that did not say (the old no-argument entry point). */
+    public static final String RING_PULL_TRIGGER_UNSPECIFIED = "unspecified";
+
+    /**
+     * The trigger word as it goes into a receipt: one of the five known words,
+     * or "other". Whitelisted rather than escaped because the value crosses
+     * from TypeScript and is written into JSON by string concatenation.
+     */
+    public static String ringPullTrigger(String raw) {
+        if (raw == null) {
+            return RING_PULL_TRIGGER_UNSPECIFIED;
+        }
+        switch (raw) {
+            case RING_PULL_TRIGGER_HEALTH_OPEN:
+            case RING_PULL_TRIGGER_TICK:
+            case RING_PULL_TRIGGER_CONNECT:
+            case RING_PULL_TRIGGER_RETRY:
+            case RING_PULL_TRIGGER_UNSPECIFIED:
+                return raw;
+            default:
+                return "other";
+        }
+    }
+
+    /**
+     * Whether an ask for a pull is taken at all. Pure so the self-test can pin
+     * it.
+     *
+     * <p>Chris, 2026-09-24: "it should just connect and pull when you open the
+     * health app." So in "Only when needed" the timed ask - the :01/:31 tick -
+     * is refused outright: it neither raises the link nor queues a pull.
+     * Everything else is taken, and <b>{@code onDemand == false} takes every
+     * ask</b>, which is what keeps "Direct" and "Only via glasses" exactly as
+     * they were.
+     */
+    public static boolean ringPullAskAccepted(boolean onDemand, String trigger) {
+        return !onDemand || !RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger));
+    }
+
+    /**
+     * "Only when needed" only: an ask that raised the link's want and ran out
+     * of its {@link #RING_ON_DEMAND_LINK_WAIT_MS} window with no link, so no
+     * pull ran (2026-09-24). The trace a failed Health open leaves.
+     *
+     * @param reason "no-link" (the only one written today)
+     */
+    public static String pullSkippedReceiptLine(long wallMs, String trigger, String reason) {
+        return "{\"type\":\"pullSkipped\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"trigger\":\"" + ringPullTrigger(trigger) + "\""
+            + ",\"reason\":\"" + (reason == null ? "unknown" : reason) + "\"}";
+    }
+
+    /**
+     * "Only when needed" only: a ring link whose flags said up (or
+     * handshaking) while the BLE manager held no GATT client for it, found and
+     * marked down (2026-09-24). With the drop fixed this should never be
+     * written; if it is, something else is taking the client away without a
+     * callback, and the line says where it was caught and how old the link
+     * claimed to be.
+     */
+    public static String ringLinkStaleReceiptLine(long wallMs, String where, long linkAgeMs) {
+        return "{\"type\":\"ringLinkStale\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"where\":\"" + (where == null ? "unknown" : where.replaceAll("[^a-z0-9-]", "")) + "\""
+            + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null") + "}";
     }
 
     /**

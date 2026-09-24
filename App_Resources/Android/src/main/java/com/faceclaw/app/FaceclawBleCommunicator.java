@@ -232,7 +232,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long ringConnectSkipReceiptAtMs = -1L;
     private int ringConnectSkipsSuppressed;
     /**
-     * elapsedRealtime() of the last time {@link #requestRingHealth()} was
+     * elapsedRealtime() of the last time {@link #requestRingHealth(String)} was
      * attempted, or 0 if never. Health data updates hourly at the source
      * (heart rate/HRV/SpO2) or slower, but a ring reconnect can happen far
      * more often than that (BLE drops, Doze, app restarts - this evening's
@@ -249,6 +249,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * pull. Guarded by {@code lock}.
      */
     private boolean ringHealthPullRequested;
+    /**
+     * What asked for the pending pull ({@link RingProtocol#ringPullTrigger}),
+     * for the receipt only - nothing branches on it except the one gate in
+     * {@link #requestRingHealthNowFor}. Guarded by {@code lock}.
+     */
+    private String ringHealthPullRequestTrigger = RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED;
     /**
      * Aborted-pull retries spent since the last pull that COMPLETED its
      * sequence. Guarded by {@code lock}. See
@@ -1497,30 +1503,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     continue;
                 }
 
-                if (shouldAttemptRingConnect()) {
-                    tryConnectRing("retry");
+                if (runRingLinkPass()) {
                     continue;
                 }
-
-                // Page ACKs queued from the GATT callback thread are written
-                // here, on the only thread allowed to block on a GATT write.
-                flushRingOutbound();
-
-                // An on-demand pull asked for from the UI thread runs here for
-                // the same reason: requestRingHealth() blocks on GATT writes and
-                // on its own RSP/DATA waits, which only this thread may do.
-                runRequestedRingHealthPull();
-                // An aborted pull is unfinished business, not a speculative
-                // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
-                // immediately unless a pull actually failed to complete.
-                resumeAbortedRingHealthPull();
-                // "Only when needed" mode's other half: put the ring link back
-                // down once nothing wants it. Runs HERE, on the worker thread,
-                // after the two calls above, so it can never land in the middle
-                // of a pull - both of those block this thread for the whole
-                // pull, and flushRingOutbound() above has already written
-                // whatever ACKs the pull queued.
-                maybeDropOnDemandRingLink();
 
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
@@ -1532,6 +1517,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
         logLine("communicator stop");
+    }
+
+    /**
+     * The worker loop's ring section, once per pass, while the glasses session
+     * is ready. Lifted out of {@link #run()} unchanged in order and content
+     * (2026-09-24) so the ring-link harness
+     * ({@code notes/ring-link-harness/}) drives exactly this sequence instead
+     * of a copy of it that could drift; the one addition is the first line,
+     * which returns at once outside "Only when needed".
+     *
+     * @return true when a ring dial was attempted, in which case the loop
+     *     restarts its pass - exactly the {@code continue} run() always had
+     */
+    private boolean runRingLinkPass() {
+        // "Only when needed" only: flags that say "up" with no GATT client
+        // behind them are corrected before anything below trusts them.
+        reconcileOnDemandRingLink("loop");
+
+        if (shouldAttemptRingConnect()) {
+            tryConnectRing("retry");
+            return true;
+        }
+
+        // Page ACKs queued from the GATT callback thread are written
+        // here, on the only thread allowed to block on a GATT write.
+        flushRingOutbound();
+
+        // An on-demand pull asked for from the UI thread runs here for
+        // the same reason: requestRingHealth() blocks on GATT writes and
+        // on its own RSP/DATA waits, which only this thread may do.
+        runRequestedRingHealthPull();
+        // An aborted pull is unfinished business, not a speculative
+        // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
+        // immediately unless a pull actually failed to complete.
+        resumeAbortedRingHealthPull();
+        // "Only when needed" mode's other half: put the ring link back
+        // down once nothing wants it. Runs HERE, on the worker thread,
+        // after the two calls above, so it can never land in the middle
+        // of a pull - both of those block this thread for the whole
+        // pull, and flushRingOutbound() above has already written
+        // whatever ACKs the pull queued.
+        maybeDropOnDemandRingLink();
+        return false;
     }
 
     @Override public void onNotification(String address, String characteristicUuid, byte[] data) {
@@ -2329,6 +2357,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("ring link on demand: not dialling (" + reason + "), nothing is waiting on ring data");
             return;
         }
+        // "Only when needed" only (2026-09-24): the guard below reads two
+        // flags, and on 09-23 20:10 it turned a wanted dial away as "already
+        // connected" from a link that had been gone for 3.6 h - see
+        // reconcileOnDemandRingLink(). Correct the flags first.
+        reconcileOnDemandRingLink(reason);
         // Guard (2026-09-15). connectRing() on a live ring link re-writes both
         // CCCDs, resets ringSeq/ringNonce, clears the reassembler and the ACK
         // queue, and re-sends the whole handshake. connectLoopOnce() did exactly
@@ -2429,14 +2462,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             sendRingHandshake();
             long now = SystemClock.elapsedRealtime();
             boolean dueForHealthPull;
+            String trigger;
             synchronized (lock) {
                 dueForHealthPull = ringHealthPullDueLocked(now);
                 if (dueForHealthPull) {
                     ringHealthLastRequestedAtMs = now;
                 }
+                // Receipt label only: a pull that runs here while an ask is
+                // pending is the one that answers it (the ask's own run then
+                // meets the 60 s floor and stands down).
+                trigger = ringHealthPullRequested ? ringHealthPullRequestTrigger
+                    : ringHealthAbortedRetries > 0 ? RingProtocol.RING_PULL_TRIGGER_RETRY
+                    : RingProtocol.RING_PULL_TRIGGER_CONNECT;
             }
             if (dueForHealthPull) {
-                runRingHealthPull();
+                runRingHealthPull(trigger);
             } else {
                 logLine("ring health: pull skipped, last one was "
                     + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago");
@@ -2451,7 +2491,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * {@code knowledge/inbox/Even_health_data/}); 30 minutes is comfortably
      * inside that cadence while keeping reconnect churn from turning into
      * repeated pull attempts against the race condition documented on
-     * {@link #requestRingHealth()}. Not tuned against any real constraint
+     * {@link #requestRingHealth(String)}. Not tuned against any real constraint
      * from the ring itself - just a sane default.
      *
      * <p><b>Reduced 30min -> 5min on 2026-09-12, and its JOB CHANGED.</b> The
@@ -2465,7 +2505,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * <p>The cadence now lives where it belongs, on a wall-clock-aligned tick
      * (:01 and :31) in {@code health-live.ts}. What remains here is purely an
      * ANTI-SPAM floor: stop a burst of reconnects turning into a burst of
-     * requests against the race documented on {@link #requestRingHealth()}.
+     * requests against the race documented on {@link #requestRingHealth(String)}.
      * That job needs 5 minutes, not 30.
      */
     private static final long RING_HEALTH_MIN_PULL_INTERVAL_MS = 5L * 60L * 1000L;
@@ -2478,7 +2518,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * zero</b>. The 30-minute figure is conservative because an automatic pull
      * is speculative — nobody is waiting for it, so there is no reason to spend
      * a request. Opening the health app is the opposite: it is an explicit ask,
-     * and the response-driven {@link #requestRingHealth()} now waits for each
+     * and the response-driven {@link #requestRingHealth(String)} now waits for each
      * type's DATA and ACKs its pages before advancing, which is what made the
      * backlog-discard race survivable in the first place. A floor still has to
      * exist, because the discard risk documented on {@code requestRingHealth()}
@@ -2492,7 +2532,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      *
      * <p>The floor exists to stop SPECULATIVE repeat pulls, because a request
      * that loses its race can permanently consume backlog - see
-     * {@link #requestRingHealth()}. Resuming a pull that never got a single
+     * {@link #requestRingHealth(String)}. Resuming a pull that never got a single
      * answer is a different thing: nothing was ever in flight to be lost.
      *
      * <p>Measured 2026-09-12: the 09:33 pull got {@code no RSP} for 0x1, 0x4
@@ -2531,8 +2571,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * no value and every pull carries the discard risk.
      */
     public void requestRingHealthNow() {
+        requestRingHealthNowFor(RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED);
+    }
+
+    /**
+     * {@link #requestRingHealthNow()}, saying what is asking (2026-09-24):
+     * {@code "health-open"} from either Health surface, {@code "tick"} from the
+     * :01/:31 cadence. The word rides into the pull receipt.
+     *
+     * <p>It also decides one thing. "Only when needed" means connect when Health
+     * opens, pull, drop - Chris, 2026-09-24: "it should just connect and pull
+     * when you open the health app" - so in that mode a timed ask is refused
+     * here, before it can raise the link or queue a pull
+     * ({@link RingProtocol#ringPullAskAccepted}). Every other mode takes every
+     * ask, exactly as {@code requestRingHealthNow()} always did. The decision is
+     * made here rather than in TypeScript because this object knows the mode it
+     * was actually built with; the setting can have changed since, and only
+     * takes effect on the next glasses connect.
+     */
+    public void requestRingHealthNowFor(String trigger) {
+        String cleanTrigger = RingProtocol.ringPullTrigger(trigger);
+        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger)) {
+            logLine("ring link on demand: " + cleanTrigger + " pull not taken, only a Health open raises the link");
+            return;
+        }
         synchronized (lock) {
             ringHealthPullRequested = true;
+            ringHealthPullRequestTrigger = cleanTrigger;
             if (ringLinkOnDemand && !ringLinkWantedExplicit) {
                 long now = SystemClock.elapsedRealtime();
                 // Do not spend a dial on an ask the on-demand floor below is
@@ -2573,11 +2638,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     /**
      * Run a pull and account for whether it finished. The ONLY place
-     * {@link #requestRingHealth()} may be called from, so that every path
+     * {@link #requestRingHealth(String)} may be called from, so that every path
      * shares one definition of "aborted".
      */
-    private void runRingHealthPull() {
-        boolean completed = requestRingHealth();
+    private void runRingHealthPull(String trigger) {
+        boolean completed = requestRingHealth(trigger);
         synchronized (lock) {
             if (completed) {
                 ringHealthAbortedRetries = 0;
@@ -2617,13 +2682,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringHealthLastRequestedAtMs = now;
         }
         logLine("ring health: resuming an aborted pull");
-        runRingHealthPull();
+        runRingHealthPull(RingProtocol.RING_PULL_TRIGGER_RETRY);
     }
 
     /** Worker-thread side of {@link #requestRingHealthNow()}. */
     private void runRequestedRingHealthPull() {
         long now = SystemClock.elapsedRealtime();
+        String trigger;
         synchronized (lock) {
+            trigger = ringHealthPullRequestTrigger;
             if (!ringHealthPullRequested) {
                 return;
             }
@@ -2640,6 +2707,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     return;
                 }
                 ringHealthPullRequested = false;
+                if (ringLinkOnDemand && ringLinkWantedExplicit) {
+                    // "Only when needed" only (2026-09-24): this ask raised the
+                    // want and its window ran out with no link - the ring was on
+                    // its charger, out of range, or every dial failed. Without a
+                    // line here a Health open that pulled nothing leaves no trace
+                    // in files/health/, and "Chris did not open Health" reads the
+                    // same as "he did and the ring never answered". Written under
+                    // the lock like clearRingOutboundLocked's receipts; one short
+                    // append, on-demand only, at most once per ask.
+                    appendSleepReceipt(RingProtocol.pullSkippedReceiptLine(
+                        System.currentTimeMillis(), trigger, "no-link"));
+                }
                 ringLinkWantedExplicit = false;
                 logLine("ring health: on-demand pull skipped, ring not ready");
                 return;
@@ -2660,7 +2739,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringHealthLastRequestedAtMs = now;
         }
         logLine("ring health: on-demand pull requested");
-        runRingHealthPull();
+        runRingHealthPull(trigger);
     }
 
     /**
@@ -2702,6 +2781,76 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         logLine("ring link on demand: nothing waiting on ring data, dropping the direct ring link");
         bleManager.disconnect(ringAddress);
+        // THE 2026-09-23 BUG, fixed here. bleManager.disconnect() is
+        // gatt.disconnect() then gatt.close(), and a closed GATT gets no more
+        // callbacks (close() unregisters the client and nulls its callback), so
+        // the DISCONNECTED that onConnectionStateChange() would have turned into
+        // "link down" never arrives. Without this block ringConnected and
+        // ringNotificationsReady stayed true forever after the first drop:
+        // the state read "up" for 26 h, shouldAttemptRingConnect() never dialled
+        // again (it wants !ringNotificationsReady), every later pull ran against
+        // the stale flags and ABORTED on its first write ("Not connected"), and
+        // the 0160 guard turned a glasses-reconnect dial away as "already
+        // connected". Direct never reaches this line - its only deliberate ring
+        // disconnect is full teardown, which resets the flags by hand.
+        synchronized (lock) {
+            markRingLinkDownLocked("on-demand drop");
+        }
+    }
+
+    /**
+     * The link-down bookkeeping {@code onConnectionStateChange(ring, false)}
+     * does, for the "Only when needed" paths where that callback never comes.
+     * Caller holds {@code lock}. Kept as a copy rather than shared with the
+     * callback on purpose: the callback is Direct's path and is left
+     * byte-for-byte as it was. If the callback does arrive anyway (a stack that
+     * delivers it after close()), it repeats this - idempotent apart from
+     * restarting the 2 s reconnect gap.
+     */
+    private void markRingLinkDownLocked(String reason) {
+        ringConnected = false;
+        ringNotificationsReady = false;
+        ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+        ringReassembler.reset();
+        clearRingOutboundLocked(reason);
+    }
+
+    /**
+     * "Only when needed" only: if the flags say the ring link is up (or
+     * handshaking) but the BLE manager holds no GATT client for it, the flags
+     * are wrong - a write with no client throws "Not connected" before it
+     * reaches the radio - so mark the link down instead of trusting them.
+     * Worker thread.
+     *
+     * <p>The drop above no longer produces that state, so this is the second
+     * line: it is what makes "a Health open while a stale state says up" end in
+     * a pull rather than an aborted one or a {@code ringConnectSkipped}, however
+     * the state got there. Each catch writes a {@code ringLinkStale} receipt,
+     * because with the drop fixed it should never fire.
+     *
+     * <p>Not applied in Direct, deliberately: the instruction was to leave
+     * Direct untouched, and in Direct the client and the flags are only ever
+     * separated for the instant between the manager removing a dropped client
+     * and dispatching its DISCONNECTED.
+     *
+     * @return true when a stale state was found and cleared
+     */
+    private boolean reconcileOnDemandRingLink(String where) {
+        if (!ringLinkOnDemand || !hasRingAddress()) {
+            return false;
+        }
+        long linkAgeMs;
+        synchronized (lock) {
+            if (!(ringConnected || ringNotificationsReady) || bleManager.hasGattClient(ringAddress)) {
+                return false;
+            }
+            linkAgeMs = ringLinkAgeMsLocked();
+            markRingLinkDownLocked("stale link state");
+        }
+        logLine("ring link on demand: link state said up but no GATT client is held (" + where
+            + "), marking it down");
+        appendSleepReceipt(RingProtocol.ringLinkStaleReceiptLine(System.currentTimeMillis(), where, linkAgeMs));
+        return true;
     }
 
     /**
@@ -3039,10 +3188,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * called explicitly after each type rather than relying on the main
      * loop's own call to it.
      */
-    private boolean requestRingHealth() {
+    private boolean requestRingHealth(String trigger) {
         int[] commands = RingProtocol.HEALTH_COMMANDS;
         int rspCount = 0;
         boolean evenInterleave;
+        long pullStartedWallMs = System.currentTimeMillis();
         synchronized (lock) {
             evenInterleave = ringPullFollowsHandshake;
             ringPullFollowsHandshake = false;
@@ -3066,6 +3216,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 logLine("ring health: pull ABORTED on write at 0x" + Integer.toHexString(command)
                     + " (" + i + " of " + commands.length + " types attempted, "
                     + rspCount + " answered)");
+                appendSleepReceipt(RingProtocol.pullAbortedReceiptLine(pullStartedWallMs,
+                    System.currentTimeMillis(), trigger, "write", command, i, rspCount, evenInterleave));
                 return false;
             }
 
@@ -3093,7 +3245,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     otherPages = ringOtherPageCounter - otherPagesBefore;
                 }
                 appendSleepReceipt(RingProtocol.sleepPullReceiptLine(
-                    requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages, evenInterleave));
+                    requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages, evenInterleave,
+                    trigger));
             }
 
             // Even's device-channel REQs after each health type (br4l pkts
@@ -3132,6 +3285,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!stillConnected || rspCount == 0) {
             logLine("ring health: pull ABORTED - ran all " + commands.length + " types but "
                 + (stillConnected ? "the ring answered none of them" : "the link dropped"));
+            appendSleepReceipt(RingProtocol.pullAbortedReceiptLine(pullStartedWallMs,
+                System.currentTimeMillis(), trigger, stillConnected ? "silent" : "link", -1,
+                commands.length, rspCount, evenInterleave));
             return false;
         }
         logLine("ring health: requested " + commands.length + " record types, "

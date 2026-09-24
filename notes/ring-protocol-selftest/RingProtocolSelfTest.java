@@ -39,6 +39,7 @@ public final class RingProtocolSelfTest {
         testEvenConnectFramesAgainstCapture();
         testReconnectGuardAndBootReceipts();
         testOnDemandRingLinkGates();
+        testOpenOnlyTriggersAndReceipts();
         testRingBatteryChargeState();
         testRingBatteryReceipts();
         testPageJournal();
@@ -621,6 +622,78 @@ public final class RingProtocolSelfTest {
         expect("in Direct (wanted always true) a down link reads dialling, never idle",
             "dialling".equals(RingProtocol.ringLinkState(true, false, false,
                 RingProtocol.ringLinkWanted(false, false, t, 0L, 0), t, 0L)));
+    }
+
+    /**
+     * "Only when needed" becomes "when Health opens" (2026-09-24): the ask
+     * gate that refuses the timed tick in that mode, the trigger word on the
+     * pull receipt, and the two new receipt lines.
+     *
+     * <p>As before, the control comes first: outside on-demand every ask is
+     * taken, whatever it says, so Direct and "Only via glasses" pull exactly
+     * when they did.
+     */
+    private static void testOpenOnlyTriggersAndReceipts() {
+        section("open-only: ask gate, trigger word, receipts");
+
+        // Control: off means off.
+        String[] asks = {"health-open", "tick", "connect", "retry", "unspecified", null, "", "x\"y"};
+        boolean offTakesAll = true;
+        for (String ask : asks) {
+            offTakesAll &= RingProtocol.ringPullAskAccepted(false, ask);
+        }
+        expect("onDemand=false takes every ask, the tick included", offTakesAll);
+
+        expect("on-demand takes a Health open", RingProtocol.ringPullAskAccepted(true, "health-open"));
+        expect("on-demand REFUSES the :01/:31 tick", !RingProtocol.ringPullAskAccepted(true, "tick"));
+        expect("on-demand takes an unlabelled ask (the old no-argument entry point)",
+            RingProtocol.ringPullAskAccepted(true, null)
+                && RingProtocol.ringPullAskAccepted(true, "unspecified"));
+
+        expect("known trigger words pass through",
+            "health-open".equals(RingProtocol.ringPullTrigger("health-open"))
+                && "tick".equals(RingProtocol.ringPullTrigger("tick"))
+                && "connect".equals(RingProtocol.ringPullTrigger("connect"))
+                && "retry".equals(RingProtocol.ringPullTrigger("retry")));
+        expect("null -> unspecified", "unspecified".equals(RingProtocol.ringPullTrigger(null)));
+        expect("anything else -> other, so no raw TS string reaches the JSON",
+            "other".equals(RingProtocol.ringPullTrigger("x\",\"evil\":\"1"))
+                && "other".equals(RingProtocol.ringPullTrigger("Tick")));
+
+        String pull = RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2, true, "health-open");
+        System.out.println("RECEIPT " + pull);
+        expect("pull line carries the trigger, before link, keeping the old tail",
+            pull.contains("\"otherPages\":2,\"trigger\":\"health-open\",\"link\":\"new\"}")
+                && pull.endsWith(",\"link\":\"new\"}"));
+        expect("a null trigger is the line exactly as it was before",
+            RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2, true, null)
+                .equals(RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2, true))
+                && !RingProtocol.sleepPullReceiptLine(1000L, 2600L, true, 3, 2, true).contains("trigger"));
+
+        String aborted = RingProtocol.pullAbortedReceiptLine(1000L, 1200L, "tick", "write",
+            RingProtocol.CMD_HI_HEART_RATE, 0, 0, false);
+        System.out.println("RECEIPT " + aborted);
+        expect("an aborted pull gets a line: type, trigger, reason, the type it died on",
+            aborted.startsWith("{\"type\":\"pullAborted\"") && aborted.contains("\"trigger\":\"tick\"")
+                && aborted.contains("\"reason\":\"write\"") && aborted.contains("\"atType\":\"01\"")
+                && aborted.contains("\"attempted\":0,\"answered\":0") && aborted.endsWith("\"link\":\"held\"}"));
+        String silent = RingProtocol.pullAbortedReceiptLine(1000L, 1200L, "health-open", "silent", -1, 5, 0, true);
+        expect("a silent-ring abort has no atType", !silent.contains("atType") && silent.contains("\"attempted\":5"));
+
+        String skipped = RingProtocol.pullSkippedReceiptLine(1000L, "health-open", "no-link");
+        System.out.println("RECEIPT " + skipped);
+        expect("a Health open that got no link leaves a pullSkipped line",
+            skipped.startsWith("{\"type\":\"pullSkipped\"") && skipped.contains("\"trigger\":\"health-open\"")
+                && skipped.endsWith("\"reason\":\"no-link\"}"));
+
+        String stale = RingProtocol.ringLinkStaleReceiptLine(1000L, "initial", 13_146_422L);
+        System.out.println("RECEIPT " + stale);
+        expect("stale-link line: type, where, how old the link claimed to be",
+            stale.startsWith("{\"type\":\"ringLinkStale\"") && stale.contains("\"where\":\"initial\"")
+                && stale.endsWith("\"linkAgeMs\":13146422}"));
+        expect("stale-link 'where' is scrubbed to [a-z0-9-]",
+            RingProtocol.ringLinkStaleReceiptLine(1000L, "lo\"op", -1L).contains("\"where\":\"loop\"")
+                && RingProtocol.ringLinkStaleReceiptLine(1000L, "loop", -1L).endsWith("\"linkAgeMs\":null}"));
     }
 
     /**

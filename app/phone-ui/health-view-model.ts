@@ -128,7 +128,7 @@ export class HealthViewModel extends Observable {
     // Live data first, so the purge happens before anything renders and
     // seeding is skipped entirely once real records exist. See health-live.ts.
     syncLiveRecords();
-    requestFreshPull();
+    requestFreshPull("health-open");
     seedFixturesIfNeeded();
     refreshFoldTracking();
     this.displayClassValue = displayClass(foldSnapshot());
