@@ -88,6 +88,10 @@ export const CURATED_APP_IDS: readonly string[] = [
   "exocortex",
   "ghost",
   "microphones",
+  // Captions (2026-09-25): Chris asked for it in the list. Visibility is
+  // stored as per-app overrides, so a curated default reaches phones that
+  // already customised the list too, unless "captions" was hidden by hand.
+  "captions",
   "weather",
 ];
 

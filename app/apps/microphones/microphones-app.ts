@@ -26,7 +26,7 @@ import { RadarLayer } from "./radar-layer";
 import { loadMicConfig, micArrayController, micControlAdvertised, micControlSupported, saveMicConfig } from "./mic-control";
 import { isMicModelReady, micModelState, startMicModelDownload } from "./mic-models";
 import { micChannelLabel, type MicChannelKey, type MicConfig } from "./mic-protocol";
-import { micSession } from "./mic-session";
+import { micSession, micSessionOwners } from "./mic-session";
 import { speakerRegistry, type SpeakerProfile } from "./speakers";
 import { formatRelativeTime } from "../../util/date-util";
 import {
@@ -525,12 +525,13 @@ export function createMicrophonesAppWindow(options: InProcessAppOptions): InProc
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     onClosed: () => {
-      micSession.stop();
+      // Releases the mic unless the Captions app still holds the session.
+      micSessionOwners.release("microphones");
       shell.setTrayIcon(TRAY_ICON_ID, null);
       options.onClosed();
     },
   });
-  micSession.start();
+  micSessionOwners.acquire("microphones");
   shell.setTrayIcon(TRAY_ICON_ID, TRAY_ICON);
   return app;
 }

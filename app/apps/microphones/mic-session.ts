@@ -5,6 +5,7 @@ import { encodeBase64, toJavaBytes } from "../../native/cloud-stt";
 import { toUint8Array } from "../../util/array-util";
 import { voiceControlBridge } from "../../native/voice-control";
 import { voiceActivity } from "../../ui/shell/voice-activity";
+import { createMicSessionOwners } from "./mic-session-owners";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { ASR_MODELS, isAsrModelReady } from "../../native/asr-model";
 import {
@@ -1003,6 +1004,12 @@ class MicSession {
   ): void {
     const text = this.captionEngineKind === "sensevoice" ? compactCjkSpaces(rawText) : rawText;
     if (!text.trim() && !embedding) return;
+    // Wall-clock times from when the line arrived, not engine start + audio
+    // position: the position counts only the audio that arrived, so under
+    // glasses-mic packet loss it ran tens of seconds slow (2026-09-25: a line
+    // decoded at 18:54:36 was logged as 18:54:11).
+    const wallEndMs = Date.now() - Math.max(0, decodeMs || 0);
+    const wallStartMs = wallEndMs - Math.max(0, endMs - startMs);
     const embeddingFloats = embedding ? floatArrayToFloat32(embedding) : null;
     if (this.wearerEnrollmentArmed && embeddingFloats) {
       this.wearerEnrollmentArmed = false;
@@ -1050,7 +1057,7 @@ class MicSession {
       translationState: "none",
       emotion: analyzed?.emotion ?? "",
       sentiment: analyzed?.score ?? 0,
-      atMs: this.engineStartWallMs + startMs,
+      atMs: wallStartMs,
     };
     this.captionLines.push(line);
     if (this.captionLines.length > CAPTION_LINE_LIMIT) {
@@ -1077,8 +1084,8 @@ class MicSession {
           JSON.stringify({
             sessionId: this.sessionRowId,
             speakerId: match?.profile.id,
-            startedAt: this.engineStartWallMs + startMs,
-            endedAt: this.engineStartWallMs + endMs,
+            startedAt: wallStartMs,
+            endedAt: wallEndMs,
             audioOffsetMs: startMs,
             text: line.text,
             sentiment: line.sentiment,
@@ -1363,3 +1370,6 @@ function captionModelDir(id: "moonshine" | "sensevoice"): string {
 }
 
 export const micSession = new MicSession();
+
+/** Shared by the Microphones and Captions windows; see mic-session-owners.ts. */
+export const micSessionOwners = createMicSessionOwners(micSession);

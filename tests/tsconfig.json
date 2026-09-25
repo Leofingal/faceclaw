@@ -29,6 +29,7 @@
     "../app/apps/microphones/radar-dots.ts",
     "../app/apps/microphones/name-guess.ts",
     "../app/apps/microphones/caption-lang.ts",
+    "../app/apps/microphones/mic-session-owners.ts",
     "../app/apps/evenhub/containers.ts",
     "../app/phone-ui/transcript-turns.ts",
     "../app/phone-ui/markdown-render.ts",
