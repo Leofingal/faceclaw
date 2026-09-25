@@ -1310,8 +1310,15 @@ public final class RingProtocol {
     public static final String RING_PULL_TRIGGER_UNSPECIFIED = "unspecified";
     /** The glasses came off their charger: the morning pull (2026-09-24 revision). */
     public static final String RING_PULL_TRIGGER_CHARGER_OFF = "charger-off";
-    /** pullSkipped reason: a timed ask refused because the glasses are charging. */
+    /** pullSkipped reason: a timed ask refused because the glasses are charging (2026-09-24; unused since 09-25). */
     public static final String RING_PULL_SKIP_GLASSES_CHARGING = "glasses-charging";
+    /**
+     * The glasses went back on the face - a spontaneous wear ON_HEAD after being
+     * off it (2026-09-25; replaced the charger-off pull as the morning pull).
+     */
+    public static final String RING_PULL_TRIGGER_ON_HEAD = "on-head";
+    /** pullSkipped reason: a timed ask refused because the glasses are off the face (2026-09-25). */
+    public static final String RING_PULL_SKIP_OFF_FACE = "off-face";
 
     /**
      * The trigger word as it goes into a receipt: one of the six known words,
@@ -1329,6 +1336,7 @@ public final class RingProtocol {
             case RING_PULL_TRIGGER_RETRY:
             case RING_PULL_TRIGGER_UNSPECIFIED:
             case RING_PULL_TRIGGER_CHARGER_OFF:
+            case RING_PULL_TRIGGER_ON_HEAD:
                 return raw;
             default:
                 return "other";
@@ -1344,12 +1352,17 @@ public final class RingProtocol {
      * charger standing in for "asleep". So in "Only when needed" the timed
      * ask (the :01/:31 tick) is refused while the glasses are on their charger,
      * and taken otherwise. Every non-timed ask is taken, charging or not: a
-     * Health open is an explicit request and beats the rule. <b>{@code onDemand
+     * Health open is an explicit request and beats the rule.
+     *
+     * <p>Revision, 2026-09-25: the pause is "off the face", not "charging"
+     * (Chris: timed pulls only while the glasses are worn). The caller passes
+     * whichever condition pauses timed pulls as {@code timedPaused}; the gate
+     * itself is unchanged. <b>{@code onDemand
      * == false} takes every ask</b>, which is what keeps "Direct" and "Only via
      * glasses" exactly as they were.
      */
-    public static boolean ringPullAskAccepted(boolean onDemand, String trigger, boolean glassesCharging) {
-        return !onDemand || !glassesCharging || !RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger));
+    public static boolean ringPullAskAccepted(boolean onDemand, String trigger, boolean timedPaused) {
+        return !onDemand || !timedPaused || !RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger));
     }
 
     /**
@@ -1361,7 +1374,7 @@ public final class RingProtocol {
      * because the glasses are charging ({@link #RING_PULL_SKIP_GLASSES_CHARGING}),
      * so a night on the charger reads as a pause, not a silence.
      *
-     * @param reason "no-link" or "glasses-charging"
+     * @param reason "no-link", "off-face" (or, before 2026-09-25, "glasses-charging")
      */
     public static String pullSkippedReceiptLine(long wallMs, String trigger, String reason) {
         return "{\"type\":\"pullSkipped\",\"at\":\"" + localStamp(wallMs) + "\""
@@ -1501,6 +1514,78 @@ public final class RingProtocol {
             + ",\"payloadHex\":\"" + hex(frame.payload) + "\""
             + ",\"link\":\"" + linkLabel(linkAgeMs) + "\""
             + ",\"linkAgeMs\":" + (linkAgeMs >= 0 ? Long.toString(linkAgeMs) : "null") + "}";
+    }
+
+    // ------------------------------------------------------------------
+    // Glasses-state receipt (2026-09-25): files/health/glasses-state.jsonl
+    // ------------------------------------------------------------------
+
+    /**
+     * One glasses-state line: written when a battery answer or a wear frame
+     * changes the level, the charge flag, the wear state, the in-case latch
+     * or on-face. The glasses report ONE battery level (settings field 12),
+     * not one per arm, so there is one {@code level}. {@code why} says what
+     * moved the latch or on-face, or is null.
+     */
+    public static String glassesStateReceiptLine(long wallMs, String cause, int level, int charging, int wear,
+            String wearSource, String wearArm, int inCase, boolean onFace, String why) {
+        return "{\"type\":\"glassesState\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"cause\":\"" + jsonSafe(cause) + "\""
+            + ",\"level\":" + (level >= 0 ? Integer.toString(level) : "null")
+            + ",\"charging\":" + (charging >= 0 ? Integer.toString(charging) : "null")
+            + ",\"wear\":\"" + (wear == 1 ? "on" : wear == 0 ? "off" : "unknown") + "\""
+            + ",\"wearSrc\":\"" + jsonSafe(wearSource) + "\""
+            + ",\"wearArm\":\"" + jsonSafe(wearArm) + "\""
+            + ",\"inCase\":" + inCase
+            + ",\"onFace\":" + onFace
+            + ",\"why\":" + (why == null ? "null" : "\"" + jsonSafe(why) + "\"") + "}";
+    }
+
+    /**
+     * One raw onboarding frame (sid 0x10, where wear status lives), decoded or
+     * not: {@code decoded} is 1/0, or -1 when parseWearState did not take it.
+     * {@code query} says it landed inside the answer window of our own wear
+     * query. Exists because no OFF_HEAD had ever been seen on the phone.
+     */
+    public static String wearFrameReceiptLine(long wallMs, String arm, int decoded, boolean query, String hex) {
+        return "{\"type\":\"wearFrame\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"arm\":\"" + jsonSafe(arm) + "\""
+            + ",\"decoded\":" + decoded
+            + ",\"query\":" + query
+            + ",\"hex\":\"" + jsonSafe(hex) + "\"}";
+    }
+
+    /** Our own short labels only; anything outside plain printable ASCII, or a quote or backslash, becomes '?'. */
+    static String jsonSafe(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            out.append(c >= 0x20 && c < 0x7f && c != '"' && c != '\\' ? c : '?');
+        }
+        return out.toString();
+    }
+
+    /** A top-level integer field from a flat JSON object we wrote ourselves, or {@code fallback}. */
+    public static long jsonLongField(String json, String field, long fallback) {
+        if (json == null) {
+            return fallback;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("\"" + java.util.regex.Pattern.quote(field) + "\"\\s*:\\s*(-?[0-9]+)")
+            .matcher(json);
+        if (!m.find()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(m.group(1));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /** "2026-09-14T09:31:02.123-0400", in the device's zone. */

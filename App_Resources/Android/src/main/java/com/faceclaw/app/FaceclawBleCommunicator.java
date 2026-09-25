@@ -156,6 +156,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /** Hard stop on the resume receipt file. A line is ~350 bytes. */
     private static final long RESUME_RECEIPTS_MAX_BYTES = 2L * 1024L * 1024L;
     /**
+     * Glasses-state receipt (2026-09-25): one line per battery answer or wear
+     * frame that changes the level, the charge flag, the wear state, the
+     * in-case latch or on-face, plus every raw onboarding (wear) frame, so a
+     * night can be read from the box (the uploader mirrors files/health/).
+     */
+    private static final String GLASSES_STATE_RECEIPTS_FILE = "glasses-state.jsonl";
+    /** Hard stop on the glasses-state receipt. A line is ~200 bytes; a day is a few hundred. */
+    private static final long GLASSES_STATE_RECEIPTS_MAX_BYTES = 4L * 1024L * 1024L;
+    /** Raw wear frames written per communicator, in case some firmware floods them. */
+    private static final int GLASSES_WEAR_FRAMES_MAX = 500;
+    /** The in-case latch, persisted so an app restart in the case stays silent. */
+    private static final String GLASSES_IN_CASE_FILE = "glasses-in-case.json";
+    /** Safety valve: an in-case latch open this long closes itself (Chris, 2026-09-25: 14 h). */
+    static final long GLASSES_IN_CASE_MAX_MS = 14L * 60L * 60L * 1000L;
+    /** A wear frame this soon after our own wear query is its (cached) answer. */
+    static final long WEAR_QUERY_ANSWER_WINDOW_MS = 10_000L;
+    /**
      * The write-ahead page journal (2026-09-16). Every page is in it, fsynced,
      * before its ACK is written; the JS store ingests from it. Lazily bound,
      * worker thread only. See {@link RingPageJournal}.
@@ -256,28 +273,80 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     private String ringHealthPullRequestTrigger = RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED;
     /**
-     * The glasses' charge state as their own battery answers last reported it -
-     * 1 on the charger, 0 off it, -1 not heard yet. It is the reading behind the
-     * "charging" phase, but deliberately NOT {@code chargingMode}: that one is
-     * reset to false by every glasses link loss and transport rebuild, so after
-     * a reconnect in the case the phase reads "connected" until the first
-     * battery poll of the new session. This one is changed only by a battery
-     * answer, so a reconnect in the case neither lets a tick through nor fakes
-     * a morning.
-     *
-     * <p>Kept in every ring mode since 2026-09-24 (late): Ghost's phone-side
-     * speech reads it through {@link #glassesChargeLatch()} and stays silent
-     * while it is 1 - Chris: "silent mode should go on any time the glasses are
-     * charging! That is a better indicator of bedtime." Only "Only when needed"
-     * acts on it for the ring (see {@link #noteGlassesChargeReadingLocked}).
-     * Written under {@code lock}; volatile so the JS thread can read it without
-     * taking the lock.
+     * The glasses' charge flag exactly as their last battery answer reported
+     * it - 1 charging, 0 not, -1 not heard yet. Changed only by a battery
+     * answer (never by a link loss, unlike {@code chargingMode}). Since
+     * 2026-09-25 nothing decides on it directly: it feeds the in-case latch
+     * below and the glasses-state receipt. The flag alone is not "in the case":
+     * on 2026-09-24/25 it read 0 at 00:38 with the glasses untouched in their
+     * case (most likely a full battery), which ended the ring's charging pause.
+     * Guarded by {@code lock}.
      */
     private volatile int glassesChargingLatched = -1;
     /**
+     * "In the case" as an event sequence (Chris, 2026-09-25): a battery answer
+     * saying charging OPENS it; a real removal CLOSES it - a spontaneous wear
+     * ON_HEAD, or a not-charging answer together with a touch on a temple
+     * touchpad; a not-charging answer alone does NOT. Open longer than
+     * {@link #GLASSES_IN_CASE_MAX_MS} closes it with a logged reason. 1 open,
+     * 0 closed, -1 never set by this communicator (and nothing restored).
+     *
+     * <p>Read by Ghost's phone-side speech (silent while 1) through
+     * {@link #glassesInCaseLatch()}. Persisted to {@link #GLASSES_IN_CASE_FILE}
+     * so an app restart in the case stays silent. Written under {@code lock};
+     * volatile so the JS thread can read it without the lock.
+     */
+    private volatile int glassesInCase = -1;
+    /** elapsedRealtime when {@link #glassesInCase} last opened. Volatile for the lock-free getter. */
+    private volatile long glassesInCaseSinceMs;
+    /** Wall clock of the same moment, for the persisted copy and the receipt. Guarded by {@code lock}. */
+    private long glassesInCaseSinceWallMs;
+    /**
+     * A temple touchpad touch (glasses-sourced click/scroll/double-click) seen
+     * since the last battery answer that said charging. Half of the second way
+     * the latch closes. Guarded by {@code lock}.
+     */
+    private boolean glassesTempleTouchSinceCharging;
+    /**
+     * "On the face" for the ring's timed pulls (Chris, 2026-09-25: the RING
+     * gates on wear, not on the case): true only after a wear ON_HEAD; false at
+     * start (unknown counts as off), on OFF_HEAD, on a battery answer saying
+     * charging, and on a glasses link loss. See {@link #noteWearReadingLocked}.
+     * Kept in every mode; only "Only when needed" acts on it. Guarded by
+     * {@code lock}.
+     */
+    private boolean glassesOnFace;
+    /**
+     * The last wear status any glasses frame decoded to (1 on head, 0 off,
+     * -1 none yet), NOT deduplicated the way {@code wearState} is: a cached
+     * answer to our own query after a reconnect must still be seen here.
+     * Guarded by {@code lock}.
+     */
+    private int glassesWearSeen = -1;
+    /** Where {@link #glassesWearSeen} came from: "event", "query" or "" before any. Guarded by {@code lock}. */
+    private String glassesWearSource = "";
+    /** Which arm sent {@link #glassesWearSeen}: "R", "L", or "" before any. Guarded by {@code lock}. */
+    private String glassesWearArm = "";
+    /** The level in the last battery answer (the glasses report one number, not one per arm). Guarded by {@code lock}. */
+    private int glassesStateLevel = -1;
+    /**
+     * elapsedRealtime when we last asked CFW for its cached wear state
+     * ({@link #enableWearDetectionAndRequestState}). A wear frame inside
+     * {@link #WEAR_QUERY_ANSWER_WINDOW_MS} of it is treated as that answer (a
+     * cached state), not as the glasses being put on. Guarded by {@code lock}.
+     */
+    private long wearQuerySentAtMs;
+    /** Why the latch / on-face last changed, for the next receipt line. Guarded by {@code lock}. */
+    private String glassesStateWhy;
+    /** Snapshot of the last glasses-state receipt line, so only changes are written. Guarded by {@code lock}. */
+    private String glassesStateLastKey = "";
+    /** Raw onboarding (wear) frames written to the receipt by this communicator. Guarded by {@code lock}. */
+    private int glassesWearFramesLogged;
+    /**
      * "Only when needed" only: a pull to ask for on the next ring pass once the
-     * glasses session is ready - set when a battery answer says the glasses
-     * came off the charger (the morning pull). Guarded by {@code lock}.
+     * glasses session is ready - set when a spontaneous ON_HEAD puts the
+     * glasses back on the face (2026-09-25; it replaced the charger-off pull).
+     * Guarded by {@code lock}.
      */
     private String ringPullWhenSessionReady;
     /**
@@ -500,6 +569,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         phoneLockFilter.addAction(Intent.ACTION_USER_PRESENT);
         appContext.registerReceiver(phoneLockReceiver, phoneLockFilter);
         phoneLockReceiverRegistered = true;
+        synchronized (lock) {
+            restoreGlassesInCaseLocked();
+        }
     }
 
 
@@ -806,6 +878,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             pendingMessages.addFirst(queryLeft);
             pendingMessages.addFirst(queryRight);
             pendingMessages.addFirst(enable);
+            // Queued first, so the answer lands within seconds; a wear frame
+            // inside the window is this cached state, not a put-on (see
+            // noteWearReadingLocked).
+            wearQuerySentAtMs = SystemClock.elapsedRealtime();
             logLine("queue wear detection enable + current-state query");
         }
         interruptibleSleep.interrupt();
@@ -1513,6 +1589,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     break;
                 }
                 emitPhoneLockStateIfChanged(false);
+                // The in-case latch's 14 h valve, checked every pass whether
+                // or not the glasses session is up.
+                synchronized (lock) {
+                    expireGlassesInCaseLocked(SystemClock.elapsedRealtime());
+                }
                 if (!sessionReady) {
                     if (reconnectHalted) {
                         interruptibleSleep.sleep(ConnectionOptions.IDLE_SLEEP_MS);
@@ -1559,8 +1640,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // "Only when needed" only: flags that say "up" with no GATT client
         // behind them are corrected before anything below trusts them.
         reconcileOnDemandRingLink("loop");
-        // "Only when needed" only: the morning pull armed when the glasses came
-        // off the charger. Never set in Direct or "Only via glasses".
+        // "Only when needed" only: the pull armed when a spontaneous ON_HEAD
+        // put the glasses back on the face. Never set in Direct or "Only via
+        // glasses".
         runArmedRingPull();
 
         if (shouldAttemptRingConnect()) {
@@ -1619,6 +1701,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (decodedWearState >= 0 && decodedWearState != wearState) {
                 wearState = decodedWearState;
                 emitWearState = true;
+            }
+            if (frame.ok && frame.sid == BleProtocol.SID_ONBOARDING) {
+                // Every onboarding frame raw, decoded or not (2026-09-25): an
+                // OFF_HEAD had never been seen on the phone, and one 20-byte
+                // frame 3 s before the 09:10 ON_HEAD produced no log at all.
+                noteWearFrameLocked(address, data, decodedWearState);
+            }
+            if (decodedWearState >= 0) {
+                noteWearReadingLocked(decodedWearState, armOf(address), lastIncomingAtMs);
             }
             boolean faceclawWakeNotification = false;
             if (shutdownRequested
@@ -1706,6 +1797,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         && event.eventType == BleProtocol.EVENT_IMU_DATA_REPORT;
                     if (!pureImuSample) {
                         lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    }
+                    if (isTempleTouch(event)) {
+                        noteTempleTouchLocked(event, lastIncomingAtMs);
                     }
                     if ("list-click".equals(event.kind) || "text-click".equals(event.kind)) {
                         // Container-routed touchpad input reached us, so the
@@ -2192,6 +2286,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
+                noteGlassesLinkLostLocked("glasses link lost");
                 if (!reconnectHalted) {
                     reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
                 }
@@ -2605,30 +2700,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /**
      * {@link #requestRingHealthNow()}, saying what is asking (2026-09-24):
      * {@code "health-open"} from either Health surface, {@code "tick"} from the
-     * :01/:31 cadence, {@code "charger-off"} for the morning pull. The word rides
-     * into the pull receipt.
+     * :01/:31 cadence, {@code "on-head"} for the pull when the glasses go back
+     * on the face. The word rides into the pull receipt.
      *
      * <p>It also decides one thing. In "Only when needed" a timed ask is refused
-     * while the glasses are on their charger - Chris, 2026-09-24: "if the glasses
-     * are charging - no pulls", the charger standing in for "asleep" - and the
+     * while the glasses are off the face - Chris, 2026-09-25: the ring gates on
+     * WEAR, not on the charger (case, desk, bag: no timed pulls) - and the
      * refusal leaves a {@code pullSkipped} receipt so a night shows the pause
      * rather than silence ({@link RingProtocol#ringPullAskAccepted}). A Health
      * open is always taken: an explicit ask beats the rule. Every other mode
      * takes every ask, exactly as {@code requestRingHealthNow()} always did. The
      * decision is made here rather than in TypeScript because this object knows
-     * the mode it was actually built with, and holds the glasses' own charge
+     * the mode it was actually built with, and holds the glasses' own wear
      * reading.
      */
     public void requestRingHealthNowFor(String trigger) {
         String cleanTrigger = RingProtocol.ringPullTrigger(trigger);
-        boolean glassesCharging;
+        boolean offFace;
         synchronized (lock) {
-            glassesCharging = glassesChargingLatched == 1;
+            offFace = !glassesOnFace;
         }
-        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger, glassesCharging)) {
-            logLine("ring link on demand: " + cleanTrigger + " pull not taken, the glasses are charging");
+        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger, offFace)) {
+            logLine("ring link on demand: " + cleanTrigger + " pull not taken, the glasses are off the face");
             appendSleepReceipt(RingProtocol.pullSkippedReceiptLine(
-                System.currentTimeMillis(), cleanTrigger, RingProtocol.RING_PULL_SKIP_GLASSES_CHARGING));
+                System.currentTimeMillis(), cleanTrigger, RingProtocol.RING_PULL_SKIP_OFF_FACE));
             return;
         }
         synchronized (lock) {
@@ -2693,13 +2788,34 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * The glasses' latched charge reading: 1 on the charger, 0 off it, -1 not
-     * heard from this communicator yet. Read-only, lock-free. Ghost's phone-side
-     * speech mutes its automatic lines while this is 1 (2026-09-24); a glasses
-     * reconnect in the case does not change it, only a battery answer does.
+     * The glasses' last reported charge flag: 1 charging, 0 not, -1 not heard
+     * from this communicator yet. Read-only, lock-free. Diagnostics only since
+     * 2026-09-25: the flag alone is not "in the case" (it reads 0 in the case
+     * at a full battery); Ghost's speech reads {@link #glassesInCaseLatch()}.
      */
     public int glassesChargeLatch() {
         return glassesChargingLatched;
+    }
+
+    /**
+     * The in-case latch as Ghost's phone-side speech should see it: 1 in the
+     * case (automatic speech muted), 0 out of it, -1 never known. Read-only
+     * and lock-free; an open latch past {@link #GLASSES_IN_CASE_MAX_MS} reads 0
+     * here at once, and the worker closes and receipts it on its next pass.
+     */
+    public int glassesInCaseLatch() {
+        int latch = glassesInCase;
+        if (latch == 1 && SystemClock.elapsedRealtime() - glassesInCaseSinceMs > GLASSES_IN_CASE_MAX_MS) {
+            return 0;
+        }
+        return latch;
+    }
+
+    /** Whether the ring's timed pulls see the glasses on the face. Read-only. */
+    public boolean glassesOnFace() {
+        synchronized (lock) {
+            return glassesOnFace;
+        }
     }
 
     /**
@@ -4746,7 +4862,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * reconnect loop rebuild the session, layout, and first frame.
      */
     private void updateChargingModeLocked(boolean charging, int battery) {
-        noteGlassesChargeReadingLocked(charging);
+        noteGlassesChargeReadingLocked(charging, battery);
         if (charging == chargingMode) {
             if (chargingMode) {
                 setStateDisplay("charging", chargingStatusText(battery));
@@ -4770,30 +4886,269 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Every battery answer lands here before the phase logic, so the latch
-     * follows the glasses' own reading and nothing else. The latch is kept in
-     * every mode (Ghost's speech reads it); the rest is "Only when needed"
-     * only (2026-09-24 revision): on-the-charger to off-the-charger arms one
-     * pull for when the session is back, because Java tears the transport down
-     * on that same transition and the ring logic only runs with the glasses
-     * session up. Caller holds {@code lock}.
+     * Every battery answer lands here before the phase logic (2026-09-25).
+     * All modes; nothing here touches the ring link directly.
+     *
+     * <ul>
+     * <li>Charging: opens the in-case latch, and takes the glasses off the face
+     *     for the ring (a charging answer means they are in the case).</li>
+     * <li>Not charging: changes neither, UNLESS a temple touch was seen since
+     *     the last charging answer - then the latch closes. A not-charging
+     *     answer alone is exactly what ended the 2026-09-24 night's pause at
+     *     00:38 with the glasses untouched in their case.</li>
+     * </ul>
+     * Then one glasses-state receipt line if anything changed. Caller holds
+     * {@code lock}.
      */
-    private void noteGlassesChargeReadingLocked(boolean charging) {
-        int was = glassesChargingLatched;
+    private void noteGlassesChargeReadingLocked(boolean charging, int battery) {
+        long now = SystemClock.elapsedRealtime();
+        expireGlassesInCaseLocked(now);
         glassesChargingLatched = charging ? 1 : 0;
-        if (!ringLinkOnDemand) {
+        if (battery >= 0) {
+            glassesStateLevel = battery;
+        }
+        if (charging) {
+            glassesTempleTouchSinceCharging = false;
+            if (glassesInCase != 1) {
+                setGlassesInCaseLocked(true, "charging", now);
+            }
+            if (glassesOnFace) {
+                setGlassesOnFaceLocked(false, "charging");
+            }
+        } else if (glassesInCase == 1 && glassesTempleTouchSinceCharging) {
+            setGlassesInCaseLocked(false, "not-charging+temple-touch", now);
+        }
+        writeGlassesStateIfChangedLocked("battery");
+    }
+
+    /**
+     * One decoded wear frame (2026-09-25), any arm, NOT deduplicated. Caller
+     * holds {@code lock}.
+     *
+     * <p>ON_HEAD that the glasses sent on their own (not inside
+     * {@link #WEAR_QUERY_ANSWER_WINDOW_MS} of our query) is the removal signal
+     * Chris named: it closes the in-case latch and puts the glasses on the
+     * face, and in "Only when needed" arms one ring pull for the next pass
+     * (this replaced the charger-off pull). The measured morning of 2026-09-25:
+     * ON_HEAD at 09:10:03, the charge flag cleared 20 s later.
+     *
+     * <p>ON_HEAD that answers our own query is only the firmware's cached
+     * state after a (re)connect: it restores on-face with no pull, and only
+     * while the latch is not open - inside the case a stale cached ON_HEAD
+     * must not start the night's pulls or unmute Ghost.
+     *
+     * <p>OFF_HEAD, either way, takes the glasses off the face. It does not
+     * touch the latch.
+     */
+    private void noteWearReadingLocked(int wear, String arm, long now) {
+        expireGlassesInCaseLocked(now);
+        boolean queryAnswer = wearQuerySentAtMs > 0 && now - wearQuerySentAtMs <= WEAR_QUERY_ANSWER_WINDOW_MS;
+        glassesWearSeen = wear;
+        glassesWearSource = queryAnswer ? "query" : "event";
+        glassesWearArm = arm;
+        if (wear == 1) {
+            if (queryAnswer) {
+                if (!glassesOnFace && glassesInCase != 1) {
+                    setGlassesOnFaceLocked(true, "on-head (query answer)");
+                }
+            } else {
+                if (glassesInCase == 1) {
+                    setGlassesInCaseLocked(false, "on-head", now);
+                }
+                if (!glassesOnFace) {
+                    setGlassesOnFaceLocked(true, "on-head");
+                    if (ringLinkOnDemand) {
+                        ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_ON_HEAD;
+                        logLine("ring link on demand: glasses on the face, one pull on the next ring pass");
+                    }
+                }
+            }
+        } else if (glassesOnFace) {
+            setGlassesOnFaceLocked(false, queryAnswer ? "off-head (query answer)" : "off-head");
+        }
+        writeGlassesStateIfChangedLocked("wear");
+    }
+
+    /**
+     * A touch on a temple touchpad: a glasses-sourced click, scroll or
+     * double-click sys-event (source R or L, never the ring, never a system
+     * exit, never an IMU sample). Pure.
+     */
+    static boolean isTempleTouch(G2Event event) {
+        if (event == null || !"sys-event".equals(event.kind)) {
+            return false;
+        }
+        boolean fromTemple = event.eventSource == BleProtocol.EVENT_SOURCE_GLASSES_R
+            || event.eventSource == BleProtocol.EVENT_SOURCE_GLASSES_L;
+        boolean touch = event.eventType == BleProtocol.EVENT_CLICK
+            || event.eventType == BleProtocol.EVENT_SCROLL_TOP
+            || event.eventType == BleProtocol.EVENT_SCROLL_BOTTOM
+            || event.eventType == BleProtocol.EVENT_DOUBLE_CLICK;
+        return fromTemple && touch;
+    }
+
+    /**
+     * The second way the latch closes: a temple touch while the latest battery
+     * answer says not charging (either order; the touch is remembered until
+     * the next charging answer). Someone's hand on the glasses and no charge
+     * current together read as "taken out", where either alone does not.
+     * Caller holds {@code lock}.
+     */
+    private void noteTempleTouchLocked(G2Event event, long now) {
+        if (glassesInCase != 1) {
             return;
         }
-        if (was == 1 && !charging) {
-            ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_CHARGER_OFF;
-            logLine("ring link on demand: glasses off the charger, one pull once the session is back");
-        } else if (was != 1 && charging) {
-            logLine("ring link on demand: glasses on the charger, timed pulls paused");
+        expireGlassesInCaseLocked(now);
+        if (glassesInCase != 1) {
+            return;
+        }
+        glassesTempleTouchSinceCharging = true;
+        if (glassesChargingLatched == 0) {
+            setGlassesInCaseLocked(false, "temple-touch+not-charging", now);
+            writeGlassesStateIfChangedLocked("touch");
         }
     }
 
     /**
-     * Ask for the pull {@link #noteGlassesChargeReadingLocked} armed, if any.
+     * A real glasses link loss (the GATT callback; our own teardowns close the
+     * client and get none). With no ON_HEAD since, the ring treats the glasses
+     * as off the face - out of range means not being worn, and a reconnect
+     * restores on-face only through the wear query's answer. Caller holds
+     * {@code lock}.
+     */
+    private void noteGlassesLinkLostLocked(String why) {
+        if (glassesOnFace) {
+            setGlassesOnFaceLocked(false, why);
+            writeGlassesStateIfChangedLocked("link");
+        }
+    }
+
+    /** Safety valve: an in-case latch open past {@link #GLASSES_IN_CASE_MAX_MS} closes. Caller holds {@code lock}. */
+    private void expireGlassesInCaseLocked(long now) {
+        if (glassesInCase == 1 && now - glassesInCaseSinceMs > GLASSES_IN_CASE_MAX_MS) {
+            long openMs = now - glassesInCaseSinceMs;
+            setGlassesInCaseLocked(false, "open " + (openMs / 60_000L) + " min, over the 14 h limit", now);
+            writeGlassesStateIfChangedLocked("valve");
+        }
+    }
+
+    private void setGlassesInCaseLocked(boolean open, String why, long now) {
+        glassesInCase = open ? 1 : 0;
+        if (open) {
+            glassesInCaseSinceMs = now;
+            glassesInCaseSinceWallMs = System.currentTimeMillis();
+        }
+        appendGlassesStateWhyLocked((open ? "in-case opened: " : "in-case closed: ") + why);
+        logLine("glasses in-case latch " + (open ? "OPEN" : "closed") + " (" + why + ")");
+        persistGlassesInCaseLocked();
+    }
+
+    private void setGlassesOnFaceLocked(boolean onFace, String why) {
+        glassesOnFace = onFace;
+        appendGlassesStateWhyLocked((onFace ? "on-face: " : "off-face: ") + why);
+        logLine("glasses " + (onFace ? "on the face" : "off the face") + " (" + why + ")"
+            + (ringLinkOnDemand ? (onFace ? ", timed ring pulls on" : ", timed ring pulls paused") : ""));
+    }
+
+    private void appendGlassesStateWhyLocked(String why) {
+        glassesStateWhy = glassesStateWhy == null ? why : glassesStateWhy + "; " + why;
+    }
+
+    /**
+     * One glasses-state receipt line if the level, the charge flag, the wear
+     * state, the latch or on-face differ from the last line written. Caller
+     * holds {@code lock}; a small append, at most every 30 s from battery polls.
+     */
+    private void writeGlassesStateIfChangedLocked(String cause) {
+        String key = glassesStateLevel + "|" + glassesChargingLatched + "|" + glassesWearSeen
+            + "|" + glassesInCase + "|" + glassesOnFace;
+        if (key.equals(glassesStateLastKey)) {
+            glassesStateWhy = null;
+            return;
+        }
+        glassesStateLastKey = key;
+        String line = RingProtocol.glassesStateReceiptLine(System.currentTimeMillis(), cause,
+            glassesStateLevel, glassesChargingLatched, glassesWearSeen, glassesWearSource, glassesWearArm,
+            glassesInCase, glassesOnFace, glassesStateWhy);
+        glassesStateWhy = null;
+        appendHealthReceipt(GLASSES_STATE_RECEIPTS_FILE, GLASSES_STATE_RECEIPTS_MAX_BYTES, "glasses state", line);
+    }
+
+    /** Every onboarding frame, raw, capped per communicator. Caller holds {@code lock}. */
+    private void noteWearFrameLocked(String address, byte[] data, int decoded) {
+        if (glassesWearFramesLogged >= GLASSES_WEAR_FRAMES_MAX) {
+            return;
+        }
+        glassesWearFramesLogged++;
+        long now = SystemClock.elapsedRealtime();
+        boolean queryAnswer = wearQuerySentAtMs > 0 && now - wearQuerySentAtMs <= WEAR_QUERY_ANSWER_WINDOW_MS;
+        appendHealthReceipt(GLASSES_STATE_RECEIPTS_FILE, GLASSES_STATE_RECEIPTS_MAX_BYTES, "glasses state",
+            RingProtocol.wearFrameReceiptLine(System.currentTimeMillis(), armOf(address), decoded, queryAnswer,
+                RingProtocol.hex(data)));
+    }
+
+    private String armOf(String address) {
+        if (address == null) return "?";
+        return address.equalsIgnoreCase(rightAddress) ? "R" : address.equalsIgnoreCase(leftAddress) ? "L" : "?";
+    }
+
+    /** Write the latch to {@link #GLASSES_IN_CASE_FILE}. Never throws. Caller holds {@code lock}. */
+    private void persistGlassesInCaseLocked() {
+        try {
+            java.io.File dir = new java.io.File(appContext.getFilesDir(), "health");
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return;
+            }
+            java.io.File tmp = new java.io.File(dir, GLASSES_IN_CASE_FILE + ".tmp");
+            String json = "{\"inCase\":" + glassesInCase
+                + ",\"sinceWallMs\":" + (glassesInCase == 1 ? glassesInCaseSinceWallMs : 0L)
+                + ",\"writtenAt\":\"" + RingProtocol.localStamp(System.currentTimeMillis()) + "\"}";
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp, false)) {
+                out.write(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            if (!tmp.renameTo(new java.io.File(dir, GLASSES_IN_CASE_FILE))) {
+                logLine("glasses in-case latch: could not save");
+            }
+        } catch (Throwable t) {
+            logLine("glasses in-case latch: save failed: " + safeMessage(t));
+        }
+    }
+
+    /**
+     * An app restart in the case must stay silent: restore an OPEN latch
+     * saved less than {@link #GLASSES_IN_CASE_MAX_MS} ago, with its original
+     * start (so the valve still counts from the real opening). A closed or
+     * stale saved latch restores nothing (-1). On-face is never restored:
+     * unknown counts as off the face until a wear reading says otherwise.
+     * Caller holds {@code lock}.
+     */
+    private void restoreGlassesInCaseLocked() {
+        try {
+            java.io.File file = new java.io.File(new java.io.File(appContext.getFilesDir(), "health"), GLASSES_IN_CASE_FILE);
+            if (!file.isFile()) {
+                return;
+            }
+            String json = new String(java.nio.file.Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            long inCase = RingProtocol.jsonLongField(json, "inCase", -1L);
+            long sinceWall = RingProtocol.jsonLongField(json, "sinceWallMs", 0L);
+            long wallNow = System.currentTimeMillis();
+            long age = wallNow - sinceWall;
+            if (inCase != 1L || sinceWall <= 0L || age < 0L || age > GLASSES_IN_CASE_MAX_MS) {
+                return;
+            }
+            glassesInCase = 1;
+            glassesInCaseSinceWallMs = sinceWall;
+            glassesInCaseSinceMs = SystemClock.elapsedRealtime() - age;
+            appendGlassesStateWhyLocked("in-case restored: saved open " + (age / 60_000L) + " min ago");
+            logLine("glasses in-case latch OPEN (restored, opened " + (age / 60_000L) + " min ago)");
+            writeGlassesStateIfChangedLocked("restore");
+        } catch (Throwable t) {
+            logLine("glasses in-case latch: restore failed: " + safeMessage(t));
+        }
+    }
+
+    /**
+     * Ask for the pull {@link #noteWearReadingLocked} armed, if any.
      * Worker thread, from the ring pass, so the glasses session is up.
      */
     private void runArmedRingPull() {

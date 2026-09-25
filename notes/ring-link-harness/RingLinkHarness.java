@@ -78,6 +78,13 @@ public final class RingLinkHarness {
         if ("directUnchanged".contains(only)) directUnchanged();
         if ("glassesUnchanged".contains(only)) glassesUnchanged();
         if ("glassesChargeLatchEveryMode".contains(only)) glassesChargeLatchEveryMode();
+        // 2026-09-25: the ring gates on wear; the in-case latch gates Ghost's speech.
+        if ("onDemandNotChargingInCase".contains(only)) onDemandNotChargingInCase();
+        if ("onDemandOnHeadPull".contains(only)) onDemandOnHeadPull();
+        if ("onDemandOffFaceTicks".contains(only)) onDemandOffFaceTicks();
+        if ("inCaseLatchEveryMode".contains(only)) inCaseLatchEveryMode();
+        if ("inCaseLatchAcrossRestart".contains(only)) inCaseLatchAcrossRestart();
+        if ("glassesStateReceipt".contains(only)) glassesStateReceipt();
 
         System.out.println();
         if (failures == 0) {
@@ -183,27 +190,36 @@ public final class RingLinkHarness {
         section("on-demand: timed pulls with the glasses on");
         Rig rig = new Rig(true);
         rig.glassesConnect();
+        // 2026-09-25: timed pulls need the glasses on the face. Put them on
+        // and let the on-head pull that fires run, before the ticks.
+        rig.putOnAndSettle();
+        int dials = rig.ble().dials;
+        int drops = rig.ble().deliberateDisconnects;
         for (int i = 1; i <= 3; i++) {
             SystemClock.advance(30 * 60_000L);
             pullCycle(rig, "tick " + i, "tick");
         }
         expect("three ticks, three dials, three drops",
-            rig.ble().dials == 3 && rig.ble().deliberateDisconnects == 3);
+            rig.ble().dials == dials + 3 && rig.ble().deliberateDisconnects == drops + 3);
         expect("no tick was refused", rig.receipts("pullSkipped").isEmpty());
         rig.close();
     }
 
     /**
-     * A night with the glasses in their case: every tick refused with a
-     * receipt and no dial; a Health open still pulls; a glasses link that
-     * drops and comes back in the case does not end the pause or fire the
-     * morning pull; taking them off the charger fires exactly one pull; and
-     * the next tick pulls as usual.
+     * A night with the glasses in their case, under the 2026-09-25 rule (the
+     * ring gates on wear; the in-case latch is Ghost's): every tick refused
+     * with an off-face receipt and no dial; a Health open still pulls; a link
+     * drop and reconnect in the case, even with a cached ON_HEAD answering our
+     * query, changes nothing; the charge flag clearing at full charge (the
+     * 2026-09-25 00:38 case) changes nothing; putting them on in the morning
+     * fires exactly one pull; the flag clearing 20 s later (the measured
+     * 09:10 order) fires none; the next tick pulls as usual.
      */
     static void onDemandChargingNight() throws Exception {
-        section("on-demand: a night on the charger");
+        section("on-demand: a night in the case");
         Rig rig = new Rig(true);
         rig.glassesConnect();
+        rig.putOnAndSettle();
         SystemClock.advance(30 * 60_000L);
         pullCycle(rig, "evening tick", "tick");
 
@@ -215,54 +231,70 @@ public final class RingLinkHarness {
             rig.requestPull("tick");
             rig.runFor(300L);
         }
-        List<String> refused = rig.receipts("\"reason\":\"glasses-charging\"");
-        expect("four ticks on the charger: four refusals receipted, each a tick: " + refused.size(),
-            refused.size() == 4 && refused.stream().allMatch(l -> l.contains("\"type\":\"pullSkipped\"")
+        List<String> refused = rig.receipts("\"type\":\"pullSkipped\"");
+        expect("four ticks in the case: four refusals receipted, each a tick, off-face: " + refused.size(),
+            refused.size() == 4 && refused.stream().allMatch(l -> l.contains("\"reason\":\"off-face\"")
                 && l.contains("\"trigger\":\"tick\"")));
-        expect("four ticks on the charger: no dial, no pull",
+        expect("four ticks in the case: no dial, no pull",
             rig.ble().dials == dials && rig.receipts("\"type\":\"pull\"").size() == pulls);
-        expect("on the charger: idle, nothing wanted",
+        expect("in the case: idle, nothing wanted",
             "idle".equals(rig.state()) && rig.stateJson().contains("\"wanted\":false"));
 
         SystemClock.advance(61_000L);
-        pullCycle(rig, "Health open on the charger", "health-open");
+        pullCycle(rig, "Health open in the case", "health-open");
 
-        // The glasses link drops in the case and comes back; until the first
-        // battery poll on the new session the phase reads connected, not charging.
+        // The glasses link drops in the case and comes back; the app asks for
+        // the cached wear state and it says ON_HEAD (stale). Nothing may start.
         rig.glassesLinkDrops();
         rig.glassesConnect();
+        rig.wearQuery();
+        rig.wear(true);
         int dialsFlicker = rig.ble().dials;
         int pullsFlicker = rig.receipts("\"type\":\"pull\"").size();
+        rig.runFor(300L);
         SystemClock.advance(30 * 60_000L);
         rig.requestPull("tick");
         rig.runFor(300L);
-        expect("a tick in the reconnect gap before the first battery poll is still refused",
-            rig.receipts("\"reason\":\"glasses-charging\"").size() == 5 && rig.ble().dials == dialsFlicker);
+        expect("reconnect in the case with a cached ON_HEAD: no pull, the tick still refused",
+            rig.receipts("\"reason\":\"off-face\"").size() == 5 && rig.ble().dials == dialsFlicker
+                && rig.receipts("\"type\":\"pull\"").size() == pullsFlicker);
         rig.chargingReading(true);
-        rig.runFor(1_000L);
-        expect("the first poll says charging again: no morning pull from the flicker",
-            rig.receipts("\"type\":\"pull\"").size() == pullsFlicker && rig.ble().dials == dialsFlicker);
 
-        // Morning: off the charger.
+        // Full charge: the flag clears with the glasses untouched (00:38).
+        rig.chargingReading(false);
+        rig.glassesConnect();
+        rig.runFor(1_000L);
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        rig.runFor(300L);
+        expect("the charge flag clears in the case: no pull, the tick still refused",
+            rig.receipts("\"type\":\"pull\"").size() == pullsFlicker && rig.ble().dials == dialsFlicker
+                && rig.receipts("\"reason\":\"off-face\"").size() == 6);
+
+        // Morning: ON_HEAD, then the flag clears 20 s later.
         SystemClock.advance(30 * 60_000L);
         int pullsMorning = rig.receipts("\"type\":\"pull\"").size();
         int dialsMorning = rig.ble().dials;
-        rig.chargingReading(false);
-        rig.glassesConnect();
+        rig.chargingReading(true);
+        rig.wear(true);
         boolean swept = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() > pullsMorning
             && "idle".equals(rig.state()));
         List<String> morning = rig.receipts("\"type\":\"pull\"");
         String sweep = morning.size() > pullsMorning ? morning.get(morning.size() - 1) : "(none)";
-        expect("off the charger: one pull, trigger charger-off, new link, back to idle  " + sweep,
-            swept && sweep.contains("\"trigger\":\"charger-off\"") && sweep.contains("\"link\":\"new\""));
+        expect("put on: one pull, trigger on-head, new link, back to idle  " + sweep,
+            swept && sweep.contains("\"trigger\":\"on-head\"") && sweep.contains("\"link\":\"new\""));
+        SystemClock.advance(20_000L);
+        rig.chargingReading(false);
+        rig.glassesConnect();
         rig.runFor(1_500L);
-        expect("off the charger: exactly one pull and one dial for it",
+        expect("put on, then the flag clears: exactly one pull and one dial in all",
             rig.receipts("\"type\":\"pull\"").size() == pullsMorning + 1 && rig.ble().dials == dialsMorning + 1);
 
         SystemClock.advance(30 * 60_000L);
         pullCycle(rig, "first tick of the day", "tick");
         expect("the night's ticks were the only refusals",
-            rig.receipts("\"reason\":\"glasses-charging\"").size() == 5);
+            rig.receipts("\"reason\":\"off-face\"").size() == 6
+                && rig.receipts("\"type\":\"pullSkipped\"").size() == 6);
         rig.close();
     }
 
@@ -426,10 +458,10 @@ public final class RingLinkHarness {
     }
 
     /**
-     * Ghost's speech mute (2026-09-24, late) reads the glasses' latched charge
-     * reading, so the latch must follow battery answers in EVERY ring mode, not
-     * only "Only when needed" - and must survive the phase flicker of a
-     * reconnect in the case. Read from the field, so an older build shows
+     * The raw charge flag (2026-09-24, late; since 2026-09-25 it feeds the
+     * in-case latch and the receipt rather than deciding anything) must
+     * follow battery answers in EVERY ring mode, not only "Only when needed" -
+     * and must survive the phase flicker of a reconnect in the case. Read from the field, so an older build shows
      * where it fell short (the latch stayed -1 outside on-demand); the getter
      * the TS side calls is checked against it where the build has one.
      */
@@ -457,6 +489,268 @@ public final class RingLinkHarness {
             expect(n + ": off the charger: 0", rig.chargeLatch() == 0);
             rig.close();
         }
+    }
+
+    /**
+     * The instruction's first assertion (2026-09-25): charging, then a
+     * not-charging answer with no wear event - ticks stay paused and no pull
+     * fires. On ba42abc the answer ends the pause and fires a charger-off pull.
+     */
+    static void onDemandNotChargingInCase() throws Exception {
+        section("on-demand: charging, then not charging, no wear event");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.putOnAndSettle();
+        rig.chargingReading(true);
+        int dials = rig.ble().dials;
+        int pulls = rig.receipts("\"type\":\"pull\"").size();
+        rig.chargingReading(false);
+        rig.glassesConnect();
+        rig.runFor(1_000L);
+        expect("the not-charging answer fires no pull and no dial",
+            rig.receipts("\"type\":\"pull\"").size() == pulls && rig.ble().dials == dials);
+        for (int i = 0; i < 3; i++) {
+            SystemClock.advance(30 * 60_000L);
+            rig.requestPull("tick");
+            rig.runFor(300L);
+        }
+        expect("three ticks after it: all refused, no dial, no pull",
+            rig.receipts("\"type\":\"pullSkipped\"").size() == 3 && rig.ble().dials == dials
+                && rig.receipts("\"type\":\"pull\"").size() == pulls);
+        expect("no charger-off pull, ever", rig.receipts("charger-off").isEmpty());
+        expect("the in-case latch is still open (Ghost stays silent)", rig.inCase() == 1);
+        rig.close();
+    }
+
+    /**
+     * The instruction's second assertion, under the wear rule: charging, then
+     * ON_HEAD - exactly one pull (on-head, where it was charger-off), then the
+     * ticks resume. On ba42abc ON_HEAD does nothing for the ring.
+     */
+    static void onDemandOnHeadPull() throws Exception {
+        section("on-demand: charging, then ON_HEAD");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.putOnAndSettle();
+        rig.chargingReading(true);
+        SystemClock.advance(30 * 60_000L);
+        int dials = rig.ble().dials;
+        int pulls = rig.receipts("\"type\":\"pull\"").size();
+        rig.wear(true);
+        boolean done = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() > pulls && "idle".equals(rig.state()));
+        rig.runFor(1_500L);
+        List<String> all = rig.receipts("\"type\":\"pull\"");
+        String last = all.size() > pulls ? all.get(all.size() - 1) : "(none)";
+        expect("ON_HEAD: exactly one pull, trigger on-head, one dial  " + last,
+            done && all.size() == pulls + 1 && last.contains("\"trigger\":\"on-head\"")
+                && rig.ble().dials == dials + 1);
+        expect("ON_HEAD closes the in-case latch", rig.inCase() == 0);
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "the next tick pulls", "tick");
+        rig.wear(true);
+        rig.runFor(500L);
+        expect("a second ON_HEAD while on the face fires nothing",
+            rig.receipts("\"type\":\"pull\"").size() == pulls + 2);
+        rig.close();
+    }
+
+    /**
+     * Off the face = no timed pulls (2026-09-25): at start (unknown counts as
+     * off), after OFF_HEAD, and after a real glasses link loss until a wear
+     * reading says on. The wear query's cached ON_HEAD after a reconnect puts
+     * them back on the face with NO pull (it is a restore, not a put-on), and
+     * only while the in-case latch is closed. A Health open always pulls.
+     */
+    static void onDemandOffFaceTicks() throws Exception {
+        section("on-demand: off the face, ticks paused");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        rig.runFor(300L);
+        expect("unknown wear at start: the tick is refused, off-face, no dial",
+            lastContains(rig.receipts("pullSkipped"), "\"trigger\":\"tick\",\"reason\":\"off-face\"")
+                && rig.ble().dials == 0);
+        SystemClock.advance(61_000L);
+        pullCycle(rig, "Health open off the face", "health-open");
+
+        rig.putOnAndSettle();
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "on the face: tick", "tick");
+
+        rig.wear(false);
+        int skips = rig.receipts("pullSkipped").size();
+        int dials = rig.ble().dials;
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        rig.runFor(300L);
+        expect("OFF_HEAD: the next tick is refused, no dial",
+            rig.receipts("pullSkipped").size() == skips + 1 && rig.ble().dials == dials);
+
+        rig.putOnAndSettle();
+        rig.glassesLinkDrops();
+        rig.glassesConnect();
+        skips = rig.receipts("pullSkipped").size();
+        dials = rig.ble().dials;
+        int pulls = rig.receipts("\"type\":\"pull\"").size();
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        rig.runFor(300L);
+        expect("a glasses link loss: the next tick is refused",
+            rig.receipts("pullSkipped").size() == skips + 1 && rig.ble().dials == dials);
+        rig.wearQuery();
+        rig.wear(true);
+        rig.runFor(500L);
+        expect("the query's cached ON_HEAD (latch closed): back on the face with no pull",
+            rig.receipts("\"type\":\"pull\"").size() == pulls && rig.onFace());
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "restored: tick", "tick");
+        rig.close();
+    }
+
+    /**
+     * The in-case latch, in every ring mode (Ghost's speech reads it whatever
+     * the ring does): opens on charging; a not-charging answer alone leaves it
+     * open; ON_HEAD closes it; a cached ON_HEAD answering our own query does
+     * not; a temple touch with no charge current closes it (either order); a
+     * touch then a charging answer then not-charging does not; 14 h closes it.
+     */
+    static void inCaseLatchEveryMode() throws Exception {
+        String[][] modes = {{"on-demand", "true", RING}, {"direct", "false", RING}, {"glasses only", "false", ""}};
+        for (String[] mode : modes) {
+            String n = mode[0];
+            section("in-case latch: " + n);
+            Rig rig = new Rig(Boolean.parseBoolean(mode[1]), mode[2]);
+            rig.glassesConnect();
+            rig.runFor(100L);
+            expect(n + ": never known reads -1", rig.inCase() == -1);
+            rig.chargingReading(true);
+            expect(n + ": charging opens it", rig.inCase() == 1);
+            rig.chargingReading(false);
+            rig.glassesConnect();
+            expect(n + ": not charging alone leaves it open", rig.inCase() == 1);
+            rig.wearQuery();
+            rig.wear(true);
+            expect(n + ": a cached ON_HEAD answering our query leaves it open", rig.inCase() == 1);
+            SystemClock.advance(11_000L);
+            rig.wear(false);
+            rig.wear(true);
+            expect(n + ": a spontaneous ON_HEAD closes it", rig.inCase() == 0);
+
+            rig.chargingReading(true);
+            rig.templeTouch(BleProtocol.EVENT_SOURCE_RING);
+            rig.chargingReading(false);
+            rig.glassesConnect();
+            expect(n + ": a RING touch + not charging leaves it open", rig.inCase() == 1);
+            rig.templeTouch(BleProtocol.EVENT_SOURCE_GLASSES_R);
+            expect(n + ": then a temple touch closes it", rig.inCase() == 0);
+
+            rig.chargingReading(true);
+            rig.templeTouch(BleProtocol.EVENT_SOURCE_GLASSES_L);
+            expect(n + ": a temple touch while charging leaves it open", rig.inCase() == 1);
+            rig.chargingReading(false);
+            rig.glassesConnect();
+            expect(n + ": ...and the not-charging answer after it closes it", rig.inCase() == 0);
+
+            rig.chargingReading(true);
+            rig.templeTouch(BleProtocol.EVENT_SOURCE_GLASSES_L);
+            rig.chargingReading(true);
+            rig.chargingReading(false);
+            rig.glassesConnect();
+            expect(n + ": touch, then charging again, then not charging: still open", rig.inCase() == 1);
+
+            SystemClock.advance(GLASSES_IN_CASE_MAX_MS_FOR_TEST + 60_000L);
+            expect(n + ": past 14 h the getter reads 0 at once", rig.inCaseGetter() == 0);
+            rig.chargingReading(false);
+            rig.glassesConnect();
+            expect(n + ": ...and the next answer closes it, with the reason receipted",
+                rig.inCase() == 0 && !rig.glassesState("over the 14 h limit").isEmpty());
+            rig.close();
+        }
+    }
+
+    /** The 14 h valve, as the communicator declares it (asserted equal where the build has it). */
+    static final long GLASSES_IN_CASE_MAX_MS_FOR_TEST = 14L * 60L * 60L * 1000L;
+
+    /**
+     * An app restart in the case: the new communicator restores an open latch
+     * saved under 14 h ago (Ghost stays silent), restores nothing from a stale
+     * or closed one, and never restores on-face (unknown = off the face).
+     */
+    static void inCaseLatchAcrossRestart() throws Exception {
+        section("in-case latch across an app restart");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.putOnAndSettle();
+        rig.chargingReading(true);
+        rig.close();
+        Rig again = new Rig(true, RING, rig.files);
+        expect("restart in the case: the latch comes back open", again.inCase() == 1);
+        expect("restart: on-face is not restored", !again.onFace());
+        again.glassesConnect();
+        SystemClock.advance(30 * 60_000L);
+        again.requestPull("tick");
+        again.runFor(300L);
+        expect("restart in the case: the first tick is refused",
+            lastContains(again.receipts("pullSkipped"), "\"reason\":\"off-face\""));
+        again.close();
+
+        SystemClock.advance(GLASSES_IN_CASE_MAX_MS_FOR_TEST + 60_000L);
+        // A stale saved latch: SystemClock moved, the wall clock did not, so
+        // write the file as if it were 15 h old.
+        File saved = new File(new File(rig.files, "health"), "glasses-in-case.json");
+        if (saved.isFile()) {
+            Files.write(saved.toPath(), ("{\"inCase\":1,\"sinceWallMs\":"
+                + (System.currentTimeMillis() - 15L * 3600_000L) + "}").getBytes(StandardCharsets.UTF_8));
+        }
+        Rig stale = new Rig(true, RING, rig.files);
+        expect("restart from a 15 h old open latch: nothing restored", stale.inCase() == -1);
+        stale.close();
+        if (saved.isFile()) {
+            Files.write(saved.toPath(), ("{\"inCase\":0,\"sinceWallMs\":0}").getBytes(StandardCharsets.UTF_8));
+        }
+        Rig closed = new Rig(true, RING, rig.files);
+        expect("restart from a closed latch: nothing restored", closed.inCase() == -1);
+        closed.close();
+    }
+
+    /**
+     * files/health/glasses-state.jsonl: one line per change of level, charge
+     * flag, wear, latch or on-face, with the reason; nothing for a repeat; the
+     * raw wear frames beside them.
+     */
+    static void glassesStateReceipt() throws Exception {
+        section("glasses-state receipt");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.chargingReading(true);
+        List<String> first = rig.glassesState("\"type\":\"glassesState\"");
+        expect("a charging answer writes one line with level, charging, wear, latch, on-face and why  "
+                + (first.isEmpty() ? "(none)" : first.get(0)),
+            first.size() == 1 && first.get(0).contains("\"level\":80") && first.get(0).contains("\"charging\":1")
+                && first.get(0).contains("\"wear\":\"unknown\"") && first.get(0).contains("\"inCase\":1")
+                && first.get(0).contains("\"onFace\":false")
+                && first.get(0).contains("\"why\":\"in-case opened: charging\""));
+        rig.chargingReading(true);
+        expect("the same answer again writes nothing",
+            rig.glassesState("\"type\":\"glassesState\"").size() == 1);
+        rig.chargingReading(false);
+        rig.glassesConnect();
+        List<String> second = rig.glassesState("\"type\":\"glassesState\"");
+        expect("the flag clearing writes one line, latch still open, why null",
+            second.size() == 2 && second.get(1).contains("\"charging\":0") && second.get(1).contains("\"inCase\":1")
+                && second.get(1).contains("\"why\":null"));
+        rig.wear(true);
+        List<String> third = rig.glassesState("\"type\":\"glassesState\"");
+        String t3 = third.isEmpty() ? "(none)" : third.get(third.size() - 1);
+        expect("ON_HEAD writes one line: wear on, from an event, arm R, latch closed, on the face  " + t3,
+            third.size() == 3 && t3.contains("\"wear\":\"on\"") && t3.contains("\"wearSrc\":\"event\"")
+                && t3.contains("\"wearArm\":\"R\"") && t3.contains("\"inCase\":0") && t3.contains("\"onFace\":true")
+                && t3.contains("in-case closed: on-head") && t3.contains("on-face: on-head"));
+        List<String> frames = rig.glassesState("\"type\":\"wearFrame\"");
+        expect("the raw wear frame is there too, decoded 1",
+            frames.size() == 1 && frames.get(0).contains("\"decoded\":1") && frames.get(0).contains("\"hex\":\"aa21"));
+        rig.close();
     }
 
     /** "Only via glasses": no address, nothing happens, whatever asks. */
@@ -544,8 +838,13 @@ public final class RingLinkHarness {
         }
 
         Rig(boolean onDemand, String ringAddress) throws Exception {
+            this(onDemand, ringAddress, Files.createTempDirectory("ring-link-harness").toFile());
+        }
+
+        /** A communicator over an existing files dir: an app restart. */
+        Rig(boolean onDemand, String ringAddress, File files) throws Exception {
             this.ringAddress = ringAddress;
-            files = Files.createTempDirectory("ring-link-harness").toFile();
+            this.files = files;
             comm = new FaceclawBleCommunicator(new HarnessContext(files), R, L, ringAddress, onDemand);
             // The communicator's own ring section where it has one (164e444 on).
             // Named here exactly: a wrong name silently fell back to the copy
@@ -605,6 +904,98 @@ public final class RingLinkHarness {
                 }
                 return field;
             } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        /**
+         * A wear frame from the right arm, through the real onNotification:
+         * sid 0x10, flag 0x00 as the stock firmware sends it, and the
+         * OnboardingDataPackage shape parseWearState decodes
+         * ({1: 3, 5: {1: 1, 2: status}}).
+         */
+        void wear(boolean onHead) {
+            byte[] pb = {0x08, 0x03, 0x2a, 0x04, 0x08, 0x01, 0x10, (byte) (onHead ? 1 : 0)};
+            byte[] frame = BleProtocol.framePb(pb, BleProtocol.SID_ONBOARDING, 0x00, 0x40).get(0);
+            comm.onNotification(R, BleProtocol.NOTIFY_CHAR_UUID, frame);
+        }
+
+        /**
+         * A touchpad sys-event from the given source (R/L temple, or the ring),
+         * a click: {13: {3: {1: type, 2: source}}}, notify flag, right arm.
+         */
+        void templeTouch(int source) {
+            byte[] pb = {0x6a, 0x06, 0x1a, 0x04, 0x08, (byte) BleProtocol.EVENT_CLICK, 0x10, (byte) source};
+            byte[] frame = BleProtocol.framePb(pb, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_NOTIFY, 0x41).get(0);
+            comm.onNotification(R, BleProtocol.NOTIFY_CHAR_UUID, frame);
+        }
+
+        /**
+         * The app asking for the cached wear state after a (re)connect, as the
+         * dashboard does on every "connected": the communicator's own method
+         * where the build has the query window, else nothing to do.
+         */
+        void wearQuery() throws Exception {
+            comm.enableWearDetectionAndRequestState();
+            // The harness runs no glasses send loop: stand in for it sending the
+            // three queued messages, or the ring (which waits for an empty
+            // glasses queue before dialling) would never dial again.
+            synchronized (lockOf()) {
+                ((java.util.Collection<?>) get("pendingMessages")).clear();
+            }
+        }
+
+        /**
+         * Put the glasses on (a spontaneous ON_HEAD) and, in on-demand on a
+         * build that pulls for it, let that pull finish before going on.
+         */
+        void putOnAndSettle() throws Exception {
+            int pulls = receipts("\"type\":\"pull\"").size();
+            wear(true);
+            if (findMethod("glassesInCaseLatch") != null && isOnDemand()) {
+                runUntil(() -> receipts("\"type\":\"pull\"").size() > pulls && "idle".equals(state()));
+            }
+            runFor(200L);
+        }
+
+        /** The in-case latch field, or -99 on a build without one. */
+        int inCase() {
+            try {
+                return (Integer) get("glassesInCase");
+            } catch (Exception e) {
+                return -99;
+            }
+        }
+
+        /** The getter Ghost's speech calls, or -99 on a build without it. */
+        int inCaseGetter() {
+            Method m = findMethod("glassesInCaseLatch");
+            try {
+                return m == null ? -99 : (Integer) m.invoke(comm);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        /** On the face for the ring, or false on a build without it. */
+        boolean onFace() {
+            try {
+                return (Boolean) get("glassesOnFace");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        List<String> glassesState(String containing) {
+            File f = new File(new File(files, "health"), "glasses-state.jsonl");
+            if (!f.exists()) return Collections.emptyList();
+            try {
+                List<String> out = new ArrayList<>();
+                for (String line : Files.readAllLines(f.toPath(), StandardCharsets.UTF_8)) {
+                    if (line.contains(containing)) out.add(line);
+                }
+                return out;
+            } catch (IOException e) {
                 throw new IllegalStateException(e);
             }
         }

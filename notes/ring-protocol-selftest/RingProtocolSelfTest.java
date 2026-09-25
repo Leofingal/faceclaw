@@ -701,6 +701,35 @@ public final class RingProtocolSelfTest {
             paused.startsWith("{\"type\":\"pullSkipped\"") && paused.contains("\"trigger\":\"tick\"")
                 && paused.endsWith("\"reason\":\"glasses-charging\"}"));
 
+        // 2026-09-25: the ring gates on wear; the pull on putting them on.
+        expect("the on-head trigger passes through, and an on-head ask is taken while paused",
+            "on-head".equals(RingProtocol.ringPullTrigger("on-head"))
+                && RingProtocol.ringPullAskAccepted(true, "on-head", true));
+        String offFace = RingProtocol.pullSkippedReceiptLine(1000L, "tick", RingProtocol.RING_PULL_SKIP_OFF_FACE);
+        System.out.println("RECEIPT " + offFace);
+        expect("a tick refused off the face leaves a pullSkipped line saying so",
+            offFace.contains("\"trigger\":\"tick\"") && offFace.endsWith("\"reason\":\"off-face\"}"));
+        String state = RingProtocol.glassesStateReceiptLine(1000L, "battery", 87, 1, -1, "", "", 1, false,
+            "in-case opened: charging");
+        System.out.println("RECEIPT " + state);
+        expect("glasses-state line: level, flag, wear, latch, on-face, why",
+            state.startsWith("{\"type\":\"glassesState\"") && state.contains("\"cause\":\"battery\"")
+                && state.contains("\"level\":87,\"charging\":1,\"wear\":\"unknown\"")
+                && state.endsWith("\"inCase\":1,\"onFace\":false,\"why\":\"in-case opened: charging\"}"));
+        expect("glasses-state line: unknowns are null, no why is null, quotes are scrubbed",
+            RingProtocol.glassesStateReceiptLine(1000L, "wear", -1, -1, 1, "ev\"ent", "R", 0, true, null)
+                .contains("\"level\":null,\"charging\":null,\"wear\":\"on\",\"wearSrc\":\"ev?ent\"")
+                && RingProtocol.glassesStateReceiptLine(1000L, "wear", -1, -1, 0, "", "", -1, false, null)
+                    .endsWith("\"wear\":\"off\",\"wearSrc\":\"\",\"wearArm\":\"\",\"inCase\":-1,\"onFace\":false,\"why\":null}"));
+        String frame = RingProtocol.wearFrameReceiptLine(1000L, "R", -1, true, "aa21");
+        expect("raw wear frame line", frame.startsWith("{\"type\":\"wearFrame\"")
+            && frame.endsWith("\"arm\":\"R\",\"decoded\":-1,\"query\":true,\"hex\":\"aa21\"}"));
+        expect("the saved latch file reads back",
+            RingProtocol.jsonLongField("{\"inCase\":1,\"sinceWallMs\":1790341732505}", "sinceWallMs", 0L) == 1790341732505L
+                && RingProtocol.jsonLongField("{\"inCase\":-1}", "inCase", 5L) == -1L
+                && RingProtocol.jsonLongField("{}", "inCase", 7L) == 7L
+                && RingProtocol.jsonLongField(null, "inCase", 7L) == 7L);
+
         String stale = RingProtocol.ringLinkStaleReceiptLine(1000L, "initial", 13_146_422L);
         System.out.println("RECEIPT " + stale);
         expect("stale-link line: type, where, how old the link claimed to be",

@@ -4,8 +4,8 @@
 // poll, transpiled here without type-checking - `npx tsc -p tsconfig.json`
 // type-checks it - with its NativeScript and native imports replaced by small
 // fakes. The box's feed is a list the test grows; speech is a recorded call;
-// the communicator is a fake whose only job is `glassesChargeLatch()` (1 on
-// the charger, 0 off it, -1 not heard yet). ghost-charge-mute.ts itself is the
+// the communicator is a fake whose only job is `glassesInCaseLatch()` (1 in
+// the case, 0 out of it, -1 never known). ghost-charge-mute.ts itself is the
 // real module, compiled by tests/tsconfig.json, so the latch read is real too.
 //
 // It is written to run against any checkout: on a build without the mute the
@@ -43,7 +43,7 @@ const world = {
   spoken: [], // every speakGhost() call, by text
   receipts: [], // every muted-speech receipt line
   logs: [], // console.log lines from the layer
-  latch: 0, // communicator.glassesChargeLatch(); null = no communicator
+  latch: 0, // communicator.glassesInCaseLatch(); null = no communicator
   speakSetting: true,
 };
 
@@ -64,7 +64,7 @@ globalThis.com = {
           world.latch === null
             ? null
             : {
-                glassesChargeLatch: () => world.latch,
+                glassesInCaseLatch: () => world.latch,
               },
       },
     },
@@ -180,7 +180,7 @@ test("on the charger: an arriving reply is not spoken, one log line and one rece
   assert.match(muteLines()[0], new RegExp(`reply ${item.uuid}`));
   assert.equal(world.receipts.length, 1);
   assert.equal(world.receipts[0].type, "ghostSpeechMuted");
-  assert.equal(world.receipts[0].reason, "glasses-charging");
+  assert.equal(world.receipts[0].reason, "glasses-in-case");
   assert.equal(world.receipts[0].kind, "reply");
   assert.equal(world.receipts[0].uuid, item.uuid);
   // The display is untouched: the cursor still follows onto the new reply.
@@ -207,7 +207,7 @@ test("off the charger again: no backlog - only the next new reply speaks", async
   await layer.poll();
   world.items.push(reply("night two"));
   await layer.poll();
-  world.latch = 0; // a battery answer says off the charger
+  world.latch = 0; // the latch closed (the glasses were put on)
   await layer.poll(); // nothing new arrived
   assert.deepEqual(world.spoken, [], "muted replies must not be replayed");
   world.items.push(reply("morning"));
@@ -217,8 +217,8 @@ test("off the charger again: no backlog - only the next new reply speaks", async
 
 test("the latch holds through a reconnect in the case (the phase would flicker)", async () => {
   // The dashboard phase goes charging -> connecting -> connected -> charging
-  // on a reconnect in the case; the latch only moves on a battery answer, so
-  // it reads 1 all the way through. Replies across that window stay silent.
+  // on a reconnect in the case; the in-case latch does not move on a
+  // reconnect, so it reads 1 all the way through. Replies across that window stay silent.
   resetWorld(1);
   const layer = await settledLayer();
   for (const phase of ["connecting", "connected", "charging"]) {

@@ -7,12 +7,15 @@
  * until now was a clock window in the seat's hook on the Ghost box, which
  * cannot see the glasses at all; the phone can.
  *
- * WHICH charge state. Not the dashboard's "charging" phase: that is Java's
+ * WHICH state. Not the dashboard's "charging" phase: that is Java's
  * `chargingMode`, which every glasses link loss and transport rebuild resets to
  * false, so a reconnect in the case reads "connecting", then "connected" until
- * the first battery poll of the new session. Keyed to the phase, a reply that
- * landed in that window would be spoken. The communicator's latch
- * (`glassesChargeLatch()`) changes only when a battery answer says so.
+ * the first battery poll of the new session. Not the raw charge flag either:
+ * on 2026-09-25 at 00:38 it read "not charging" with the glasses untouched in
+ * their case (most likely a full battery). The communicator's in-case latch
+ * (`glassesInCaseLatch()`, 2026-09-25) opens on a charging answer and closes
+ * only on a real removal (the glasses put on, or a temple touch with no charge
+ * current), or after 14 h; it survives an app restart.
  *
  * What is muted: only AUTOMATIC speech - a reply announced on arrival, an
  * approval/waiting announcement, and the catch-up read after a send. A reply
@@ -28,25 +31,25 @@ import { localStamp } from "../../g2/resume-receipt";
 declare const com: any;
 
 /**
- * The glasses' latched charge reading from the live communicator: 1 on the
- * charger, 0 off it, -1 not heard yet, null when there is no communicator (or
- * it is an older build without the getter).
+ * The in-case latch from the live communicator: 1 in the case, 0 out of it,
+ * -1 never known, null when there is no communicator (or it is an older build
+ * without the getter).
  */
 export function glassesChargeLatch(): number | null {
   try {
     const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
     if (!communicator) return null;
-    return Number(communicator.glassesChargeLatch());
+    return Number(communicator.glassesInCaseLatch());
   } catch {
     return null;
   }
 }
 
 /**
- * Whether automatic speech is muted for this latch reading. Only a battery
- * answer that said "charging" mutes: not heard yet, or no communicator at all,
- * speaks exactly as before (an app restart must not silence Ghost until the
- * glasses answer).
+ * Whether automatic speech is muted for this latch reading. Only an open
+ * latch mutes: never known, or no communicator at all, speaks exactly as
+ * before (an app restart outside the case must not silence Ghost; one inside
+ * it restores the saved latch).
  */
 export function autoSpeechMutedFor(latch: number | null): boolean {
   return latch === 1;
@@ -65,7 +68,7 @@ export function mutedSpeechReceiptLine(wallMs: number, kind: MutedSpeechKind, uu
     type: "ghostSpeechMuted",
     at: localStamp(wallMs),
     atMs: wallMs,
-    reason: "glasses-charging",
+    reason: "glasses-in-case",
     kind,
     uuid: uuid ?? null,
   });
