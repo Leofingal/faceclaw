@@ -202,3 +202,28 @@ export function translationLogRecord(line: TranslationLogLine): string {
 export function translationLogEvent(type: "start" | "stop", atMs: number, extra: Record<string, unknown>): string {
   return JSON.stringify({ type, t: localIsoTime(new Date(atMs)), ms: atMs, ...extra });
 }
+
+/** Cumulative G2-mic packet counters (voiceControlBridge.audioStats()). */
+export type MicPacketStats = { packets: number; missing: number; late: number };
+
+/**
+ * The glasses-mic link quality over a caption session, for the translation
+ * log's stop record: counts since the session's start snapshot, and the
+ * share of expected packets that never arrived. A capture restart resets the
+ * counters, so an end below the start counts from zero (`restarted: true`).
+ * Null when there are no end counters (no stock capture running).
+ */
+export function micLossSummary(
+  start: MicPacketStats | null,
+  end: MicPacketStats | null,
+): { packets: number; missing: number; late: number; lossPct: number; restarted: boolean } | null {
+  if (!end) return null;
+  const restarted = !!start && (end.packets < start.packets || end.missing < start.missing);
+  const base = start && !restarted ? start : { packets: 0, missing: 0, late: 0 };
+  const packets = end.packets - base.packets;
+  const missing = end.missing - base.missing;
+  const late = Math.max(0, end.late - base.late);
+  const expected = packets + missing;
+  const lossPct = expected > 0 ? Math.round((missing / expected) * 1000) / 10 : 0;
+  return { packets, missing, late, lossPct, restarted };
+}

@@ -59,8 +59,7 @@ import {
 } from "./ghost-client";
 import { appendGhostSpeechReceipt, speakGhost, stopGhostSpeech } from "./ghost-speech";
 import {
-  autoSpeechMutedFor,
-  glassesChargeLatch,
+  currentAutoSpeechMuteReason,
   mutedSpeechReceiptLine,
   type MutedSpeechKind,
 } from "./ghost-charge-mute";
@@ -1334,9 +1333,11 @@ export class GhostLayer implements Layer {
    */
   private automaticSpeechMuted(kind: MutedSpeechKind, text: string, uuid: string | undefined): boolean {
     if (!ghostSpeakSetting.get() || !text.trim() || !ghostSessionId()) return false;
-    if (!autoSpeechMutedFor(glassesChargeLatch())) return false;
-    console.log(`ghost: not spoken, glasses charging (${kind} ${uuid ?? "-"})`);
-    appendGhostSpeechReceipt(mutedSpeechReceiptLine(Date.now(), kind, uuid));
+    const reason = currentAutoSpeechMuteReason();
+    if (!reason) return false;
+    const why = reason === "captions-open" ? "captions on screen" : "glasses charging";
+    console.log(`ghost: not spoken, ${why} (${kind} ${uuid ?? "-"})`);
+    appendGhostSpeechReceipt(mutedSpeechReceiptLine(Date.now(), kind, uuid, reason));
     return true;
   }
 

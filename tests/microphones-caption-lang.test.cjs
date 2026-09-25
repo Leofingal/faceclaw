@@ -161,3 +161,23 @@ test("caption model choice falls back and says when no model is on the phone", (
     assert.match(none.note, /No caption model downloaded/);
   }
 });
+
+// 2026-09-25: LE Audio to the hearing aids left the glasses mic link losing
+// ~58% of packets (42 arrived, ~59 missing per 5 s) and the log showed nothing.
+test("mic loss summary over a caption session", () => {
+  const { micLossSummary } = require("../.test-build/app/apps/microphones/caption-lang.js");
+  assert.equal(micLossSummary({ packets: 1, missing: 0, late: 0 }, null), null);
+  // The degraded rate measured on the phone, over one minute.
+  const degraded = micLossSummary(
+    { packets: 13182, missing: 3111, late: 2258 },
+    { packets: 13686, missing: 3793, late: 2762 },
+  );
+  assert.deepEqual(degraded, { packets: 504, missing: 682, late: 504, lossPct: 57.5, restarted: false });
+  const clean = micLossSummary({ packets: 11080, missing: 3111, late: 2252 }, { packets: 12084, missing: 3111, late: 2252 });
+  assert.equal(clean.lossPct, 0);
+  // Capture restarted mid-session: counters reset, count from zero.
+  const restarted = micLossSummary({ packets: 5000, missing: 10, late: 3 }, { packets: 200, missing: 50, late: 1 });
+  assert.deepEqual(restarted, { packets: 200, missing: 50, late: 1, lossPct: 20, restarted: true });
+  // No start snapshot: the end counters as they are.
+  assert.equal(micLossSummary(null, { packets: 100, missing: 0, late: 0 }).packets, 100);
+});

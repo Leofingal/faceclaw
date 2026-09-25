@@ -55,6 +55,8 @@ import {
 } from "./mic-settings";
 import {
   chooseCaptionModel,
+  micLossSummary,
+  type MicPacketStats,
   compactCjkSpaces,
   resolveCaptionLang,
   translationLogEvent,
@@ -185,6 +187,8 @@ class MicSession {
   // engine's own status), or "".
   private captionNote = "";
   private engineStartWallMs = 0;
+  // Mic packet counters when captions started, for the log's stop record.
+  private captionMicStart: MicPacketStats | null = null;
   private sessionRowId = -1;
   private sentimentSum = 0;
   private sentimentCount = 0;
@@ -792,6 +796,7 @@ class MicSession {
     this.captionNote = wanted.note;
     this.captionsActive = true;
     this.engineStartWallMs = Date.now();
+    this.captionMicStart = voiceControlBridge.audioStats();
     this.encounterShown.clear();
     if (saveCaptionsSetting.get() && captionsRetentionSetting.get() !== "none") {
       this.sessionRowId = Number(
@@ -830,7 +835,12 @@ class MicSession {
       // Diagnostic only.
     }
     this.writeTranslationLog(
-      translationLogEvent("start", Date.now(), { ...info, session: this.sessionRowId, logDir: this.translationLogDir() }),
+      translationLogEvent("start", Date.now(), {
+        ...info,
+        session: this.sessionRowId,
+        logDir: this.translationLogDir(),
+        mic: voiceControlBridge.audioStats(),
+      }),
     );
   }
 
@@ -859,7 +869,13 @@ class MicSession {
   private stopCaptions(): void {
     if (!this.captionsActive) return;
     this.writeTranslationLog(
-      translationLogEvent("stop", Date.now(), { model: this.captionEngineKind, session: this.sessionRowId }),
+      translationLogEvent("stop", Date.now(), {
+        model: this.captionEngineKind,
+        session: this.sessionRowId,
+        // Glasses-mic link quality over the session (lossPct: share of
+        // expected packets that never arrived).
+        mic: micLossSummary(this.captionMicStart, voiceControlBridge.audioStats()),
+      }),
     );
     try {
       this.captionEngine?.stop();

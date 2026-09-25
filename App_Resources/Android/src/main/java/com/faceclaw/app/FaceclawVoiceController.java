@@ -1569,6 +1569,18 @@ public class FaceclawVoiceController {
         }
     }
 
+    /**
+     * The current capture's cumulative G2-mic packet counters, as JSON, for
+     * the captions log's start/stop records (2026-09-25: a degraded link lost
+     * ~58% of packets and nothing after the fact showed it). Counters reset at
+     * each capture start. Read unsynchronized: diagnostic only.
+     */
+    public String audioStatsJson() {
+        FaceclawLc3Decoder currentDecoder = lc3Decoder;
+        long missing = currentDecoder == null ? 0 : currentDecoder.getMissingPackets();
+        return "{\"packets\":" + queuedPackets + ",\"missing\":" + missing + ",\"late\":" + latePackets + "}";
+    }
+
     private void resetAudioStats() {
         queuedPackets = 0;
         queueDroppedPackets = 0;

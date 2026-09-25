@@ -6,6 +6,7 @@ import { GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/
 import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type CaptionLine, type MicSessionState } from "./mic-session";
 import { glassesCaptionText } from "./caption-lang";
+import { captionsViewClosed, captionsViewOpened } from "./captions-view-presence";
 
 /**
  * On-glasses captions: each line is prefixed with the speaker's name (their
@@ -22,6 +23,9 @@ export class CaptionsLayer implements Layer {
   private lastLineCount = 0;
 
   start(requestRender: () => void): void {
+    // Ghost holds automatic speech while a captions view is up
+    // (captions-view-presence.ts).
+    if (!this.unsubscribe) captionsViewOpened();
     this.unsubscribe = micSession.onState((state) => {
       if (state.captionLines.length !== this.lastLineCount) {
         this.lastLineCount = state.captionLines.length;
@@ -118,6 +122,7 @@ export class CaptionsLayer implements Layer {
   }
 
   onRemoved(): void {
+    if (this.unsubscribe) captionsViewClosed();
     this.unsubscribe?.();
     this.unsubscribe = null;
   }

@@ -27,6 +27,7 @@
  * `tests/` can pin it under plain node.
  */
 import { localStamp } from "../../g2/resume-receipt";
+import { captionsViewOpen } from "../microphones/captions-view-presence";
 
 declare const com: any;
 
@@ -55,6 +56,27 @@ export function autoSpeechMutedFor(latch: number | null): boolean {
   return latch === 1;
 }
 
+/** Why automatic speech was held. */
+export type SpeechMuteReason = "glasses-in-case" | "captions-open";
+
+/**
+ * Why automatic speech is muted right now, or null to speak. The in-case
+ * latch as above; and, from 2026-09-25, a captions view on screen: Ghost's
+ * speech plays to Chris's LE Audio hearing aids, and each stream start
+ * flipped the glasses-mic link between clean and ~58% packet loss (measured
+ * 8 of 8), which garbled the captions. The reply still shows as text.
+ */
+export function autoSpeechMuteReason(latch: number | null, captionsOpen: boolean): SpeechMuteReason | null {
+  if (autoSpeechMutedFor(latch)) return "glasses-in-case";
+  if (captionsOpen) return "captions-open";
+  return null;
+}
+
+/** The live answer: the communicator's latch and the captions view. */
+export function currentAutoSpeechMuteReason(): SpeechMuteReason | null {
+  return autoSpeechMuteReason(glassesChargeLatch(), captionsViewOpen());
+}
+
 /** What was about to be spoken. */
 export type MutedSpeechKind = "reply" | "approval" | "waiting" | "catch-up";
 
@@ -63,12 +85,17 @@ export type MutedSpeechKind = "reply" | "approval" | "waiting" | "catch-up";
  * line. The `voice/` folder is already mirrored to the Ghost box
  * (`~/phone-logs/voice/`), so a night's mutes can be counted without adb.
  */
-export function mutedSpeechReceiptLine(wallMs: number, kind: MutedSpeechKind, uuid: string | undefined): string {
+export function mutedSpeechReceiptLine(
+  wallMs: number,
+  kind: MutedSpeechKind,
+  uuid: string | undefined,
+  reason: SpeechMuteReason = "glasses-in-case",
+): string {
   return JSON.stringify({
     type: "ghostSpeechMuted",
     at: localStamp(wallMs),
     atMs: wallMs,
-    reason: "glasses-in-case",
+    reason,
     kind,
     uuid: uuid ?? null,
   });

@@ -308,3 +308,55 @@ test("on the charger: tapping into a muted reply still reads it (an explicit ask
   assert.deepEqual(world.spoken, ["read me when I ask"]);
   assert.equal(world.receipts.length, 1, "the explicit read writes no mute receipt");
 });
+
+// 2026-09-25: Ghost's speech plays to Chris's LE Audio hearing aids, and each
+// stream start flipped the glasses-mic link into ~58% packet loss, garbling
+// the captions. While a captions view is open, automatic speech is held.
+const presence = require("../.test-build/app/apps/microphones/captions-view-presence.js");
+
+test("captions on screen: an arriving reply is not spoken, one receipt with reason captions-open", async () => {
+  resetWorld(0);
+  const layer = await settledLayer();
+  presence.captionsViewOpened();
+  try {
+    const item = reply("It is done.");
+    world.items.push(item);
+    await layer.poll();
+    assert.deepEqual(world.spoken, []);
+    assert.equal(world.receipts.length, 1);
+    assert.equal(world.receipts[0].type, "ghostSpeechMuted");
+    assert.equal(world.receipts[0].reason, "captions-open");
+    assert.equal(world.receipts[0].uuid, item.uuid);
+    assert.equal(world.logs.filter((l) => l.includes("captions on screen")).length, 1);
+  } finally {
+    presence.captionsViewClosed();
+  }
+});
+
+test("captions closed again: the next reply speaks as before", async () => {
+  resetWorld(0);
+  const layer = await settledLayer();
+  presence.captionsViewOpened();
+  presence.captionsViewOpened();
+  presence.captionsViewClosed();
+  presence.captionsViewClosed();
+  presence.captionsViewClosed(); // an extra close never goes negative
+  world.items.push(reply("Back to normal."));
+  await layer.poll();
+  assert.deepEqual(world.spoken, ["Back to normal."]);
+  assert.equal(world.receipts.length, 0);
+});
+
+test("in the case AND captions open: the receipt says glasses-in-case", async () => {
+  resetWorld(1);
+  const layer = await settledLayer();
+  presence.captionsViewOpened();
+  try {
+    world.items.push(reply("quiet"));
+    await layer.poll();
+    assert.deepEqual(world.spoken, []);
+    assert.equal(world.receipts[0].reason, "glasses-in-case");
+  } finally {
+    presence.captionsViewClosed();
+  }
+});

@@ -248,6 +248,19 @@ export class FaceclawVoiceControlBridge {
     return true;
   }
 
+  /**
+   * The running capture's cumulative G2-mic packet counters (they reset at
+   * each capture start), or null. Diagnostic: the captions log records them.
+   */
+  audioStats(): { packets: number; missing: number; late: number } | null {
+    try {
+      const raw = this.controller?.audioStatsJson();
+      return raw ? (JSON.parse(String(raw)) as { packets: number; missing: number; late: number }) : null;
+    } catch {
+      return null;
+    }
+  }
+
   stopRawCapture(): void {
     this.suspendedRaw = false;
     if (!this.rawActive) return;
