@@ -12,6 +12,7 @@ import {
   onLocalModelStateChanged,
   startLocalModelDownload,
 } from "../../native/llama";
+import { CAPTION_ONLY_MODEL_IDS } from "../../native/asr-model-defs";
 import {
   ASR_MODELS,
   asrModelState,
@@ -22,6 +23,7 @@ import {
   type AsrModelId,
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
+import { translationPacksItem } from "../../apps/microphones/translation-packs-item";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
 import {
@@ -143,6 +145,10 @@ function specialMenuItem(id: CatalogSpecialId): MenuItem {
       return asrModelMenuItem("parakeet-v2");
     case "asr-parakeet-110m":
       return asrModelMenuItem("parakeet-110m");
+    case "asr-sensevoice":
+      return asrModelMenuItem("sensevoice");
+    case "translation-packs":
+      return translationPacksItem();
     case "local-model":
       return localModelMenuItem();
   }
@@ -255,7 +261,9 @@ function asrModelMenuItem(id: AsrModelId): MenuItem {
     description:
       `${def.label} (${asrModelMb(id)} download). ` +
       "Transcribes voice input on the phone itself, with no API key or cloud service. " +
-      "Required for its matching Transcription Provider option; the other providers work without it. " +
+      (CAPTION_ONLY_MODEL_IDS.includes(id)
+        ? "Used by Microphones captions when Caption language is Japanese, Korean, Chinese. "
+        : "Required for its matching Transcription Provider option; the other providers work without it. ") +
       "An interrupted download resumes where it left off.",
     onSelect: (ctx) => {
       const state = asrModelState(id);

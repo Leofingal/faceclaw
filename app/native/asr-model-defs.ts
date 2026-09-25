@@ -32,13 +32,23 @@
  *    own tarball (sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8,
  *    asr-models release), so a changed mirror fails the hash check closed.
  *
+ *  - "sensevoice": FunAudioLLM SenseVoice Small, int8, sherpa-onnx's export
+ *    (csukuangfj's HF repo, pinned to a commit). Caption-only: the Microphones
+ *    app's "Japanese, Korean, Chinese" caption language (FaceclawCaptionEngine),
+ *    not a Voice provider. One model for Mandarin, Cantonese, English,
+ *    Japanese and Korean with a language tag per utterance. Chosen over
+ *    multilingual Whisper and Dolphin on FLEURS ja/ko/zh (desktop benchmark,
+ *    knowledge/staging/faceclaw-japanese-captions-return.md in the TLC repo).
+ *    The newer "...-int8-2025-09-09" repo is a Cantonese fine-tune (its
+ *    README: converted from ASLP-lab/WSYue-ASR), so not that one.
+ *
  * Both Parakeet models are CC-BY-4.0 (credit in ACKNOWLEDGEMENTS.md). Hashes
  * for the LFS files were re-checked on 2026-09-16 against Hugging Face's
  * x-linked-etag/x-linked-size headers; tokens.txt files were downloaded and
  * hashed.
  */
 
-export type AsrModelId = "moonshine" | "whisper-base-en" | "parakeet-v2" | "parakeet-110m";
+export type AsrModelId = "moonshine" | "whisper-base-en" | "parakeet-v2" | "parakeet-110m" | "sensevoice";
 
 export type AsrModelFile = {
   name: string;
@@ -54,7 +64,10 @@ export type AsrModelDef = {
   totalBytes: number;
 };
 
-export const ASR_MODEL_IDS: readonly AsrModelId[] = ["moonshine", "whisper-base-en", "parakeet-v2", "parakeet-110m"];
+export const ASR_MODEL_IDS: readonly AsrModelId[] = ["moonshine", "whisper-base-en", "parakeet-v2", "parakeet-110m", "sensevoice"];
+
+/** Models that only the Microphones captions use (no Voice provider runs them). */
+export const CAPTION_ONLY_MODEL_IDS: readonly AsrModelId[] = ["sensevoice"];
 
 export const ASR_MODELS: Record<AsrModelId, AsrModelDef> = {
   moonshine: {
@@ -170,6 +183,27 @@ export const ASR_MODELS: Record<AsrModelId, AsrModelDef> = {
       },
     ],
     totalBytes: 136490421,
+  },
+  sensevoice: {
+    label: "SenseVoice (Japanese, Korean, Chinese, English)",
+    dirName: "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    // sha256 of both files checked 2026-09-24: model by HF's x-linked-etag and
+    // by hashing the downloaded file; tokens.txt downloaded and hashed.
+    baseUrl:
+      "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/",
+    files: [
+      {
+        name: "model.int8.onnx",
+        sha256: "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+        sizeBytes: 239233841,
+      },
+      {
+        name: "tokens.txt",
+        sha256: "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+        sizeBytes: 315894,
+      },
+    ],
+    totalBytes: 239549735,
   },
 };
 

@@ -1,4 +1,5 @@
 import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
+import { CAPTION_LANGUAGES, captionLanguageLabel, type CaptionLanguage } from "./caption-lang";
 
 /**
  * Microphones app settings. All stored through the shared settings store so
@@ -63,6 +64,33 @@ export const translateEnabledSetting = new ConfigSettingBoolean({
     "Detect foreign languages in captions and show a translation to the phone's language beneath the original line.",
   storageKey: "microphones.translate-enabled",
   defaultValue: false,
+});
+
+/**
+ * Which caption model hears the room. "english" is Moonshine (the original
+ * captions). "asian" is SenseVoice: Japanese, Korean, Chinese (and English)
+ * in one model, the language detected per line, and every non-English line
+ * translated to English on the phone (ML Kit), whether or not Translate is on,
+ * because the glasses can't draw the original script.
+ */
+export const captionLanguageSetting = new ConfigSettingEnum<CaptionLanguage>({
+  id: "microphones-caption-language",
+  label: "Caption language",
+  description:
+    "English uses the Moonshine model. Japanese, Korean, Chinese uses SenseVoice, which detects the language of each line; the glasses show the English translation (download the model and the translation packs first, on Wi-Fi).",
+  storageKey: "microphones.caption-language",
+  defaultValue: "english",
+  values: CAPTION_LANGUAGES,
+  formatValue: captionLanguageLabel,
+});
+
+export const translationLogSetting = new ConfigSettingBoolean({
+  id: "microphones-translation-log",
+  label: "Translation log",
+  description:
+    "While captions are translating, write every line (time, detected language, original, English) to Download/Faceclaw/translation-log/ on the phone, one file per day. Never deleted automatically.",
+  storageKey: "microphones.translation-log",
+  defaultValue: true,
 });
 
 export const saveCaptionsSetting = new ConfigSettingBoolean({

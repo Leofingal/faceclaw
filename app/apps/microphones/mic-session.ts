@@ -6,7 +6,7 @@ import { toUint8Array } from "../../util/array-util";
 import { voiceControlBridge } from "../../native/voice-control";
 import { voiceActivity } from "../../ui/shell/voice-activity";
 import { onSettingsStoreChanged } from "../../native/settings-store";
-import { isAsrModelReady } from "../../native/asr-model";
+import { ASR_MODELS, isAsrModelReady } from "../../native/asr-model";
 import {
   TempleAudioPipeline,
   angleInArc,
@@ -41,6 +41,7 @@ import {
 import {
   ancEnabledSetting,
   beamFilterSetting,
+  captionLanguageSetting,
   captionsEnabledSetting,
   captionsRetentionSetting,
   recordingsRetentionSetting,
@@ -48,8 +49,18 @@ import {
   saveCaptionsSetting,
   saveRecordingsSetting,
   translateEnabledSetting,
+  translationLogSetting,
   wearerCommandsOnlySetting,
 } from "./mic-settings";
+import {
+  captionModelKind,
+  compactCjkSpaces,
+  resolveCaptionLang,
+  translationLogEvent,
+  translationLogFileName,
+  translationLogRecord,
+  type TranslationState,
+} from "./caption-lang";
 import {
   inferIntroducedName,
   isGenericSpeakerName,
@@ -95,6 +106,9 @@ const RECORDING_AAC_BITRATE = 32_000;
 const ENCOUNTER_GAP_MS = 15 * 60 * 1000;
 const ENCOUNTER_CARD_TTL_MS = 12_000;
 const ENCOUNTER_CARD_MAX_ACTION_ITEMS = 2;
+// Longest a caption line waits for its translation before it is shown and
+// logged as untranslated.
+const TRANSLATE_TIMEOUT_MS = 45_000;
 
 export type CaptionLine = {
   speakerId: number | null;
@@ -104,6 +118,8 @@ export type CaptionLine = {
   text: string;
   translation: string;
   lang: string;
+  /** Where the translation stands; the glasses show English only (caption-lang.ts). */
+  translationState: TranslationState;
   emotion: string;
   sentiment: number;
   atMs: number;
@@ -161,6 +177,12 @@ class MicSession {
   private captionEngine: any | null = null;
   private captionListenerProxy: any | null = null;
   private captionsActive = false;
+  // The caption model the running engine was started with ("moonshine" |
+  // "sensevoice"), so a Caption language change can restart it.
+  private captionEngineKind: "moonshine" | "sensevoice" = "moonshine";
+  // Why the engine isn't on the model the setting asked for (shown after the
+  // engine's own status), or "".
+  private captionNote = "";
   private engineStartWallMs = 0;
   private sessionRowId = -1;
   private sentimentSum = 0;
@@ -325,6 +347,13 @@ class MicSession {
   }
 
   private refreshCachedFlags(): void {
+    if (this.captionsActive && this.wantedCaptionModel().kind !== this.captionEngineKind) {
+      // Caption language changed mid-session: restart the engine on the new
+      // model (a new conversation row, since the model differs).
+      this.stopCaptions();
+      this.finishSessionRow();
+      this.startCaptions();
+    }
     this.beamFilterOn = beamFilterSetting.get();
     const wasOn = this.ancOn;
     this.ancOn = ancEnabledSetting.get();
@@ -719,24 +748,47 @@ class MicSession {
     if (this.captionsActive) return;
     const engine = new com.faceclaw.app.FaceclawCaptionEngine();
     this.captionListenerProxy = new com.faceclaw.app.FaceclawCaptionEngineListener({
-      onUtterance: (text: string, embedding: any, startMs: number, endMs: number, peakRms: number) => {
-        this.handleUtterance(String(text), embedding, Number(startMs), Number(endMs), Number(peakRms));
+      onUtterance: (
+        text: string,
+        lang: string,
+        embedding: any,
+        startMs: number,
+        endMs: number,
+        peakRms: number,
+        decodeMs: number,
+      ) => {
+        this.handleUtterance(
+          String(text),
+          String(lang ?? ""),
+          embedding,
+          Number(startMs),
+          Number(endMs),
+          Number(peakRms),
+          Number(decodeMs),
+        );
       },
       onSpeechStart: (_startMs: number) => {
         this.speechActive = true;
       },
       onStatus: (status: string) => {
-        this.statusText = String(status);
+        this.statusText = this.captionNote ? `${String(status)} (${this.captionNote})` : String(status);
+      },
+      onModelLoaded: (infoJson: string) => {
+        this.handleCaptionModelLoaded(String(infoJson));
       },
     });
     engine.setListener(this.captionListenerProxy);
     // Live captions are a separate sherpa-onnx pipeline (FaceclawCaptionEngine)
-    // that only ever uses Moonshine; unaffected by the two-model on-device
-    // Whisper addition in native/voice-control.ts's push-to-talk path.
-    engine.setAsrModelDir(isAsrModelReady("moonshine") ? moonshineModelDir() : null);
+    // from push-to-talk dictation (native/voice-control.ts): Moonshine for
+    // English, or SenseVoice for Japanese/Korean/Chinese when the Caption
+    // language setting says so and its model is downloaded.
+    const wanted = this.wantedCaptionModel();
+    engine.setAsrModel(wanted.kind, wanted.dir);
     engine.setSpeakerModelPath(micModelPath("speaker-embedding"));
     engine.start();
     this.captionEngine = engine;
+    this.captionEngineKind = wanted.kind;
+    this.captionNote = wanted.note;
     this.captionsActive = true;
     this.engineStartWallMs = Date.now();
     this.encounterShown.clear();
@@ -745,10 +797,74 @@ class MicSession {
         this.store().startSession(Date.now(), `Conversation ${new Date().toLocaleString()}`),
       );
     }
+    if (wanted.note) this.statusText = wanted.note;
+  }
+
+  /**
+   * The caption model to run: SenseVoice when Caption language is "Japanese,
+   * Korean, Chinese" and its files are on the phone; otherwise Moonshine
+   * (with a note saying why, when SenseVoice was asked for but is missing).
+   */
+  private wantedCaptionModel(): { kind: "moonshine" | "sensevoice"; dir: string | null; note: string } {
+    const kind = captionModelKind(captionLanguageSetting.get());
+    if (kind === "sensevoice") {
+      if (isAsrModelReady("sensevoice")) {
+        return { kind, dir: captionModelDir("sensevoice"), note: "" };
+      }
+      return {
+        kind: "moonshine",
+        dir: isAsrModelReady("moonshine") ? captionModelDir("moonshine") : null,
+        note: "Japanese/Korean/Chinese model not downloaded: English captions only",
+      };
+    }
+    return { kind, dir: isAsrModelReady("moonshine") ? captionModelDir("moonshine") : null, note: "" };
+  }
+
+  /** True when non-English lines are translated: Translate on, or the Asian caption language. */
+  private translating(): boolean {
+    return translateEnabledSetting.get() || this.captionEngineKind === "sensevoice";
+  }
+
+  private handleCaptionModelLoaded(infoJson: string): void {
+    console.log(`caption model loaded: ${infoJson}`);
+    let info: Record<string, unknown> = {};
+    try {
+      info = JSON.parse(infoJson) as Record<string, unknown>;
+    } catch {
+      // Diagnostic only.
+    }
+    this.writeTranslationLog(
+      translationLogEvent("start", Date.now(), { ...info, session: this.sessionRowId, logDir: this.translationLogDir() }),
+    );
+  }
+
+  private translationLogDir(): string {
+    try {
+      return String(com.faceclaw.app.FaceclawCaptionLog.currentDir());
+    } catch {
+      return "";
+    }
+  }
+
+  /** Append one record to today's translation log (when translating and the log is on). */
+  private writeTranslationLog(record: string, atMs = Date.now()): void {
+    if (!translationLogSetting.get() || !this.translating()) return;
+    try {
+      com.faceclaw.app.FaceclawCaptionLog.append(
+        Utils.android.getApplicationContext(),
+        translationLogFileName(new Date(atMs)),
+        record,
+      );
+    } catch (error) {
+      console.warn(`translation log append failed: ${error}`);
+    }
   }
 
   private stopCaptions(): void {
     if (!this.captionsActive) return;
+    this.writeTranslationLog(
+      translationLogEvent("stop", Date.now(), { model: this.captionEngineKind, session: this.sessionRowId }),
+    );
     try {
       this.captionEngine?.stop();
     } catch (error) {
@@ -882,12 +998,15 @@ class MicSession {
   }
 
   private handleUtterance(
-    text: string,
+    rawText: string,
+    modelLang: string,
     embedding: any,
     startMs: number,
     endMs: number,
     _peakRms: number,
+    decodeMs: number,
   ): void {
+    const text = this.captionEngineKind === "sensevoice" ? compactCjkSpaces(rawText) : rawText;
     if (!text.trim() && !embedding) return;
     const embeddingFloats = embedding ? floatArrayToFloat32(embedding) : null;
     if (this.wearerEnrollmentArmed && embeddingFloats) {
@@ -933,6 +1052,7 @@ class MicSession {
       text: text.trim(),
       translation: "",
       lang: "",
+      translationState: "none",
       emotion: analyzed?.emotion ?? "",
       sentiment: analyzed?.score ?? 0,
       atMs: this.engineStartWallMs + startMs,
@@ -980,24 +1100,46 @@ class MicSession {
     // Language identification + translation are async; the UI line and the
     // stored segment update when they resolve.
     if (line.text) {
-      void this.identifyAndTranslate(line, segmentId);
+      void this.identifyAndTranslate(line, segmentId, modelLang, {
+        audioMs: endMs - startMs,
+        decodeMs,
+        sessionId: this.sessionRowId,
+        model: this.captionEngineKind,
+      });
     }
   }
 
-  private async identifyAndTranslate(line: CaptionLine, segmentId: number): Promise<void> {
+  private async identifyAndTranslate(
+    line: CaptionLine,
+    segmentId: number,
+    modelLang: string,
+    meta: { audioMs: number; decodeMs: number; sessionId: number; model: string },
+  ): Promise<void> {
+    const target = deviceLanguage();
+    let langSource = "";
     try {
-      const lang = await identifyLanguage(line.text);
-      // Hysteresis: a single short line rarely proves a language switch, but
-      // repeated confident detections move the conversation language.
-      if (lang !== "und") {
+      // The caption model's tag and the text's script first (SenseVoice tags
+      // every line); ML Kit's text language ID only when they don't settle it.
+      const resolved = resolveCaptionLang(modelLang, line.text);
+      let lang = resolved.lang;
+      langSource = resolved.source;
+      if (!lang) {
+        lang = await identifyLanguage(line.text);
+        langSource = lang !== "und" ? "mlkit" : "";
+      }
+      if (lang && lang !== "und") {
         this.conversationLang = lang;
         line.lang = lang;
       }
-      const target = deviceLanguage();
       let translation = "";
-      if (translateEnabledSetting.get() && lang !== "und" && lang !== target) {
-        translation = await translateText(line.text, lang, target);
+      if (this.translating() && lang && lang !== "und" && lang !== target) {
+        line.translationState = "pending";
+        this.notify();
+        // Bounded so a stuck translator can't keep the line out of the log;
+        // a first-use pack download (~30 MB) can take a while on a slow link.
+        translation = await withTimeout(translateText(line.text, lang, target), TRANSLATE_TIMEOUT_MS, "");
         line.translation = translation;
+        line.translationState = translation ? "done" : "failed";
       }
       if (segmentId >= 0 && (line.lang || translation)) {
         this.store().updateSegment(
@@ -1012,7 +1154,29 @@ class MicSession {
       this.notify();
     } catch (error) {
       console.warn(`caption translate failed: ${error}`);
+      if (line.translationState === "pending") {
+        line.translationState = "failed";
+        this.notify();
+      }
     }
+    const english =
+      line.translation || (line.lang === target || (!line.lang && line.translationState === "none") ? line.text : "");
+    this.writeTranslationLog(
+      translationLogRecord({
+        atMs: line.atMs,
+        lang: line.lang,
+        langSource,
+        text: line.text,
+        english,
+        translationState: line.lang === target ? "none" : line.translationState,
+        speaker: line.speakerName,
+        model: meta.model,
+        audioMs: meta.audioMs,
+        decodeMs: meta.decodeMs,
+        sessionId: meta.sessionId,
+      }),
+      line.atMs,
+    );
   }
 
   /** Whether an utterance from this voice may trigger voice commands. */
@@ -1182,9 +1346,25 @@ function strongerChanged(current: MicSide, candidate: MicSide): boolean {
   return current !== candidate;
 }
 
-function moonshineModelDir(): string {
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
+function captionModelDir(id: "moonshine" | "sensevoice"): string {
   const context = Utils.android.getApplicationContext();
-  return `${context.getFilesDir().getAbsolutePath()}/faceclaw-voice-asr/sherpa-onnx-moonshine-base-en-quantized-2026-02-27`;
+  return `${context.getFilesDir().getAbsolutePath()}/faceclaw-voice-asr/${ASR_MODELS[id].dirName}`;
 }
 
 export const micSession = new MicSession();

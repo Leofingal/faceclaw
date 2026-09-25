@@ -39,6 +39,13 @@ import {
   startAsrModelDownload,
   type AsrModelId,
 } from "../native/asr-model";
+import { CAPTION_ONLY_MODEL_IDS } from "../native/asr-model-defs";
+import {
+  downloadTranslationPacks,
+  onTranslationPacksChanged,
+  refreshTranslationPacks,
+  translationPacksSummary,
+} from "../apps/microphones/translate";
 import {
   cancelLocalModelDownload,
   deleteLocalModel,
@@ -297,6 +304,10 @@ function specialRows(id: CatalogSpecialId): PhoneSettingsRow[] {
       return [asrModelRow("parakeet-v2")];
     case "asr-parakeet-110m":
       return [asrModelRow("parakeet-110m")];
+    case "asr-sensevoice":
+      return [asrModelRow("sensevoice")];
+    case "translation-packs":
+      return [translationPacksRow()];
     case "local-model":
       return [localModelRow()];
   }
@@ -327,9 +338,11 @@ function asrModelRow(id: AsrModelId): PhoneSettingsRow {
   const row = new PhoneSettingsRow({
     kind: "action",
     title: `On-device model: ${def.label}`,
-    description:
-      "Transcribes voice input on the phone itself, with no API key and no cloud service. " +
-      "Required for its matching Transcription provider option. An interrupted download resumes.",
+    description: CAPTION_ONLY_MODEL_IDS.includes(id)
+      ? "Hears Japanese, Korean and Chinese (and English) for Microphones captions, on the phone itself. " +
+        "Used when Caption language is Japanese, Korean, Chinese. An interrupted download resumes."
+      : "Transcribes voice input on the phone itself, with no API key and no cloud service. " +
+        "Required for its matching Transcription provider option. An interrupted download resumes.",
     value: () => downloadStatus(asrModelState(id), total),
     activate: () => {
       const state = asrModelState(id);
@@ -342,6 +355,19 @@ function asrModelRow(id: AsrModelId): PhoneSettingsRow {
     watch: (onChange) => onAsrModelStateChanged(id, onChange),
   });
   return row;
+}
+
+function translationPacksRow(): PhoneSettingsRow {
+  refreshTranslationPacks();
+  return new PhoneSettingsRow({
+    kind: "action",
+    title: "Translation packs (Japanese, Korean, Chinese)",
+    description:
+      "ML Kit's on-phone translators to English. Tap to download on Wi-Fi before travel; after that, captions translate with no network.",
+    value: () => translationPacksSummary(),
+    activate: () => downloadTranslationPacks(),
+    watch: (onChange) => onTranslationPacksChanged(onChange),
+  });
 }
 
 function localModelRow(): PhoneSettingsRow {

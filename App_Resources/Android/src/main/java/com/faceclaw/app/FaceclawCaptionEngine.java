@@ -2,6 +2,7 @@ package com.faceclaw.app;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.k2fsa.sherpa.onnx.FeatureConfig;
@@ -10,6 +11,7 @@ import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineStream;
 
 import java.io.File;
@@ -19,8 +21,9 @@ import java.util.Arrays;
 /**
  * Continuous captioning over the decoded mic PCM: segments speech into
  * utterances with an adaptive energy gate, transcribes each utterance with
- * the on-device Moonshine model, and attaches a speaker voice-print per
- * utterance. PCM is pushed in from the TS side (which owns mic arbitration
+ * the on-device caption model (Moonshine for English, or SenseVoice for
+ * Japanese/Korean/Chinese/English with a detected-language tag per
+ * utterance), and attaches a speaker voice-print per utterance. PCM is pushed in from the TS side (which owns mic arbitration
  * and any beam-direction gating), so this engine has no BLE dependencies.
  *
  * Utterance boundaries are measured on the sample clock, not the wall clock:
@@ -47,12 +50,27 @@ public class FaceclawCaptionEngine {
     // Moonshine v2 fails past ~9.1 s of input; decode long utterances in
     // segments cut at the quietest window (mirrors FaceclawVoiceController).
     private static final int DECODE_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * 8;
+    // SenseVoice is a non-autoregressive CTC model with no such limit (FLEURS
+    // clips up to 30 s decoded whole on the desktop benchmark), so a whole
+    // utterance (<= MAX_UTTERANCE_MS) is decoded at once: one language tag per
+    // caption line and no cut mid-sentence before translation.
+    private static final int SENSEVOICE_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * (MAX_UTTERANCE_MS / 1000);
     private static final int CUT_SEARCH_SAMPLES = SAMPLE_RATE * 2;
     private static final int CUT_WINDOW_SAMPLES = SAMPLE_RATE * 30 / 1000;
     private static final float NORMALIZE_TARGET_PEAK = 0.9f;
     private static final float NORMALIZE_MAX_GAIN = 30f;
     // Voice-prints degrade on very long inputs; embed at most the first 10 s.
     private static final int EMBED_MAX_SAMPLES = SAMPLE_RATE * 10;
+
+    /** Caption model kinds (setAsrModel). */
+    public static final String MODEL_MOONSHINE = "moonshine";
+    public static final String MODEL_SENSEVOICE = "sensevoice";
+    /**
+     * SenseVoice decode threads. Captions decode once per utterance, between
+     * utterances, so 2 threads cut per-caption latency without keeping four
+     * cores busy for a whole conversation. Moonshine keeps its original 1.
+     */
+    private static final int SENSEVOICE_THREADS = 2;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Object lock = new Object();
@@ -61,13 +79,18 @@ public class FaceclawCaptionEngine {
 
     private volatile FaceclawCaptionEngineListener listener;
     private volatile String asrModelDir;
+    private volatile String asrModelKind = MODEL_MOONSHINE;
     private volatile String speakerModelPath;
     private volatile int silenceMs = DEFAULT_SILENCE_MS;
     private Thread workerThread;
     private volatile boolean started;
 
     private OfflineRecognizer recognizer;
+    private String recognizerKind = MODEL_MOONSHINE;
     private FaceclawSpeakerId speakerId;
+    // Detected language of the last recognizeUtterance() (SenseVoice only; ""
+    // for Moonshine). Worker thread only.
+    private String lastUtteranceLang = "";
 
     // Segmentation state (worker thread only).
     private long totalSamples;
@@ -87,6 +110,16 @@ public class FaceclawCaptionEngine {
 
     /** Directory holding the Moonshine model files, or null to disable ASR. */
     public void setAsrModelDir(String dir) {
+        setAsrModel(MODEL_MOONSHINE, dir);
+    }
+
+    /**
+     * The caption model: {@link #MODEL_MOONSHINE} or {@link #MODEL_SENSEVOICE},
+     * and the directory holding its files (null disables ASR). Takes effect at
+     * the next start().
+     */
+    public void setAsrModel(String kind, String dir) {
+        this.asrModelKind = MODEL_SENSEVOICE.equals(kind) ? MODEL_SENSEVOICE : MODEL_MOONSHINE;
         this.asrModelDir = dir;
     }
 
@@ -174,24 +207,52 @@ public class FaceclawCaptionEngine {
 
     private void loadModels() {
         String modelDir = asrModelDir;
+        String kind = asrModelKind;
+        recognizer = null;
+        recognizerKind = kind;
         if (modelDir != null && new File(modelDir, "tokens.txt").exists()) {
-            emitStatus("Loading caption model...");
+            boolean senseVoice = MODEL_SENSEVOICE.equals(kind);
+            emitStatus(senseVoice ? "Loading caption model (Japanese/Korean/Chinese)..." : "Loading caption model...");
+            long rssBeforeKb = readVmRssKb();
+            long heapBeforeKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+            long startMs = SystemClock.elapsedRealtime();
+            OfflineModelConfig.Builder modelConfig = OfflineModelConfig.builder()
+                    .setTokens(new File(modelDir, "tokens.txt").getAbsolutePath());
+            if (senseVoice) {
+                modelConfig
+                        .setSenseVoice(OfflineSenseVoiceModelConfig.builder()
+                                .setModel(new File(modelDir, "model.int8.onnx").getAbsolutePath())
+                                // "auto": the model tags each utterance zh/en/ja/ko/yue.
+                                .setLanguage("auto")
+                                // Digits and punctuation in the output (better input to
+                                // the translator; FLEURS zh CER 4.6% with vs 8.2% without).
+                                .setInverseTextNormalization(true)
+                                .build())
+                        .setNumThreads(SENSEVOICE_THREADS);
+            } else {
+                modelConfig
+                        .setMoonshine(OfflineMoonshineModelConfig.builder()
+                                .setEncoder(new File(modelDir, "encoder_model.ort").getAbsolutePath())
+                                .setMergedDecoder(new File(modelDir, "decoder_model_merged.ort").getAbsolutePath())
+                                .build())
+                        .setNumThreads(1);
+            }
             recognizer = new OfflineRecognizer(OfflineRecognizerConfig.builder()
                     .setFeatureConfig(FeatureConfig.builder()
                             .setSampleRate(SAMPLE_RATE)
                             .setFeatureDim(FEATURE_DIM)
                             .build())
-                    .setModelConfig(OfflineModelConfig.builder()
-                            .setMoonshine(OfflineMoonshineModelConfig.builder()
-                                    .setEncoder(new File(modelDir, "encoder_model.ort").getAbsolutePath())
-                                    .setMergedDecoder(new File(modelDir, "decoder_model_merged.ort").getAbsolutePath())
-                                    .build())
-                            .setTokens(new File(modelDir, "tokens.txt").getAbsolutePath())
-                            .setNumThreads(1)
-                            .build())
+                    .setModelConfig(modelConfig.build())
                     .build());
-        } else {
-            recognizer = null;
+            long loadMs = SystemClock.elapsedRealtime() - startMs;
+            long rssAfterKb = readVmRssKb();
+            long heapAfterKb = android.os.Debug.getNativeHeapAllocatedSize() / 1024;
+            Log.i(TAG, "Captions recognizer loaded model=" + kind
+                    + " threads=" + (senseVoice ? SENSEVOICE_THREADS : 1)
+                    + " loadMs=" + loadMs
+                    + " rssMb=" + mb(rssBeforeKb) + "->" + mb(rssAfterKb)
+                    + " nativeHeapMb=" + mb(heapBeforeKb) + "->" + mb(heapAfterKb));
+            emitModelLoaded(kind, loadMs, rssBeforeKb, rssAfterKb, heapBeforeKb, heapAfterKb);
         }
         String embedModel = speakerModelPath;
         if (embedModel != null && new File(embedModel).exists()) {
@@ -205,8 +266,11 @@ public class FaceclawCaptionEngine {
 
     private void releaseModels() {
         if (recognizer != null) {
+            long rssBeforeKb = readVmRssKb();
             recognizer.release();
             recognizer = null;
+            Log.i(TAG, "Captions recognizer released model=" + recognizerKind
+                    + " rssMb=" + mb(rssBeforeKb) + "->" + mb(readVmRssKb()));
         }
         if (speakerId != null) {
             speakerId.close();
@@ -315,24 +379,41 @@ public class FaceclawCaptionEngine {
         if (endMs - startMs < MIN_UTTERANCE_MS) {
             return;
         }
+        long decodeStartMs = SystemClock.elapsedRealtime();
         String text = recognizeUtterance(length);
+        long decodeMs = SystemClock.elapsedRealtime() - decodeStartMs;
+        String lang = lastUtteranceLang;
+        if (recognizer != null) {
+            Log.i(TAG, "Captions decode model=" + recognizerKind + " audioMs=" + (endMs - startMs)
+                    + " decodeMs=" + decodeMs + " lang=" + lang + " chars=" + text.length());
+        }
         float[] embedding = embedUtterance(length);
-        emitUtterance(text, embedding, startMs, endMs, utterancePeakRms);
+        emitUtterance(text, lang, embedding, startMs, endMs, utterancePeakRms, decodeMs);
     }
 
     private String recognizeUtterance(int length) {
+        lastUtteranceLang = "";
         if (recognizer == null || length <= 0) {
             return "";
         }
+        int maxSegment = MODEL_SENSEVOICE.equals(recognizerKind)
+                ? SENSEVOICE_SEGMENT_MAX_SAMPLES
+                : DECODE_SEGMENT_MAX_SAMPLES;
         StringBuilder joined = new StringBuilder();
         int offset = 0;
+        int langSegmentLength = 0;
         while (offset < length) {
             int remaining = length - offset;
-            int segment = Math.min(remaining, DECODE_SEGMENT_MAX_SAMPLES);
-            if (remaining > DECODE_SEGMENT_MAX_SAMPLES) {
+            int segment = Math.min(remaining, maxSegment);
+            if (remaining > maxSegment) {
                 segment = findQuietCut(offset, segment);
             }
             String part = recognizeRange(offset, segment);
+            // The longest segment's language tag stands for the utterance.
+            if (lastRangeLang.length() > 0 && segment > langSegmentLength) {
+                lastUtteranceLang = lastRangeLang;
+                langSegmentLength = segment;
+            }
             if (part.length() > 0) {
                 if (joined.length() > 0 && ".,!?;:%)]}".indexOf(part.charAt(0)) < 0) {
                     joined.append(' ');
@@ -373,7 +454,33 @@ public class FaceclawCaptionEngine {
         return bestStart + win / 2;
     }
 
+    // Language tag of the last recognizeRange() ("" when the model gives none).
+    private String lastRangeLang = "";
+
+    /** "<|ja|>" -> "ja"; "" for anything that isn't a short lowercase code. */
+    static String normalizeLangTag(String tag) {
+        if (tag == null) {
+            return "";
+        }
+        String t = tag.trim();
+        if (t.startsWith("<|") && t.endsWith("|>") && t.length() > 4) {
+            t = t.substring(2, t.length() - 2);
+        }
+        t = t.toLowerCase(java.util.Locale.ROOT);
+        if (t.length() < 2 || t.length() > 5) {
+            return "";
+        }
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c < 'a' || c > 'z') {
+                return "";
+            }
+        }
+        return t;
+    }
+
     private String recognizeRange(int offset, int count) {
+        lastRangeLang = "";
         float[] samples = new float[count];
         float peak = 0f;
         for (int i = 0; i < count; i++) {
@@ -398,6 +505,7 @@ public class FaceclawCaptionEngine {
             recognizer.decode(stream);
             OfflineRecognizerResult result = recognizer.getResult(stream);
             String raw = result == null ? "" : result.getText();
+            lastRangeLang = result == null ? "" : normalizeLangTag(result.getLang());
             return raw == null ? "" : raw.trim();
         } finally {
             stream.release();
@@ -419,13 +527,50 @@ public class FaceclawCaptionEngine {
         return currentSpeakerId.embed(le, SAMPLE_RATE);
     }
 
-    private void emitUtterance(String text, float[] embedding, long startMs, long endMs, double peakRms) {
+    private void emitUtterance(String text, String lang, float[] embedding, long startMs, long endMs,
+            double peakRms, long decodeMs) {
         FaceclawCaptionEngineListener currentListener = listener;
         if (currentListener == null) {
             return;
         }
         float[] embeddingCopy = embedding == null ? null : Arrays.copyOf(embedding, embedding.length);
-        mainHandler.post(() -> currentListener.onUtterance(text, embeddingCopy, startMs, endMs, peakRms));
+        mainHandler.post(() -> currentListener.onUtterance(text, lang, embeddingCopy, startMs, endMs, peakRms, decodeMs));
+    }
+
+    private void emitModelLoaded(String model, long loadMs, long rssBeforeKb, long rssAfterKb,
+            long heapBeforeKb, long heapAfterKb) {
+        FaceclawCaptionEngineListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        String json = "{\"model\":\"" + model + "\",\"loadMs\":" + loadMs
+                + ",\"rssMb\":[" + mbJson(rssBeforeKb) + "," + mbJson(rssAfterKb) + "]"
+                + ",\"nativeHeapMb\":[" + mbJson(heapBeforeKb) + "," + mbJson(heapAfterKb) + "]}";
+        mainHandler.post(() -> currentListener.onModelLoaded(json));
+    }
+
+    /** VmRSS of this process from /proc/self/status, in kB, or -1. */
+    private static long readVmRssKb() {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader("/proc/self/status"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("VmRSS:")) {
+                    String[] parts = line.substring(6).trim().split("\\s+");
+                    return Long.parseLong(parts[0]);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Diagnostic only.
+        }
+        return -1;
+    }
+
+    private static String mb(long kb) {
+        return kb < 0 ? "?" : String.valueOf(Math.round(kb / 1024.0));
+    }
+
+    private static String mbJson(long kb) {
+        return kb < 0 ? "null" : String.valueOf(Math.round(kb / 1024.0));
     }
 
     private void emitSpeechStart(long startMs) {

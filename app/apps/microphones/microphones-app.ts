@@ -32,14 +32,17 @@ import { formatRelativeTime } from "../../util/date-util";
 import {
   ancEnabledSetting,
   beamFilterSetting,
+  captionLanguageSetting,
   captionsEnabledSetting,
   captionsRetentionSetting,
   recordingsRetentionSetting,
   saveCaptionsSetting,
   saveRecordingsSetting,
   translateEnabledSetting,
+  translationLogSetting,
   wearerCommandsOnlySetting,
 } from "./mic-settings";
+import { translationPacksItem } from "./translation-packs-item";
 
 export const MICROPHONES_WINDOW_ID = "microphones";
 export const MICROPHONES_SURFACE_ID = "window:microphones";
@@ -330,9 +333,8 @@ function voiceSpeakersMenu(): MenuLayer {
         () => startMicModelDownload("speaker-embedding"),
       ),
       modelItem(
-        // Live captions always use Moonshine (see the matching note in
-        // mic-session.ts); the second on-device model (Whisper) is a
-        // push-to-talk dictation option only, managed in Settings > Voice.
+        // English captions use Moonshine; the dictation models (Whisper,
+        // Parakeet) are push-to-talk options only, managed in Settings > Voice.
         "Caption ASR model",
         () => isAsrModelReady("moonshine"),
         () => {
@@ -345,6 +347,21 @@ function voiceSpeakersMenu(): MenuLayer {
         },
         () => startAsrModelDownload("moonshine"),
       ),
+      modelItem(
+        // Caption language "Japanese, Korean, Chinese" (mic-settings.ts).
+        "Japanese/Korean/Chinese model",
+        () => isAsrModelReady("sensevoice"),
+        () => {
+          const state = asrModelState("sensevoice");
+          if (state.status === "ready") return "ready";
+          if (state.status === "downloading") {
+            return `${Math.round((state.bytesDownloaded / state.totalBytes) * 100)}%`;
+          }
+          return `download (${Math.round(state.totalBytes / 1e6)} MB)`;
+        },
+        () => startAsrModelDownload("sensevoice"),
+      ),
+      translationPacksItem(),
       modelItem(
         "Re-diarization model",
         () => isMicModelReady("diarization-segmentation"),
@@ -427,6 +444,7 @@ function storageMenu(): MenuLayer {
     "Storage",
     [
       toggleSettingMenuItem(saveCaptionsSetting),
+      toggleSettingMenuItem(translationLogSetting),
       toggleSettingMenuItem(saveRecordingsSetting),
       enumSettingMenuItem(captionsRetentionSetting),
       enumSettingMenuItem(recordingsRetentionSetting),
@@ -479,6 +497,7 @@ export function createMicrophonesAppWindow(options: InProcessAppOptions): InProc
         captionsEnabledSetting.description,
       ),
       toggleSettingMenuItem(translateEnabledSetting),
+      enumSettingMenuItem(captionLanguageSetting),
       toggleSettingMenuItem(beamFilterSetting),
       toggleSettingMenuItem(ancEnabledSetting),
       submenuItem("Microphone setup", (ctx) => {

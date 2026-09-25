@@ -4,12 +4,15 @@ import { lineStep } from "../../ui/metrics";
 import { GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type CaptionLine, type MicSessionState } from "./mic-session";
+import { glassesCaptionText } from "./caption-lang";
 
 /**
  * On-glasses captions: each line is prefixed with the speaker's name (their
- * id until tagged); foreign-language lines show the translation directly
- * beneath the recognized original. Scroll reviews recent lines; the view
- * snaps back to live on new speech.
+ * id until tagged); foreign-language lines show only their English
+ * translation (Chris, 2026-09-24: "just transcribe to the glasses in
+ * English"; the original stays in the phone's conversation view and the
+ * translation log). Scroll reviews recent lines; the view snaps back to live
+ * on new speech.
  */
 export class CaptionsLayer implements Layer {
   private state: MicSessionState = micSession.getState();
@@ -78,21 +81,17 @@ export class CaptionsLayer implements Layer {
     for (const line of lines) {
       const prefix = `${line.speakerName}: `;
       const prefixWidth = font.measureText(prefix);
-      const wrapped = wrapWords(font, line.text, maxWidth - prefixWidth);
+      const shown = glassesCaptionText(line);
+      const wrapped = wrapWords(font, shown.text, maxWidth - prefixWidth);
       wrapped.forEach((text, index) => {
         rows.push({
           prefix: index === 0 ? prefix : undefined,
           prefixValue: line.isWearer ? 255 : 170,
           text,
-          value: 230,
+          value: shown.dim ? 140 : 230,
           indent: index === 0 ? 0 : prefixWidth,
         });
       });
-      if (line.translation) {
-        for (const text of wrapWords(font, `→ ${line.translation}`, maxWidth - prefixWidth)) {
-          rows.push({ prefixValue: 0, text, value: 140, indent: prefixWidth });
-        }
-      }
     }
     return rows;
   }
