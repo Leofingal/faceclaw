@@ -6,18 +6,52 @@
  * log's line format.
  */
 
-/** Settings value of the Microphones "Caption language" setting. */
+/** Settings value of the Microphones "Languages I'll hear" setting (was "Caption language"). */
 export type CaptionLanguage = "english" | "asian";
 
 export const CAPTION_LANGUAGES: readonly CaptionLanguage[] = ["english", "asian"];
 
 export function captionLanguageLabel(value: CaptionLanguage): string {
-  return value === "asian" ? "Japanese, Korean, Chinese" : "English";
+  return value === "asian" ? "Japanese, Korean, Chinese (+ English)" : "English";
 }
 
 /** The caption engine model kind (FaceclawCaptionEngine.MODEL_*) for a setting value. */
 export function captionModelKind(value: string): "moonshine" | "sensevoice" {
   return value === "asian" ? "sensevoice" : "moonshine";
+}
+
+/**
+ * The caption model to actually run, given the setting and which models are
+ * on the phone. `ready: false` means neither usable model is downloaded: the
+ * engine then runs with no recognizer, so `note` must say so (on 2026-09-25
+ * that state was silent, and captions produced nothing, not even English).
+ *
+ * English falls back to SenseVoice when Moonshine is missing: SenseVoice also
+ * transcribes English (tagged `en`, left untranslated), so a phone that only
+ * downloaded the Japanese/Korean/Chinese model still captions English.
+ */
+export function chooseCaptionModel(
+  language: string,
+  moonshineReady: boolean,
+  senseVoiceReady: boolean,
+): { kind: "moonshine" | "sensevoice"; ready: boolean; note: string } {
+  const noModel = "No caption model downloaded (Microphones > Voice & speakers)";
+  if (captionModelKind(language) === "sensevoice") {
+    if (senseVoiceReady) return { kind: "sensevoice", ready: true, note: "" };
+    if (moonshineReady) {
+      return {
+        kind: "moonshine",
+        ready: true,
+        note: "Japanese/Korean/Chinese model not downloaded: English captions only",
+      };
+    }
+    return { kind: "moonshine", ready: false, note: noModel };
+  }
+  if (moonshineReady) return { kind: "moonshine", ready: true, note: "" };
+  if (senseVoiceReady) {
+    return { kind: "sensevoice", ready: true, note: "English model not downloaded: using SenseVoice" };
+  }
+  return { kind: "moonshine", ready: false, note: noModel };
 }
 
 /** Languages the translation packs cover (ML Kit codes); English is built in. */

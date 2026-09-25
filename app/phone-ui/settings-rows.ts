@@ -340,7 +340,7 @@ function asrModelRow(id: AsrModelId): PhoneSettingsRow {
     title: `On-device model: ${def.label}`,
     description: CAPTION_ONLY_MODEL_IDS.includes(id)
       ? "Hears Japanese, Korean and Chinese (and English) for Microphones captions, on the phone itself. " +
-        "Used when Caption language is Japanese, Korean, Chinese. An interrupted download resumes."
+        "Used when Languages I'll hear is Japanese, Korean, Chinese. An interrupted download resumes."
       : "Transcribes voice input on the phone itself, with no API key and no cloud service. " +
         "Required for its matching Transcription provider option. An interrupted download resumes.",
     value: () => downloadStatus(asrModelState(id), total),

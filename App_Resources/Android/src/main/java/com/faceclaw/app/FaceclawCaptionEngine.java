@@ -253,6 +253,11 @@ public class FaceclawCaptionEngine {
                     + " rssMb=" + mb(rssBeforeKb) + "->" + mb(rssAfterKb)
                     + " nativeHeapMb=" + mb(heapBeforeKb) + "->" + mb(heapAfterKb));
             emitModelLoaded(kind, loadMs, rssBeforeKb, rssAfterKb, heapBeforeKb, heapAfterKb);
+        } else {
+            // 2026-09-25: this state was silent, and captions heard nothing
+            // (even English) with no trace in logcat.
+            Log.w(TAG, "Captions running with NO recognizer: model=" + kind + " dir=" + modelDir
+                    + " (not downloaded?); speech will be segmented but not transcribed");
         }
         String embedModel = speakerModelPath;
         if (embedModel != null && new File(embedModel).exists()) {

@@ -59,9 +59,11 @@ export const captionsEnabledSetting = new ConfigSettingBoolean({
 
 export const translateEnabledSetting = new ConfigSettingBoolean({
   id: "microphones-translate",
-  label: "Translate",
+  // Label says what it does (2026-09-25): "Translate" alone read as the
+  // switch for foreign-language captions, which is Languages I'll hear.
+  label: "Translate non-English lines",
   description:
-    "Detect foreign languages in captions and show a translation to the phone's language beneath the original line.",
+    "Translate caption lines detected as another language into the phone's language (English). Always on when Languages I'll hear includes Japanese, Korean, Chinese.",
   storageKey: "microphones.translate-enabled",
   defaultValue: false,
 });
@@ -75,9 +77,12 @@ export const translateEnabledSetting = new ConfigSettingBoolean({
  */
 export const captionLanguageSetting = new ConfigSettingEnum<CaptionLanguage>({
   id: "microphones-caption-language",
-  label: "Caption language",
+  // Was "Caption language" until 2026-09-25: Chris read it as the language
+  // the captions are WRITTEN in, so it was never set and captions stayed
+  // English-only. The storage key is unchanged, so a saved choice survives.
+  label: "Languages I'll hear",
   description:
-    "English uses the Moonshine model. Japanese, Korean, Chinese uses SenseVoice, which detects the language of each line; the glasses show the English translation (download the model and the translation packs first, on Wi-Fi).",
+    "What people around you speak. Captions always show in English. Japanese, Korean, Chinese (+ English) uses the SenseVoice model and translates on the phone (download the model and the translation packs first, on Wi-Fi).",
   storageKey: "microphones.caption-language",
   defaultValue: "english",
   values: CAPTION_LANGUAGES,

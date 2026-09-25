@@ -19,6 +19,7 @@ const {
   translationLogFileName,
   translationLogRecord,
   translationLogEvent,
+  chooseCaptionModel,
 } = require("../.test-build/app/apps/microphones/caption-lang.js");
 
 test("caption language setting maps to the engine's model kinds", () => {
@@ -27,7 +28,7 @@ test("caption language setting maps to the engine's model kinds", () => {
   assert.equal(captionModelKind("asian"), "sensevoice");
   assert.equal(captionModelKind(""), "moonshine");
   assert.equal(captionModelKind("junk"), "moonshine");
-  assert.equal(captionLanguageLabel("asian"), "Japanese, Korean, Chinese");
+  assert.equal(captionLanguageLabel("asian"), "Japanese, Korean, Chinese (+ English)");
   assert.equal(captionLanguageLabel("english"), "English");
   assert.deepEqual([...TRANSLATION_PACK_LANGS], ["ja", "ko", "zh"]);
 });
@@ -137,4 +138,26 @@ test("a log record keeps timestamp, language, original and English on one JSON l
   assert.equal(start.type, "start");
   assert.equal(start.model, "sensevoice");
   assert.deepEqual(start.nativeHeapMb, [40, 300]);
+});
+
+// 2026-09-25: English mode with Moonshine missing ran the engine with no
+// recognizer and produced nothing, silently. The choice must fall back to
+// SenseVoice (which also hears English) and say so when nothing is usable.
+test("caption model choice falls back and says when no model is on the phone", () => {
+  assert.deepEqual(chooseCaptionModel("english", true, true), { kind: "moonshine", ready: true, note: "" });
+  assert.deepEqual(chooseCaptionModel("asian", true, true), { kind: "sensevoice", ready: true, note: "" });
+  // The phone on 2026-09-25: setting unset (English), only SenseVoice downloaded.
+  const fallback = chooseCaptionModel("english", false, true);
+  assert.equal(fallback.kind, "sensevoice");
+  assert.equal(fallback.ready, true);
+  assert.match(fallback.note, /English model not downloaded/);
+  const englishOnly = chooseCaptionModel("asian", true, false);
+  assert.equal(englishOnly.kind, "moonshine");
+  assert.equal(englishOnly.ready, true);
+  assert.match(englishOnly.note, /English captions only/);
+  for (const lang of ["english", "asian", ""]) {
+    const none = chooseCaptionModel(lang, false, false);
+    assert.equal(none.ready, false);
+    assert.match(none.note, /No caption model downloaded/);
+  }
 });

@@ -53,7 +53,7 @@ import {
   wearerCommandsOnlySetting,
 } from "./mic-settings";
 import {
-  captionModelKind,
+  chooseCaptionModel,
   compactCjkSpaces,
   resolveCaptionLang,
   translationLogEvent,
@@ -801,23 +801,18 @@ class MicSession {
   }
 
   /**
-   * The caption model to run: SenseVoice when Caption language is "Japanese,
-   * Korean, Chinese" and its files are on the phone; otherwise Moonshine
-   * (with a note saying why, when SenseVoice was asked for but is missing).
+   * The caption model to run (caption-lang.ts chooseCaptionModel): the one the
+   * Caption language setting asks for when it is on the phone, else the other
+   * one, else none, with a note saying why.
    */
   private wantedCaptionModel(): { kind: "moonshine" | "sensevoice"; dir: string | null; note: string } {
-    const kind = captionModelKind(captionLanguageSetting.get());
-    if (kind === "sensevoice") {
-      if (isAsrModelReady("sensevoice")) {
-        return { kind, dir: captionModelDir("sensevoice"), note: "" };
-      }
-      return {
-        kind: "moonshine",
-        dir: isAsrModelReady("moonshine") ? captionModelDir("moonshine") : null,
-        note: "Japanese/Korean/Chinese model not downloaded: English captions only",
-      };
-    }
-    return { kind, dir: isAsrModelReady("moonshine") ? captionModelDir("moonshine") : null, note: "" };
+    const choice = chooseCaptionModel(
+      captionLanguageSetting.get(),
+      isAsrModelReady("moonshine"),
+      isAsrModelReady("sensevoice"),
+    );
+    if (!choice.ready) console.warn(`captions: ${choice.note}`);
+    return { kind: choice.kind, dir: choice.ready ? captionModelDir(choice.kind) : null, note: choice.note };
   }
 
   /** True when non-English lines are translated: Translate on, or the Asian caption language. */

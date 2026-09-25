@@ -262,7 +262,7 @@ function asrModelMenuItem(id: AsrModelId): MenuItem {
       `${def.label} (${asrModelMb(id)} download). ` +
       "Transcribes voice input on the phone itself, with no API key or cloud service. " +
       (CAPTION_ONLY_MODEL_IDS.includes(id)
-        ? "Used by Microphones captions when Caption language is Japanese, Korean, Chinese. "
+        ? "Used by Microphones captions when Languages I'll hear is Japanese, Korean, Chinese. "
         : "Required for its matching Transcription Provider option; the other providers work without it. ") +
       "An interrupted download resumes where it left off.",
     onSelect: (ctx) => {

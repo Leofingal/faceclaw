@@ -1,6 +1,7 @@
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
+import { truncateText } from "../../graphics/textwrap";
 import { GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type CaptionLine, type MicSessionState } from "./mic-session";
@@ -40,6 +41,10 @@ export class CaptionsLayer implements Layer {
     image.drawText(font, 12, 4, "Captions", 220);
     if (!state.captionsActive) {
       image.drawText(font, 12, 26, "Captions are off (enable in the Microphones menu).", 130);
+    } else if (state.captionLines.length === 0 && state.statusText) {
+      // Until the first line lands, show the engine's status, so a missing
+      // model ("no ASR model") is visible on the glasses, not only in logcat.
+      image.drawText(font, 12, 26, truncateText(font, state.statusText, width - 24), 130);
     }
 
     const rows = this.buildRows(font, width - 36, state.captionLines);
