@@ -201,6 +201,9 @@ class MicSession {
     },
   });
   private offFirmwareExit: (() => void) | null = null;
+  // Set while the Translate app holds the session: captions run in this
+  // language regardless of the Languages I'll hear setting (2026-09-25).
+  private captionLanguageOverride: string | null = null;
   private sessionRowId = -1;
   private sentimentSum = 0;
   private sentimentCount = 0;
@@ -395,6 +398,21 @@ class MicSession {
       console.warn(`microphones: re-arm failed: ${error}`);
     }
     this.notify();
+  }
+
+  /**
+   * Run captions in `language` ("asian" | "english") regardless of the
+   * Languages I'll hear setting, or null to follow the setting again. A
+   * running engine on the other model restarts, as for a setting change.
+   */
+  setCaptionLanguageOverride(language: string | null): void {
+    this.captionLanguageOverride = language;
+    if (this.captionsActive && this.wantedCaptionModel().kind !== this.captionEngineKind) {
+      this.stopCaptions();
+      this.finishSessionRow();
+      this.startCaptions();
+      this.notify();
+    }
   }
 
   private refreshCachedFlags(): void {
@@ -859,7 +877,7 @@ class MicSession {
    */
   private wantedCaptionModel(): { kind: "moonshine" | "sensevoice"; dir: string | null; note: string } {
     const choice = chooseCaptionModel(
-      captionLanguageSetting.get(),
+      this.captionLanguageOverride ?? captionLanguageSetting.get(),
       isAsrModelReady("moonshine"),
       isAsrModelReady("sensevoice"),
     );

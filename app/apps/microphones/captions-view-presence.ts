@@ -1,6 +1,6 @@
 /**
  * Whether a captions view is on screen: Microphones > Captions view, or the
- * Captions app (both are a CaptionsLayer). Ghost reads it to hold automatic
+ * Translate app (both are a CaptionsLayer). Ghost reads it to hold automatic
  * speech (ghost-charge-mute.ts), because on 2026-09-25 every Ghost reply
  * spoken to Chris's LE Audio hearing aids flipped the glasses-mic link between
  * clean and ~58% packet loss, and the loss stayed until the next stream.

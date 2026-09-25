@@ -22,6 +22,9 @@ export class CaptionsLayer implements Layer {
   private scrollback = 0;
   private lastLineCount = 0;
 
+  /** The header: "Captions" in Microphones, "Translate" in the Translate app. */
+  constructor(private readonly title = "Captions") {}
+
   start(requestRender: () => void): void {
     // Ghost holds automatic speech while a captions view is up
     // (captions-view-presence.ts).
@@ -42,7 +45,7 @@ export class CaptionsLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const state = this.state;
 
-    image.drawText(font, 12, 4, "Captions", 220);
+    image.drawText(font, 12, 4, this.title, 220);
     if (!state.captionsActive) {
       image.drawText(font, 12, 26, "Captions are off (enable in the Microphones menu).", 130);
     } else if (state.captionLines.length === 0 && state.statusText) {

@@ -1,10 +1,10 @@
 /**
  * Who holds the glasses microphone session open, so two windows can share
- * the one MicSession: the Microphones app and the Captions app (2026-09-25).
+ * the one MicSession: the Microphones app and the Translate app (2026-09-25).
  * The session starts with its first owner and stops (mic released) with its
- * last, so closing Captions while Microphones is open keeps the mic running.
+ * last, so closing Translate while Microphones is open keeps the mic running.
  *
- * No NativeScript here, so tests/captions-app.test.cjs can drive it with a
+ * No NativeScript here, so tests/translate-app.test.cjs can drive it with a
  * fake session.
  */
 
@@ -13,9 +13,10 @@ export type MicSessionPort = {
   start(): void;
   stop(): void;
   setCaptionsEnabled(enabled: boolean): void;
+  setCaptionLanguageOverride(language: string | null): void;
 };
 
-export type MicSessionOwner = "microphones" | "captions";
+export type MicSessionOwner = "microphones" | "translate";
 
 export type MicSessionOwners = {
   acquire(owner: MicSessionOwner): void;
@@ -39,19 +40,27 @@ export function createMicSessionOwners(session: MicSessionPort): MicSessionOwner
 }
 
 /**
- * The Captions app's whole lifecycle. Opening it turns captions on (the
- * persisted Captions setting, in whatever Languages I'll hear was last set to)
- * and holds the session; leaving it turns captions off and lets go, which
+ * The Translate app's whole lifecycle (named Captions until 2026-09-25 19:2x;
+ * Chris keeps "Captions" for a later English-with-voice-ID app). Opening it
+ * runs captions in Japanese/Korean/Chinese (+ English) whatever Languages I'll
+ * hear says, turns captions on and holds the session. Leaving it turns
+ * captions off, hands the language back to the setting, and lets go, which
  * releases the mic unless Microphones still holds it.
  */
-export function openCaptionsApp(session: MicSessionPort, owners: MicSessionOwners): void {
-  // Setting first: start() starts captions only when the setting is on, and a
+export const TRANSLATE_CAPTION_LANGUAGE = "asian";
+
+export function openTranslateApp(session: MicSessionPort, owners: MicSessionOwners): void {
+  // Language first, so the engine starts on SenseVoice rather than
+  // starting on Moonshine and restarting.
+  session.setCaptionLanguageOverride(TRANSLATE_CAPTION_LANGUAGE);
+  // Setting next: start() starts captions only when the setting is on, and a
   // session that is already running (Microphones open) starts them here.
   session.setCaptionsEnabled(true);
-  owners.acquire("captions");
+  owners.acquire("translate");
 }
 
-export function closeCaptionsApp(session: MicSessionPort, owners: MicSessionOwners): void {
+export function closeTranslateApp(session: MicSessionPort, owners: MicSessionOwners): void {
   session.setCaptionsEnabled(false);
-  owners.release("captions");
+  session.setCaptionLanguageOverride(null);
+  owners.release("translate");
 }

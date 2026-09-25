@@ -525,7 +525,7 @@ export function createMicrophonesAppWindow(options: InProcessAppOptions): InProc
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     onClosed: () => {
-      // Releases the mic unless the Captions app still holds the session.
+      // Releases the mic unless the Translate app still holds the session.
       micSessionOwners.release("microphones");
       shell.setTrayIcon(TRAY_ICON_ID, null);
       options.onClosed();
