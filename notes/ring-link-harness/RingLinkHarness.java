@@ -82,6 +82,9 @@ public final class RingLinkHarness {
         if ("onDemandNotChargingInCase".contains(only)) onDemandNotChargingInCase();
         if ("onDemandOnHeadPull".contains(only)) onDemandOnHeadPull();
         if ("onDemandOffFaceTicks".contains(only)) onDemandOffFaceTicks();
+        // 2026-09-25 afternoon: unknown wear counts as ON.
+        if ("onDemandAppStartTicks".contains(only)) onDemandAppStartTicks();
+        if ("onDemandReconnectWhileWorn".contains(only)) onDemandReconnectWhileWorn();
         if ("inCaseLatchEveryMode".contains(only)) inCaseLatchEveryMode();
         if ("inCaseLatchAcrossRestart".contains(only)) inCaseLatchAcrossRestart();
         if ("glassesStateReceipt".contains(only)) glassesStateReceipt();
@@ -555,28 +558,19 @@ public final class RingLinkHarness {
     }
 
     /**
-     * Off the face = no timed pulls (2026-09-25): at start (unknown counts as
-     * off), after OFF_HEAD, and after a real glasses link loss until a wear
-     * reading says on. The wear query's cached ON_HEAD after a reconnect puts
-     * them back on the face with NO pull (it is a restore, not a put-on), and
-     * only while the in-case latch is closed. A Health open always pulls.
+     * Off the face = no timed pulls, on POSITIVE evidence only (2026-09-25
+     * afternoon): an OFF_HEAD with no ON_HEAD since, or the in-case latch.
+     * Unknown counts as on. ON_HEAD after an OFF_HEAD fires one on-head pull;
+     * a glasses link loss makes the wear state unknown again (so on); the
+     * wear query's cached ON_HEAD after an OFF_HEAD clears it with no pull. A
+     * Health open always pulls.
      */
     static void onDemandOffFaceTicks() throws Exception {
         section("on-demand: off the face, ticks paused");
         Rig rig = new Rig(true);
         rig.glassesConnect();
         SystemClock.advance(30 * 60_000L);
-        rig.requestPull("tick");
-        rig.runFor(300L);
-        expect("unknown wear at start: the tick is refused, off-face, no dial",
-            lastContains(rig.receipts("pullSkipped"), "\"trigger\":\"tick\",\"reason\":\"off-face\"")
-                && rig.ble().dials == 0);
-        SystemClock.advance(61_000L);
-        pullCycle(rig, "Health open off the face", "health-open");
-
-        rig.putOnAndSettle();
-        SystemClock.advance(30 * 60_000L);
-        pullCycle(rig, "on the face: tick", "tick");
+        pullCycle(rig, "unknown wear at start: tick", "tick");
 
         rig.wear(false);
         int skips = rig.receipts("pullSkipped").size();
@@ -584,27 +578,76 @@ public final class RingLinkHarness {
         SystemClock.advance(30 * 60_000L);
         rig.requestPull("tick");
         rig.runFor(300L);
-        expect("OFF_HEAD: the next tick is refused, no dial",
-            rig.receipts("pullSkipped").size() == skips + 1 && rig.ble().dials == dials);
+        expect("OFF_HEAD: the next tick is refused, off-face, no dial",
+            rig.receipts("pullSkipped").size() == skips + 1 && rig.ble().dials == dials
+                && lastContains(rig.receipts("pullSkipped"), "\"trigger\":\"tick\",\"reason\":\"off-face\""));
+        SystemClock.advance(61_000L);
+        pullCycle(rig, "Health open off the face", "health-open");
 
+        int pulls = rig.receipts("\"type\":\"pull\"").size();
+        SystemClock.advance(61_000L);
         rig.putOnAndSettle();
+        List<String> all = rig.receipts("\"type\":\"pull\"");
+        expect("ON_HEAD after OFF_HEAD: exactly one pull, trigger on-head",
+            all.size() == pulls + 1 && lastContains(all, "\"trigger\":\"on-head\""));
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "on the face: tick", "tick");
+
+        rig.wear(false);
         rig.glassesLinkDrops();
         rig.glassesConnect();
-        skips = rig.receipts("pullSkipped").size();
-        dials = rig.ble().dials;
-        int pulls = rig.receipts("\"type\":\"pull\"").size();
         SystemClock.advance(30 * 60_000L);
-        rig.requestPull("tick");
-        rig.runFor(300L);
-        expect("a glasses link loss: the next tick is refused",
-            rig.receipts("pullSkipped").size() == skips + 1 && rig.ble().dials == dials);
+        pullCycle(rig, "OFF_HEAD, then a link loss: wear unknown, the tick pulls", "tick");
+
+        rig.wear(false);
+        pulls = rig.receipts("\"type\":\"pull\"").size();
         rig.wearQuery();
         rig.wear(true);
         rig.runFor(500L);
-        expect("the query's cached ON_HEAD (latch closed): back on the face with no pull",
+        expect("the query's cached ON_HEAD after an OFF_HEAD: back on the face with no pull",
             rig.receipts("\"type\":\"pull\"").size() == pulls && rig.onFace());
         SystemClock.advance(30 * 60_000L);
         pullCycle(rig, "restored: tick", "tick");
+        rig.close();
+    }
+
+    /**
+     * Chris runs with "Enable lock screen" off, so no wear query ever runs and
+     * an app start brings no wear reading at all. Unknown counts as on: three
+     * ticks, three pulls. Fails on 69f25b2 (unknown was off).
+     */
+    static void onDemandAppStartTicks() throws Exception {
+        section("on-demand: app start, then three ticks with no wear event");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        for (int i = 1; i <= 3; i++) {
+            SystemClock.advance(30 * 60_000L);
+            pullCycle(rig, "tick " + i, "tick");
+        }
+        expect("three ticks, three pulls, no refusal",
+            rig.receipts("\"type\":\"pull\"").size() == 3 && rig.receipts("pullSkipped").isEmpty());
+        rig.close();
+    }
+
+    /**
+     * Worn, the glasses link drops and comes back, with no wear query (lock
+     * screen off) and so no ON_HEAD: the ticks go on. Fails on 69f25b2 (the
+     * link loss took the glasses off the face until the next ON_HEAD).
+     */
+    static void onDemandReconnectWhileWorn() throws Exception {
+        section("on-demand: reconnect while worn");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.putOnAndSettle();
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "before the drop: tick", "tick");
+        rig.glassesLinkDrops();
+        rig.glassesConnect();
+        for (int i = 1; i <= 2; i++) {
+            SystemClock.advance(30 * 60_000L);
+            pullCycle(rig, "after the reconnect: tick " + i, "tick");
+        }
+        expect("no refusal across the reconnect", rig.receipts("pullSkipped").isEmpty());
         rig.close();
     }
 
@@ -686,7 +729,7 @@ public final class RingLinkHarness {
         rig.close();
         Rig again = new Rig(true, RING, rig.files);
         expect("restart in the case: the latch comes back open", again.inCase() == 1);
-        expect("restart: on-face is not restored", !again.onFace());
+        expect("restart in the case: off the face (the restored latch is the evidence)", !again.onFace());
         again.glassesConnect();
         SystemClock.advance(30 * 60_000L);
         again.requestPull("tick");
@@ -730,7 +773,7 @@ public final class RingLinkHarness {
             first.size() == 1 && first.get(0).contains("\"level\":80") && first.get(0).contains("\"charging\":1")
                 && first.get(0).contains("\"wear\":\"unknown\"") && first.get(0).contains("\"inCase\":1")
                 && first.get(0).contains("\"onFace\":false")
-                && first.get(0).contains("\"why\":\"in-case opened: charging\""));
+                && first.get(0).contains("\"why\":\"in-case opened: charging; off-face: in case: charging\""));
         rig.chargingReading(true);
         expect("the same answer again writes nothing",
             rig.glassesState("\"type\":\"glassesState\"").size() == 1);
@@ -746,7 +789,7 @@ public final class RingLinkHarness {
         expect("ON_HEAD writes one line: wear on, from an event, arm R, latch closed, on the face  " + t3,
             third.size() == 3 && t3.contains("\"wear\":\"on\"") && t3.contains("\"wearSrc\":\"event\"")
                 && t3.contains("\"wearArm\":\"R\"") && t3.contains("\"inCase\":0") && t3.contains("\"onFace\":true")
-                && t3.contains("in-case closed: on-head") && t3.contains("on-face: on-head"));
+                && t3.contains("in-case closed: on-head") && t3.contains("on-face: out of the case: on-head"));
         List<String> frames = rig.glassesState("\"type\":\"wearFrame\"");
         expect("the raw wear frame is there too, decoded 1",
             frames.size() == 1 && frames.get(0).contains("\"decoded\":1") && frames.get(0).contains("\"hex\":\"aa21"));
@@ -950,12 +993,27 @@ public final class RingLinkHarness {
          * build that pulls for it, let that pull finish before going on.
          */
         void putOnAndSettle() throws Exception {
-            int pulls = receipts("\"type\":\"pull\"").size();
             wear(true);
-            if (findMethod("glassesInCaseLatch") != null && isOnDemand()) {
-                runUntil(() -> receipts("\"type\":\"pull\"").size() > pulls && "idle".equals(state()));
-            }
             runFor(200L);
+            // Whatever it armed (a build and state that pull for it) runs out.
+            runUntil(() -> !pullPending() && "idle".equals(state()));
+            runFor(200L);
+        }
+
+        /** A pull armed, asked for, or wanted and not yet answered. */
+        boolean pullPending() {
+            try {
+                Object armed = null;
+                try {
+                    armed = get("ringPullWhenSessionReady");
+                } catch (NoSuchFieldException e) {
+                    // older build
+                }
+                return armed != null || (Boolean) get("ringHealthPullRequested")
+                    || (Boolean) get("ringLinkWantedExplicit");
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
         }
 
         /** The in-case latch field, or -99 on a build without one. */

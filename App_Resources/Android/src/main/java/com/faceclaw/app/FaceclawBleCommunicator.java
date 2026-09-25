@@ -309,13 +309,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean glassesTempleTouchSinceCharging;
     /**
      * "On the face" for the ring's timed pulls (Chris, 2026-09-25: the RING
-     * gates on wear, not on the case): true only after a wear ON_HEAD; false at
-     * start (unknown counts as off), on OFF_HEAD, on a battery answer saying
-     * charging, and on a glasses link loss. See {@link #noteWearReadingLocked}.
-     * Kept in every mode; only "Only when needed" acts on it. Guarded by
-     * {@code lock}.
+     * gates on wear, not on the case). Derived, never set directly: it is
+     * false only on POSITIVE evidence of off-face - the in-case latch is open,
+     * or an OFF_HEAD arrived with no ON_HEAD since ({@link #glassesOffHeadSeen}).
+     * Unknown counts as ON (revision, 2026-09-25 afternoon): Chris runs with
+     * "Enable lock screen" off, so the post-connect wear query never runs, and
+     * after an app start or a reconnect while worn no ON_HEAD transition ever
+     * comes. See {@link #recomputeGlassesOnFaceLocked}. Kept in every mode; only
+     * "Only when needed" acts on it. Guarded by {@code lock}.
      */
-    private boolean glassesOnFace;
+    private boolean glassesOnFace = true;
+    /**
+     * An OFF_HEAD arrived and no ON_HEAD since. Cleared by ON_HEAD, and by an
+     * app start or a glasses link loss (the wear state becomes unknown, which
+     * counts as on). Guarded by {@code lock}.
+     */
+    private boolean glassesOffHeadSeen;
     /**
      * The last wear status any glasses frame decoded to (1 on head, 0 off,
      * -1 none yet), NOT deduplicated the way {@code wearState} is: a cached
@@ -2705,7 +2714,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      *
      * <p>It also decides one thing. In "Only when needed" a timed ask is refused
      * while the glasses are off the face - Chris, 2026-09-25: the ring gates on
-     * WEAR, not on the charger (case, desk, bag: no timed pulls) - and the
+     * WEAR, not on the charger - on POSITIVE evidence only (in the case, or an
+     * OFF_HEAD with no ON_HEAD since; unknown counts as on) - and the
      * refusal leaves a {@code pullSkipped} receipt so a night shows the pause
      * rather than silence ({@link RingProtocol#ringPullAskAccepted}). A Health
      * open is always taken: an explicit ask beats the rule. Every other mode
@@ -2718,6 +2728,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         String cleanTrigger = RingProtocol.ringPullTrigger(trigger);
         boolean offFace;
         synchronized (lock) {
+            expireGlassesInCaseLocked(SystemClock.elapsedRealtime());
             offFace = !glassesOnFace;
         }
         if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger, offFace)) {
@@ -4890,8 +4901,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * All modes; nothing here touches the ring link directly.
      *
      * <ul>
-     * <li>Charging: opens the in-case latch, and takes the glasses off the face
-     *     for the ring (a charging answer means they are in the case).</li>
+     * <li>Charging: opens the in-case latch, which also takes the glasses off
+     *     the face for the ring (a charging answer means they are in the case).</li>
      * <li>Not charging: changes neither, UNLESS a temple touch was seen since
      *     the last charging answer - then the latch closes. A not-charging
      *     answer alone is exactly what ended the 2026-09-24 night's pause at
@@ -4912,9 +4923,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (glassesInCase != 1) {
                 setGlassesInCaseLocked(true, "charging", now);
             }
-            if (glassesOnFace) {
-                setGlassesOnFaceLocked(false, "charging");
-            }
         } else if (glassesInCase == 1 && glassesTempleTouchSinceCharging) {
             setGlassesInCaseLocked(false, "not-charging+temple-touch", now);
         }
@@ -4927,18 +4935,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      *
      * <p>ON_HEAD that the glasses sent on their own (not inside
      * {@link #WEAR_QUERY_ANSWER_WINDOW_MS} of our query) is the removal signal
-     * Chris named: it closes the in-case latch and puts the glasses on the
-     * face, and in "Only when needed" arms one ring pull for the next pass
-     * (this replaced the charger-off pull). The measured morning of 2026-09-25:
+     * Chris named: it closes the in-case latch and clears any OFF_HEAD, and if
+     * the glasses were off the face before it, "Only when needed" arms one
+     * ring pull for the next pass (this replaced the charger-off pull). An
+     * ON_HEAD from the unknown state (which already counts as on) arms
+     * nothing. The measured morning of 2026-09-25:
      * ON_HEAD at 09:10:03, the charge flag cleared 20 s later.
      *
      * <p>ON_HEAD that answers our own query is only the firmware's cached
-     * state after a (re)connect: it restores on-face with no pull, and only
-     * while the latch is not open - inside the case a stale cached ON_HEAD
-     * must not start the night's pulls or unmute Ghost.
+     * state after a (re)connect: it clears an OFF_HEAD with no pull and never
+     * closes the latch - inside the case a stale cached ON_HEAD must not start
+     * the night's pulls or unmute Ghost.
      *
-     * <p>OFF_HEAD, either way, takes the glasses off the face. It does not
-     * touch the latch.
+     * <p>OFF_HEAD, either way, is positive evidence of off-face until the next
+     * ON_HEAD or a link loss. It does not touch the latch.
      */
     private void noteWearReadingLocked(int wear, String arm, long now) {
         expireGlassesInCaseLocked(now);
@@ -4948,23 +4958,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         glassesWearArm = arm;
         if (wear == 1) {
             if (queryAnswer) {
-                if (!glassesOnFace && glassesInCase != 1) {
-                    setGlassesOnFaceLocked(true, "on-head (query answer)");
-                }
+                // A cached state: it clears an OFF_HEAD, never the latch.
+                glassesOffHeadSeen = false;
+                recomputeGlassesOnFaceLocked("on-head (query answer)");
             } else {
+                boolean wasOff = !glassesOnFace;
                 if (glassesInCase == 1) {
                     setGlassesInCaseLocked(false, "on-head", now);
                 }
-                if (!glassesOnFace) {
-                    setGlassesOnFaceLocked(true, "on-head");
-                    if (ringLinkOnDemand) {
-                        ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_ON_HEAD;
-                        logLine("ring link on demand: glasses on the face, one pull on the next ring pass");
-                    }
+                glassesOffHeadSeen = false;
+                recomputeGlassesOnFaceLocked("on-head");
+                if (wasOff && glassesOnFace && ringLinkOnDemand) {
+                    ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_ON_HEAD;
+                    logLine("ring link on demand: glasses back on the face, one pull on the next ring pass");
                 }
             }
-        } else if (glassesOnFace) {
-            setGlassesOnFaceLocked(false, queryAnswer ? "off-head (query answer)" : "off-head");
+        } else {
+            glassesOffHeadSeen = true;
+            recomputeGlassesOnFaceLocked(queryAnswer ? "off-head (query answer)" : "off-head");
         }
         writeGlassesStateIfChangedLocked("wear");
     }
@@ -5011,14 +5022,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     /**
      * A real glasses link loss (the GATT callback; our own teardowns close the
-     * client and get none). With no ON_HEAD since, the ring treats the glasses
-     * as off the face - out of range means not being worn, and a reconnect
-     * restores on-face only through the wear query's answer. Caller holds
+     * client and get none). The wear state becomes unknown, which counts as on
+     * (2026-09-25 afternoon): an OFF_HEAD from before the loss no longer holds
+     * the ticks; the in-case latch, if open, still does. Caller holds
      * {@code lock}.
      */
     private void noteGlassesLinkLostLocked(String why) {
-        if (glassesOnFace) {
-            setGlassesOnFaceLocked(false, why);
+        if (glassesOffHeadSeen) {
+            glassesOffHeadSeen = false;
+            recomputeGlassesOnFaceLocked(why + ", wear unknown");
             writeGlassesStateIfChangedLocked("link");
         }
     }
@@ -5041,6 +5053,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         appendGlassesStateWhyLocked((open ? "in-case opened: " : "in-case closed: ") + why);
         logLine("glasses in-case latch " + (open ? "OPEN" : "closed") + " (" + why + ")");
         persistGlassesInCaseLocked();
+        recomputeGlassesOnFaceLocked((open ? "in case: " : "out of the case: ") + why);
+    }
+
+    /**
+     * On-face is derived: off only on positive evidence (the latch open, or an
+     * OFF_HEAD with no ON_HEAD since); unknown is on. Logs and notes the reason
+     * when it flips. Caller holds {@code lock}.
+     */
+    private void recomputeGlassesOnFaceLocked(String why) {
+        boolean onFace = glassesInCase != 1 && !glassesOffHeadSeen;
+        if (onFace != glassesOnFace) {
+            setGlassesOnFaceLocked(onFace, why);
+        }
     }
 
     private void setGlassesOnFaceLocked(boolean onFace, String why) {
@@ -5118,8 +5143,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * An app restart in the case must stay silent: restore an OPEN latch
      * saved less than {@link #GLASSES_IN_CASE_MAX_MS} ago, with its original
      * start (so the valve still counts from the real opening). A closed or
-     * stale saved latch restores nothing (-1). On-face is never restored:
-     * unknown counts as off the face until a wear reading says otherwise.
+     * stale saved latch restores nothing (-1). No OFF_HEAD is restored: the
+     * wear state starts unknown, which counts as on (only the latch, if
+     * restored open, holds the ring's ticks).
      * Caller holds {@code lock}.
      */
     private void restoreGlassesInCaseLocked() {
@@ -5140,6 +5166,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             glassesInCaseSinceWallMs = sinceWall;
             glassesInCaseSinceMs = SystemClock.elapsedRealtime() - age;
             appendGlassesStateWhyLocked("in-case restored: saved open " + (age / 60_000L) + " min ago");
+            recomputeGlassesOnFaceLocked("in case (restored)");
             logLine("glasses in-case latch OPEN (restored, opened " + (age / 60_000L) + " min ago)");
             writeGlassesStateIfChangedLocked("restore");
         } catch (Throwable t) {
