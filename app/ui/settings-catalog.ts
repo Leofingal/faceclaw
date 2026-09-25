@@ -67,6 +67,11 @@ import {
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
 } from "./dashboard-settings";
+import {
+  captionLanguageSetting,
+  translateEnabledSetting,
+  translationLogSetting,
+} from "../apps/microphones/mic-settings";
 
 /**
  * Any setting a category can hold.
@@ -89,6 +94,8 @@ export type CatalogSpecialId =
   | "asr-whisper"
   | "asr-parakeet-v2"
   | "asr-parakeet-110m"
+  | "asr-sensevoice"
+  | "translation-packs"
   | "local-model";
 
 export type CatalogEntry =
@@ -147,6 +154,17 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
       special("asr-parakeet-v2"),
       special("asr-parakeet-110m"),
       value(voiceModelIdleUnloadSetting),
+    ],
+  },
+  {
+    label: "Translation",
+    blurb: "Microphones captions in Japanese, Korean or Chinese, shown in English. Download both on Wi-Fi.",
+    entries: [
+      value(captionLanguageSetting),
+      special("asr-sensevoice"),
+      special("translation-packs"),
+      value(translateEnabledSetting),
+      value(translationLogSetting),
     ],
   },
   {

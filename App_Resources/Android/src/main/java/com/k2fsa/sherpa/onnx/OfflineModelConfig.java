@@ -166,7 +166,7 @@ public class OfflineModelConfig {
         private OfflineFireRedAsrModelConfig fireRedAsr = new OfflineFireRedAsrModelConfig();
         private OfflineMoonshineModelConfig moonshine = OfflineMoonshineModelConfig.builder().build();
         private OfflineNemoEncDecCtcModelConfig nemo = new OfflineNemoEncDecCtcModelConfig();
-        private OfflineSenseVoiceModelConfig senseVoice = new OfflineSenseVoiceModelConfig();
+        private OfflineSenseVoiceModelConfig senseVoice = OfflineSenseVoiceModelConfig.builder().build();
         private OfflineDolphinModelConfig dolphin = new OfflineDolphinModelConfig();
         private OfflineZipformerCtcModelConfig zipformerCtc = new OfflineZipformerCtcModelConfig();
         private OfflineWenetCtcModelConfig wenetCtc = new OfflineWenetCtcModelConfig();
@@ -193,6 +193,11 @@ public class OfflineModelConfig {
 
         public Builder setMoonshine(OfflineMoonshineModelConfig moonshine) {
             this.moonshine = moonshine;
+            return this;
+        }
+
+        public Builder setSenseVoice(OfflineSenseVoiceModelConfig senseVoice) {
+            this.senseVoice = senseVoice;
             return this;
         }
 
@@ -239,13 +244,6 @@ class OfflineFireRedAsrModelConfig {
 
 class OfflineNemoEncDecCtcModelConfig {
     private final String model = "";
-}
-
-class OfflineSenseVoiceModelConfig {
-    private final String model = "";
-    private final String language = "";
-    private final boolean useInverseTextNormalization = true;
-    private final QnnConfig qnnConfig = new QnnConfig();
 }
 
 class OfflineDolphinModelConfig {

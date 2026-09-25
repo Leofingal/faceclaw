@@ -28,6 +28,14 @@ are not bundled; each is downloaded when you choose it in Settings > Voice:
   Copyright (c) 2022 OpenAI; exported to ONNX and quantized by sherpa-onnx.
 - Moonshine Base by Useful Sensors, Inc. (https://github.com/moonshine-ai/moonshine),
   MIT License; converted for sherpa-onnx by the sherpa-onnx project.
+- SenseVoice Small by Alibaba Group's FunAudioLLM team
+  (https://github.com/FunAudioLLM/SenseVoice, model weights
+  https://huggingface.co/FunAudioLLM/SenseVoiceSmall), used for Japanese,
+  Korean and Chinese captions in the Microphones app (downloaded there, not in
+  Settings > Voice). Licensed under the FunASR Model Open Source License
+  Agreement: https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE
+  The files Faceclaw downloads were exported to ONNX and quantized to int8 by
+  the sherpa-onnx project (sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17).
 
 The Terminus font is by Dimitar Zhekov's Terminus: https://framagit.org/ohnonot/terv-terc
 and is distributed under the SIL Open Font License; see app/fonts/terminus/LICENSE.

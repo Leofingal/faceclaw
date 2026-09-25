@@ -10,6 +10,7 @@ const path = require("node:path");
 const {
   ASR_MODELS,
   ASR_MODEL_IDS,
+  CAPTION_ONLY_MODEL_IDS,
   ONBOARD_PROVIDERS,
   onboardModelKindForProvider,
   IDLE_UNLOAD_CHOICES,
@@ -104,11 +105,38 @@ test("idle unload: default never, never = 0, junk falls back to the default", ()
   assert.equal(formatIdleUnloadChoice("never"), "Never");
 });
 
+test("SenseVoice is the sherpa-onnx 2024-07-17 export, caption-only, pinned to a commit", () => {
+  const def = ASR_MODELS.sensevoice;
+  assert.deepEqual([...CAPTION_ONLY_MODEL_IDS], ["sensevoice"]);
+  assert.equal(def.dirName, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17");
+  assert.equal(def.totalBytes, 239549735);
+  assert.match(def.baseUrl, /\/csukuangfj\/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17\/resolve\/[0-9a-f]{40}\/$/);
+  assert.deepEqual(
+    def.files.map((f) => [f.name, f.sizeBytes, f.sha256.slice(0, 8)]),
+    [
+      ["model.int8.onnx", 239233841, "c71f0ce0"],
+      ["tokens.txt", 315894, "f449eb28"],
+    ],
+  );
+  for (const def of Object.values(ONBOARD_PROVIDERS)) {
+    assert.ok(!CAPTION_ONLY_MODEL_IDS.includes(def.model), `no Voice provider runs ${def.model}`);
+  }
+});
+
+test("the caption engine names SenseVoice's files", () => {
+  const javaPath = path.join(__dirname, "..", "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawCaptionEngine.java");
+  const java = fs.readFileSync(javaPath, "utf8");
+  for (const file of ASR_MODELS.sensevoice.files) {
+    assert.ok(java.includes(`"${file.name}"`), `${file.name} in FaceclawCaptionEngine.java`);
+  }
+  assert.ok(java.includes('MODEL_SENSEVOICE = "sensevoice"'));
+});
+
 test("the Java model policy names the same directories and files", () => {
   const javaPath = path.join(__dirname, "..", "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawOnboardAsr.java");
   const java = fs.readFileSync(javaPath, "utf8");
   const javaIds = { moonshine: "moonshine", "whisper-base-en": "whisper", "parakeet-v2": "parakeet-v2", "parakeet-110m": "parakeet-110m" };
-  for (const id of ASR_MODEL_IDS) {
+  for (const id of ASR_MODEL_IDS.filter((id) => !CAPTION_ONLY_MODEL_IDS.includes(id))) {
     const def = ASR_MODELS[id];
     // The enum constant's block: from its id string to the closing "Gate." of its constructor call.
     const start = java.indexOf(`("${javaIds[id]}", `);
