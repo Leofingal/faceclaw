@@ -49,6 +49,7 @@
     "../app/ui/shell/top-bar.ts",
     "../app/g2/resume-receipt.ts",
     "../app/health/health-open-refresh.ts",
-    "../app/util/log-upload-core.ts"
+    "../app/util/log-upload-core.ts",
+    "../app/apps/ghost/ghost-charge-mute.ts"
   ]
 }

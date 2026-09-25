@@ -57,7 +57,13 @@ import {
   ttsUrl,
   type GhostItem,
 } from "./ghost-client";
-import { speakGhost, stopGhostSpeech } from "./ghost-speech";
+import { appendGhostSpeechReceipt, speakGhost, stopGhostSpeech } from "./ghost-speech";
+import {
+  autoSpeechMutedFor,
+  glassesChargeLatch,
+  mutedSpeechReceiptLine,
+  type MutedSpeechKind,
+} from "./ghost-charge-mute";
 
 const PAGE_X = 20;
 const TITLE_Y = 10;
@@ -1284,10 +1290,14 @@ export class GhostLayer implements Layer {
     this.expanded = false;
     this.proseOpen = false;
     this.bodyScroll = 0;
-    this.speakBody(item, () => {
-      this.catchUpHoldUuid = null;
-      this.follow = true;
-    });
+    this.speakBody(
+      item,
+      () => {
+        this.catchUpHoldUuid = null;
+        this.follow = true;
+      },
+      "catch-up",
+    );
     this.requestRender();
   }
 
@@ -1308,6 +1318,29 @@ export class GhostLayer implements Layer {
   }
 
   /**
+   * Silent while the glasses charge (Chris, 2026-09-24: "silent mode should go
+   * on any time the glasses are charging! That is a better indicator of
+   * bedtime."). Asked only by the AUTOMATIC paths - an arrival, an
+   * approval/waiting announcement, the catch-up after a send - and only when
+   * they were about to speak, so each muted line is exactly one log line and
+   * one receipt. Reads the communicator's latched battery answer, never the
+   * phase, which flickers to "connected" on every reconnect in the case; see
+   * ghost-charge-mute.ts.
+   *
+   * NOT QUEUED: a muted line is simply not spoken. Nothing replays it when the
+   * glasses come off the charger, so a night of replies cannot become a
+   * morning of speech. The item stays unmarked in spokenBodies, so tapping
+   * into it later (an explicit ask) still reads it.
+   */
+  private automaticSpeechMuted(kind: MutedSpeechKind, text: string, uuid: string | undefined): boolean {
+    if (!ghostSpeakSetting.get() || !text.trim() || !ghostSessionId()) return false;
+    if (!autoSpeechMutedFor(glassesChargeLatch())) return false;
+    console.log(`ghost: not spoken, glasses charging (${kind} ${uuid ?? "-"})`);
+    appendGhostSpeechReceipt(mutedSpeechReceiptLine(Date.now(), kind, uuid));
+    return true;
+  }
+
+  /**
    * Speak tier-2 (the authored summary) for an item, once — the one path
    * both the automatic arrival trigger and the manual tap into tier-2 now
    * call, so they share a single spokenBodies gate instead of racing or
@@ -1317,7 +1350,7 @@ export class GhostLayer implements Layer {
    * and a short turn going unspoken would be a real, silent regression, not
    * a minor one.
    */
-  private speakBody(item: GhostItem, onEnd?: () => void): void {
+  private speakBody(item: GhostItem, onEnd?: () => void, automatic?: MutedSpeechKind): void {
     // NEVER CHRIS'S OWN WORDS (Chris, 2026-09-03, reproduced twice:
     // "Definitely when I clicked on mine, to expand it because I gave a long
     // message, it did start reading to me"). The arrival trigger in poll()
@@ -1335,8 +1368,13 @@ export class GhostLayer implements Layer {
       onEnd?.();
       return;
     }
+    const text = item.body.length ? item.body.join(" ") : item.headline;
+    if (automatic && this.automaticSpeechMuted(automatic, text, item.uuid)) {
+      onEnd?.();
+      return;
+    }
     this.spokenBodies.add(item.uuid);
-    this.speak(item.body.length ? item.body.join(" ") : item.headline, onEnd);
+    this.speak(text, onEnd);
   }
 
   /** The window menu's Sound entry, so it can confirm itself out loud. */
@@ -1481,7 +1519,9 @@ export class GhostLayer implements Layer {
       // announced. The question itself stays on the lens. "Approval Request"
       // is a fixed string on purpose: the box's /tts route caches an
       // exact-text repeat, so it is synthesized once, ever.
-      this.speak(current.kind === "approval" ? "Approval Request" : current.headline);
+      const announcement = current.kind === "approval" ? "Approval Request" : current.headline;
+      if (this.automaticSpeechMuted(current.kind === "approval" ? "approval" : "waiting", announcement, current.uuid)) return;
+      this.speak(announcement);
       return;
     }
     // Tier-2 (the authored summary) is what plays by default now, not the
@@ -1490,7 +1530,7 @@ export class GhostLayer implements Layer {
     // through the shared gate: if Chris taps into tier-2 while this is still
     // playing, that tap finds the item already in spokenBodies and does not
     // call speak() again, so it neither restarts nor overlaps this audio.
-    this.speakBody(current);
+    this.speakBody(current, undefined, "reply");
   }
 
   private async checkAutoFollow(): Promise<void> {

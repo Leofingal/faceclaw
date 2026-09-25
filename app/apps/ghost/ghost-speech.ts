@@ -132,3 +132,31 @@ export function speakGhost(url: string, headers: Record<string, string>, onEnd?:
     finish();
   }
 }
+
+/** Stops growing here, like the app's other receipts. */
+const SPEECH_RECEIPT_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Append one line to `files/voice/ghost-speech-receipts.jsonl` (the muted
+ * lines of ghost-charge-mute.ts). `voice/` is one of the folders the log
+ * upload mirrors to the Ghost box. Never throws: a receipt that cannot be
+ * written must not take the feed down.
+ */
+export function appendGhostSpeechReceipt(line: string): void {
+  try {
+    const context = Utils.android?.getApplicationContext?.();
+    if (!context) return;
+    const dir = new java.io.File(context.getFilesDir(), "voice");
+    if (!dir.exists()) dir.mkdirs();
+    const file = new java.io.File(dir, "ghost-speech-receipts.jsonl");
+    if (file.exists() && Number(file.length()) >= SPEECH_RECEIPT_MAX_BYTES) return;
+    const writer = new java.io.FileOutputStream(file, true);
+    try {
+      writer.write(new java.lang.String(`${line}\n`).getBytes("UTF-8"));
+    } finally {
+      writer.close();
+    }
+  } catch (error) {
+    console.warn("ghost: speech receipt write failed", error);
+  }
+}

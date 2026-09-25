@@ -77,6 +77,7 @@ public final class RingLinkHarness {
         if ("onDemandPagesAndAcks".contains(only)) onDemandPagesAndAcks();
         if ("directUnchanged".contains(only)) directUnchanged();
         if ("glassesUnchanged".contains(only)) glassesUnchanged();
+        if ("glassesChargeLatchEveryMode".contains(only)) glassesChargeLatchEveryMode();
 
         System.out.println();
         if (failures == 0) {
@@ -424,6 +425,40 @@ public final class RingLinkHarness {
         rig.close();
     }
 
+    /**
+     * Ghost's speech mute (2026-09-24, late) reads the glasses' latched charge
+     * reading, so the latch must follow battery answers in EVERY ring mode, not
+     * only "Only when needed" - and must survive the phase flicker of a
+     * reconnect in the case. Read from the field, so an older build shows
+     * where it fell short (the latch stayed -1 outside on-demand); the getter
+     * the TS side calls is checked against it where the build has one.
+     */
+    static void glassesChargeLatchEveryMode() throws Exception {
+        String[][] modes = {{"on-demand", "true", RING}, {"direct", "false", RING}, {"glasses only", "false", ""}};
+        for (String[] mode : modes) {
+            String n = mode[0];
+            section("glasses charge latch: " + n);
+            Rig rig = new Rig(Boolean.parseBoolean(mode[1]), mode[2]);
+            rig.glassesConnect();
+            rig.runFor(200L);
+            expect(n + ": not heard yet reads -1", rig.chargeLatch() == -1);
+            rig.chargingReading(true);
+            expect(n + ": a charging answer latches 1", rig.chargeLatch() == 1);
+            rig.glassesLinkDrops();
+            expect(n + ": the glasses link drops in the case: the phase flag reads not charging",
+                !((Boolean) rig.get("chargingMode")));
+            expect(n + ": ...and the latch still reads 1", rig.chargeLatch() == 1);
+            rig.glassesConnect();
+            rig.runFor(200L);
+            expect(n + ": reconnected, before any battery answer: the latch still reads 1", rig.chargeLatch() == 1);
+            rig.chargingReading(true);
+            expect(n + ": the next answer says charging: 1", rig.chargeLatch() == 1);
+            rig.chargingReading(false);
+            expect(n + ": off the charger: 0", rig.chargeLatch() == 0);
+            rig.close();
+        }
+    }
+
     /** "Only via glasses": no address, nothing happens, whatever asks. */
     static void glassesUnchanged() throws Exception {
         section("glasses: no ring address, unchanged");
@@ -549,6 +584,26 @@ public final class RingLinkHarness {
             Method m = findMethod("isRingLinkOnDemand");
             try {
                 return m != null && (Boolean) m.invoke(comm);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        /**
+         * The latched charge reading: the getter where the build has one (and
+         * it must agree with the field), else the field itself.
+         */
+        int chargeLatch() {
+            try {
+                int field = (Integer) get("glassesChargingLatched");
+                Method m = findMethod("glassesChargeLatch");
+                if (m != null) {
+                    int viaGetter = (Integer) m.invoke(comm);
+                    if (viaGetter != field) {
+                        throw new IllegalStateException("getter " + viaGetter + " != field " + field);
+                    }
+                }
+                return field;
             } catch (Exception e) {
                 throw new IllegalStateException(e);
             }
@@ -681,6 +736,14 @@ public final class RingLinkHarness {
             Method m = FaceclawBleCommunicator.class.getDeclaredMethod(name, types);
             m.setAccessible(true);
             return m.invoke(comm, args);
+        }
+
+        Object get(String field) throws Exception {
+            Field f = FaceclawBleCommunicator.class.getDeclaredField(field);
+            f.setAccessible(true);
+            synchronized (lockOf()) {
+                return f.get(comm);
+            }
         }
 
         void set(String field, Object value) throws Exception {

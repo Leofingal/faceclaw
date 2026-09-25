@@ -256,17 +256,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     private String ringHealthPullRequestTrigger = RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED;
     /**
-     * "Only when needed" only (2026-09-24 revision): the glasses' charge state
-     * as their own battery answers last reported it - 1 on the charger, 0 off
-     * it, -1 not heard yet. It is the reading behind the "charging" phase, but
-     * deliberately NOT {@code chargingMode}: that one is reset to false by every
-     * glasses link loss and transport rebuild, so after a reconnect in the case
-     * the phase reads "connected" until the first battery poll of the new
-     * session. This one is changed only by a battery answer, so a reconnect in
-     * the case neither lets a tick through nor fakes a morning. Guarded by
-     * {@code lock}.
+     * The glasses' charge state as their own battery answers last reported it -
+     * 1 on the charger, 0 off it, -1 not heard yet. It is the reading behind the
+     * "charging" phase, but deliberately NOT {@code chargingMode}: that one is
+     * reset to false by every glasses link loss and transport rebuild, so after
+     * a reconnect in the case the phase reads "connected" until the first
+     * battery poll of the new session. This one is changed only by a battery
+     * answer, so a reconnect in the case neither lets a tick through nor fakes
+     * a morning.
+     *
+     * <p>Kept in every ring mode since 2026-09-24 (late): Ghost's phone-side
+     * speech reads it through {@link #glassesChargeLatch()} and stays silent
+     * while it is 1 - Chris: "silent mode should go on any time the glasses are
+     * charging! That is a better indicator of bedtime." Only "Only when needed"
+     * acts on it for the ring (see {@link #noteGlassesChargeReadingLocked}).
+     * Written under {@code lock}; volatile so the JS thread can read it without
+     * taking the lock.
      */
-    private int glassesChargingLatched = -1;
+    private volatile int glassesChargingLatched = -1;
     /**
      * "Only when needed" only: a pull to ask for on the next ring pass once the
      * glasses session is ready - set when a battery answer says the glasses
@@ -2686,6 +2693,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * The glasses' latched charge reading: 1 on the charger, 0 off it, -1 not
+     * heard from this communicator yet. Read-only, lock-free. Ghost's phone-side
+     * speech mutes its automatic lines while this is 1 (2026-09-24); a glasses
+     * reconnect in the case does not change it, only a battery answer does.
+     */
+    public int glassesChargeLatch() {
+        return glassesChargingLatched;
+    }
+
+    /**
      * Run a pull and account for whether it finished. The ONLY place
      * {@link #requestRingHealth(String)} may be called from, so that every path
      * shares one definition of "aborted". Counts every exit in
@@ -4729,9 +4746,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * reconnect loop rebuild the session, layout, and first frame.
      */
     private void updateChargingModeLocked(boolean charging, int battery) {
-        if (ringLinkOnDemand) {
-            noteGlassesChargeReadingLocked(charging);
-        }
+        noteGlassesChargeReadingLocked(charging);
         if (charging == chargingMode) {
             if (chargingMode) {
                 setStateDisplay("charging", chargingStatusText(battery));
@@ -4755,16 +4770,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * "Only when needed" only (2026-09-24 revision). Every battery answer lands
-     * here before the phase logic, so the latch follows the glasses' own
-     * reading and nothing else. On-the-charger to off-the-charger arms one
-     * pull for when the session is back: Java tears the transport down on that
-     * same transition, and the ring logic only runs with the glasses session
-     * up. Caller holds {@code lock}.
+     * Every battery answer lands here before the phase logic, so the latch
+     * follows the glasses' own reading and nothing else. The latch is kept in
+     * every mode (Ghost's speech reads it); the rest is "Only when needed"
+     * only (2026-09-24 revision): on-the-charger to off-the-charger arms one
+     * pull for when the session is back, because Java tears the transport down
+     * on that same transition and the ring logic only runs with the glasses
+     * session up. Caller holds {@code lock}.
      */
     private void noteGlassesChargeReadingLocked(boolean charging) {
         int was = glassesChargingLatched;
         glassesChargingLatched = charging ? 1 : 0;
+        if (!ringLinkOnDemand) {
+            return;
+        }
         if (was == 1 && !charging) {
             ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_CHARGER_OFF;
             logLine("ring link on demand: glasses off the charger, one pull once the session is back");
