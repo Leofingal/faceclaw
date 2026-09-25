@@ -2702,6 +2702,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * window is dropped rather than queued, because a stale duplicate pull has
      * no value and every pull carries the discard risk.
      */
+    /**
+     * Whether the glasses mic session (Microphones / Captions, mic-session.ts)
+     * is running; timed ring ticks are refused while it is (2026-09-25,
+     * {@link RingProtocol#RING_PULL_SKIP_MIC_SESSION}). Static because the
+     * communicator is rebuilt on every transport rebuild and the session
+     * outlives it.
+     */
+    private static volatile boolean micSessionActive;
+
+    public static void setMicSessionActive(boolean active) {
+        micSessionActive = active;
+    }
+
+    public static boolean isMicSessionActive() {
+        return micSessionActive;
+    }
+
     public void requestRingHealthNow() {
         requestRingHealthNowFor(RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED);
     }
@@ -2731,10 +2748,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             expireGlassesInCaseLocked(SystemClock.elapsedRealtime());
             offFace = !glassesOnFace;
         }
-        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger, offFace)) {
-            logLine("ring link on demand: " + cleanTrigger + " pull not taken, the glasses are off the face");
+        String skipReason = RingProtocol.ringPullSkipReason(ringLinkOnDemand, cleanTrigger, offFace, micSessionActive);
+        if (skipReason != null) {
+            logLine("ring: " + cleanTrigger + " pull not taken, "
+                + (RingProtocol.RING_PULL_SKIP_MIC_SESSION.equals(skipReason)
+                    ? "the glasses mic session is running"
+                    : "the glasses are off the face"));
             appendSleepReceipt(RingProtocol.pullSkippedReceiptLine(
-                System.currentTimeMillis(), cleanTrigger, RingProtocol.RING_PULL_SKIP_OFF_FACE));
+                System.currentTimeMillis(), cleanTrigger, skipReason));
             return;
         }
         synchronized (lock) {

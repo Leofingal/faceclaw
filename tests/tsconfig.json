@@ -31,6 +31,7 @@
     "../app/apps/microphones/caption-lang.ts",
     "../app/apps/microphones/mic-session-owners.ts",
     "../app/apps/microphones/captions-view-presence.ts",
+    "../app/g2/firmware-exit.ts",
     "../app/apps/evenhub/containers.ts",
     "../app/phone-ui/transcript-turns.ts",
     "../app/phone-ui/markdown-render.ts",

@@ -1,4 +1,5 @@
 import { Application, ImageSource } from "@nativescript/core";
+import { notifyFirmwareSysEvent } from "./firmware-exit";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
 import {
@@ -2159,6 +2160,9 @@ class DashboardController {
           event.eventType === OsEventTypeList.SYSTEM_EXIT_EVENT
         ) {
           this.appendLog("display state invalidated by firmware exit event");
+          // The glasses may have dropped the mic stream with it (2026-09-25):
+          // a running Microphones session re-arms (g2/firmware-exit.ts).
+          notifyFirmwareSysEvent(event.eventType);
         }
         if (
           event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||

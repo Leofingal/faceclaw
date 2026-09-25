@@ -705,6 +705,22 @@ public final class RingProtocolSelfTest {
         expect("the on-head trigger passes through, and an on-head ask is taken while paused",
             "on-head".equals(RingProtocol.ringPullTrigger("on-head"))
                 && RingProtocol.ringPullAskAccepted(true, "on-head", true));
+
+        // 2026-09-25 evening: a tick raised the ring link mid-captions and the
+        // glasses dropped the mic 1.6 s later. Ticks are refused while the mic
+        // session runs, in every mode; explicit asks are not.
+        expect("a tick is refused while the mic session runs, in every mode, on or off the face",
+            "mic-session".equals(RingProtocol.ringPullSkipReason(true, "tick", false, true))
+                && "mic-session".equals(RingProtocol.ringPullSkipReason(false, "tick", false, true))
+                && "mic-session".equals(RingProtocol.ringPullSkipReason(true, "tick", true, true)));
+        expect("a Health open and an on-head ask still pull while the mic session runs",
+            RingProtocol.ringPullSkipReason(true, "health-open", false, true) == null
+                && RingProtocol.ringPullSkipReason(true, "on-head", true, true) == null
+                && RingProtocol.ringPullSkipReason(false, "health-open", true, true) == null);
+        expect("with no mic session the old rule stands: off-face ticks refused on demand only",
+            RingProtocol.ringPullSkipReason(true, "tick", false, false) == null
+                && "off-face".equals(RingProtocol.ringPullSkipReason(true, "tick", true, false))
+                && RingProtocol.ringPullSkipReason(false, "tick", true, false) == null);
         String offFace = RingProtocol.pullSkippedReceiptLine(1000L, "tick", RingProtocol.RING_PULL_SKIP_OFF_FACE);
         System.out.println("RECEIPT " + offFace);
         expect("a tick refused off the face leaves a pullSkipped line saying so",

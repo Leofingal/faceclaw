@@ -6,6 +6,7 @@ import { toUint8Array } from "../../util/array-util";
 import { voiceControlBridge } from "../../native/voice-control";
 import { voiceActivity } from "../../ui/shell/voice-activity";
 import { createMicSessionOwners } from "./mic-session-owners";
+import { createFirmwareExitRearm, onFirmwareExit } from "../../g2/firmware-exit";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { ASR_MODELS, isAsrModelReady } from "../../native/asr-model";
 import {
@@ -189,6 +190,17 @@ class MicSession {
   private engineStartWallMs = 0;
   // Mic packet counters when captions started, for the log's stop record.
   private captionMicStart: MicPacketStats | null = null;
+  // Re-arms the glasses mic a few seconds after a firmware exit event
+  // (g2/firmware-exit.ts); unsubscribed while the session is stopped.
+  private readonly exitRearm = createFirmwareExitRearm({
+    isRunning: () => this.running,
+    rearm: (why) => this.rearmCapture(why),
+    schedule: (fn, ms) => {
+      const timer = setTimeout(fn, ms);
+      return () => clearTimeout(timer);
+    },
+  });
+  private offFirmwareExit: (() => void) | null = null;
   private sessionRowId = -1;
   private sentimentSum = 0;
   private sentimentCount = 0;
@@ -303,6 +315,10 @@ class MicSession {
       this.startRecording();
     }
     const ok = extended ? this.startExtended() : this.startStock();
+    if (ok) {
+      this.offFirmwareExit = onFirmwareExit((eventType) => this.exitRearm.onExit(eventType));
+      setRingMicSessionActive(true);
+    }
     if (!ok) {
       this.statusText = "Microphone unavailable (glasses not connected?)";
       this.running = false;
@@ -322,6 +338,10 @@ class MicSession {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.offFirmwareExit?.();
+    this.offFirmwareExit = null;
+    this.exitRearm.cancel();
+    setRingMicSessionActive(false);
     if (this.renderTimer) {
       clearInterval(this.renderTimer);
       this.renderTimer = null;
@@ -349,6 +369,32 @@ class MicSession {
     this.doaDeviceDeg = null;
     this.notify();
     void this.applyRetentionSweep();
+  }
+
+  /**
+   * Tear down and re-request the glasses mic without stopping captions or
+   * the session (2026-09-25: after a firmware exit the glasses stopped
+   * streaming and nothing asked again). Stock: the raw tap is stopped and
+   * started, which re-sends the mic enable. Extended: the SM stream restarts.
+   */
+  private rearmCapture(why: string): void {
+    if (!this.running) return;
+    console.log(`microphones: re-arming the glasses mic after ${why} (mode ${this.mode})`);
+    try {
+      if (this.mode === "extended") {
+        this.stopExtended();
+        if (!this.startExtended()) this.statusText = "Microphone lost (glasses exit); reopen Microphones";
+      } else {
+        const communicator = this.nativeCommunicator();
+        voiceControlBridge.stopRawCapture();
+        if (!communicator || !voiceControlBridge.startRawCapture({ communicator })) {
+          this.statusText = "Microphone lost (glasses exit); reopen Microphones";
+        }
+      }
+    } catch (error) {
+      console.warn(`microphones: re-arm failed: ${error}`);
+    }
+    this.notify();
   }
 
   private refreshCachedFlags(): void {
@@ -1378,6 +1424,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
       },
     );
   });
+}
+
+/**
+ * Tell the ring code the glasses mic session is running, so it refuses its
+ * :01/:31 timed pulls meanwhile (2026-09-25: a tick's ring handshake preceded
+ * the glasses dropping the mic). An older native build without the setter is
+ * simply not told.
+ */
+function setRingMicSessionActive(active: boolean): void {
+  try {
+    com.faceclaw.app.FaceclawBleCommunicator.setMicSessionActive(active);
+  } catch {
+    // Older native build.
+  }
 }
 
 function captionModelDir(id: "moonshine" | "sensevoice"): string {

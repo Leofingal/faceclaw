@@ -1319,6 +1319,26 @@ public final class RingProtocol {
     public static final String RING_PULL_TRIGGER_ON_HEAD = "on-head";
     /** pullSkipped reason: a timed ask refused because the glasses are off the face (2026-09-25). */
     public static final String RING_PULL_SKIP_OFF_FACE = "off-face";
+    /**
+     * pullSkipped reason: a timed ask refused because the glasses mic session
+     * (Microphones / Captions) is running (2026-09-25 evening). At 19:01 a tick
+     * raised the ring link, and 0.3 s after its device-channel handshake the
+     * glasses sent SYSTEM_EXIT_EVENT and stopped streaming the mic mid-captions.
+     */
+    public static final String RING_PULL_SKIP_MIC_SESSION = "mic-session";
+
+    /**
+     * Why an ask is refused, or null to take it. A timed tick is refused in
+     * EVERY mode while the mic session runs ({@link #RING_PULL_SKIP_MIC_SESSION});
+     * otherwise {@link #ringPullAskAccepted} decides ({@link #RING_PULL_SKIP_OFF_FACE}).
+     * A Health open, on-head or any other ask is never refused for the mic.
+     */
+    public static String ringPullSkipReason(boolean onDemand, String trigger, boolean timedPaused, boolean micSession) {
+        if (micSession && RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger))) {
+            return RING_PULL_SKIP_MIC_SESSION;
+        }
+        return ringPullAskAccepted(onDemand, trigger, timedPaused) ? null : RING_PULL_SKIP_OFF_FACE;
+    }
 
     /**
      * The trigger word as it goes into a receipt: one of the six known words,

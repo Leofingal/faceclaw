@@ -88,6 +88,9 @@ public final class RingLinkHarness {
         if ("inCaseLatchEveryMode".contains(only)) inCaseLatchEveryMode();
         if ("inCaseLatchAcrossRestart".contains(only)) inCaseLatchAcrossRestart();
         if ("glassesStateReceipt".contains(only)) glassesStateReceipt();
+        // 2026-09-25 evening: no timed ring pull while the glasses mic runs.
+        if ("onDemandMicSessionTicks".contains(only)) onDemandMicSessionTicks();
+        if ("directMicSessionTicks".contains(only)) directMicSessionTicks();
 
         System.out.println();
         if (failures == 0) {
@@ -206,6 +209,83 @@ public final class RingLinkHarness {
             rig.ble().dials == dials + 3 && rig.ble().deliberateDisconnects == drops + 3);
         expect("no tick was refused", rig.receipts("pullSkipped").isEmpty());
         rig.close();
+    }
+
+    /**
+     * 2026-09-25 19:01: a tick raised the ring link during captions; 0.3 s
+     * after the ring's device-channel handshake the glasses sent
+     * SYSTEM_EXIT_EVENT and the mic stream stopped. While the mic session runs,
+     * ticks are refused (a pullSkipped "mic-session" receipt, no dial); a
+     * Health open still pulls; when the session ends, the next tick pulls.
+     * Fails on a build without FaceclawBleCommunicator.setMicSessionActive.
+     */
+    static void onDemandMicSessionTicks() throws Exception {
+        section("on-demand: ticks while the mic session runs");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        rig.putOnAndSettle();
+        java.lang.reflect.Method setMic = micSessionSetter();
+        expect("this build has FaceclawBleCommunicator.setMicSessionActive", setMic != null);
+        if (setMic == null) {
+            rig.close();
+            return;
+        }
+        try {
+            setMic.invoke(null, true);
+            int dials = rig.ble().dials;
+            int pulls = rig.receipts("\"type\":\"pull\"").size();
+            for (int i = 0; i < 3; i++) {
+                SystemClock.advance(30 * 60_000L);
+                rig.requestPull("tick");
+                rig.runFor(300L);
+            }
+            List<String> refused = rig.receipts("\"reason\":\"mic-session\"");
+            expect("three ticks during the mic session: three mic-session refusals, each a tick: " + refused.size(),
+                refused.size() == 3 && refused.stream().allMatch(l -> l.contains("\"trigger\":\"tick\"")));
+            expect("three ticks during the mic session: no dial, no pull",
+                rig.ble().dials == dials && rig.receipts("\"type\":\"pull\"").size() == pulls);
+            SystemClock.advance(6 * 60_000L);
+            pullCycle(rig, "Health open during the mic session", "health-open");
+            setMic.invoke(null, false);
+            SystemClock.advance(30 * 60_000L);
+            pullCycle(rig, "first tick after the mic session", "tick");
+        } finally {
+            setMic.invoke(null, false);
+        }
+        rig.close();
+    }
+
+    /** The same refusal in "Direct" mode (link always up): a tick during the mic session pulls nothing. */
+    static void directMicSessionTicks() throws Exception {
+        section("direct: ticks while the mic session runs");
+        java.lang.reflect.Method setMic = micSessionSetter();
+        expect("this build has FaceclawBleCommunicator.setMicSessionActive (direct)", setMic != null);
+        if (setMic == null) return;
+        Rig rig = new Rig(false);
+        rig.glassesConnect();
+        rig.runUntil(() -> "up".equals(rig.state()) && rig.receipts("\"type\":\"pull\"").size() == 1);
+        try {
+            setMic.invoke(null, true);
+            int pulls = rig.receipts("\"type\":\"pull\"").size();
+            int skips = rig.receipts("\"reason\":\"mic-session\"").size();
+            SystemClock.advance(30 * 60_000L);
+            rig.requestPull("tick");
+            rig.runFor(300L);
+            expect("direct: a tick during the mic session leaves one mic-session receipt and no pull",
+                rig.receipts("\"reason\":\"mic-session\"").size() == skips + 1
+                    && rig.receipts("\"type\":\"pull\"").size() == pulls);
+        } finally {
+            setMic.invoke(null, false);
+        }
+        rig.close();
+    }
+
+    static java.lang.reflect.Method micSessionSetter() {
+        try {
+            return FaceclawBleCommunicator.class.getMethod("setMicSessionActive", boolean.class);
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
     }
 
     /**
