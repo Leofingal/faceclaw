@@ -1308,9 +1308,13 @@ public final class RingProtocol {
     public static final String RING_PULL_TRIGGER_RETRY = "retry";
     /** A caller that did not say (the old no-argument entry point). */
     public static final String RING_PULL_TRIGGER_UNSPECIFIED = "unspecified";
+    /** The glasses came off their charger: the morning pull (2026-09-24 revision). */
+    public static final String RING_PULL_TRIGGER_CHARGER_OFF = "charger-off";
+    /** pullSkipped reason: a timed ask refused because the glasses are charging. */
+    public static final String RING_PULL_SKIP_GLASSES_CHARGING = "glasses-charging";
 
     /**
-     * The trigger word as it goes into a receipt: one of the five known words,
+     * The trigger word as it goes into a receipt: one of the six known words,
      * or "other". Whitelisted rather than escaped because the value crosses
      * from TypeScript and is written into JSON by string concatenation.
      */
@@ -1324,6 +1328,7 @@ public final class RingProtocol {
             case RING_PULL_TRIGGER_CONNECT:
             case RING_PULL_TRIGGER_RETRY:
             case RING_PULL_TRIGGER_UNSPECIFIED:
+            case RING_PULL_TRIGGER_CHARGER_OFF:
                 return raw;
             default:
                 return "other";
@@ -1334,15 +1339,17 @@ public final class RingProtocol {
      * Whether an ask for a pull is taken at all. Pure so the self-test can pin
      * it.
      *
-     * <p>Chris, 2026-09-24: "it should just connect and pull when you open the
-     * health app." So in "Only when needed" the timed ask - the :01/:31 tick -
-     * is refused outright: it neither raises the link nor queues a pull.
-     * Everything else is taken, and <b>{@code onDemand == false} takes every
-     * ask</b>, which is what keeps "Direct" and "Only via glasses" exactly as
-     * they were.
+     * <p>Revision, 2026-09-24 20:15. Chris: "Can we make it detect that the
+     * glasses are charging, and if the glasses are charging - no pulls?" - the
+     * charger standing in for "asleep". So in "Only when needed" the timed
+     * ask (the :01/:31 tick) is refused while the glasses are on their charger,
+     * and taken otherwise. Every non-timed ask is taken, charging or not: a
+     * Health open is an explicit request and beats the rule. <b>{@code onDemand
+     * == false} takes every ask</b>, which is what keeps "Direct" and "Only via
+     * glasses" exactly as they were.
      */
-    public static boolean ringPullAskAccepted(boolean onDemand, String trigger) {
-        return !onDemand || !RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger));
+    public static boolean ringPullAskAccepted(boolean onDemand, String trigger, boolean glassesCharging) {
+        return !onDemand || !glassesCharging || !RING_PULL_TRIGGER_TICK.equals(ringPullTrigger(trigger));
     }
 
     /**
@@ -1350,7 +1357,11 @@ public final class RingProtocol {
      * of its {@link #RING_ON_DEMAND_LINK_WAIT_MS} window with no link, so no
      * pull ran (2026-09-24). The trace a failed Health open leaves.
      *
-     * @param reason "no-link" (the only one written today)
+     * <p>Also written, 2026-09-24 revision, for each :01/:31 tick refused
+     * because the glasses are charging ({@link #RING_PULL_SKIP_GLASSES_CHARGING}),
+     * so a night on the charger reads as a pause, not a silence.
+     *
+     * @param reason "no-link" or "glasses-charging"
      */
     public static String pullSkippedReceiptLine(long wallMs, String trigger, String reason) {
         return "{\"type\":\"pullSkipped\",\"at\":\"" + localStamp(wallMs) + "\""

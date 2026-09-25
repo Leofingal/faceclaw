@@ -3,13 +3,13 @@
  *
  * ## Why (2026-09-24)
  *
- * "Only when needed" pulls the ring when Health opens and at no other time
- * (Chris: "it should just connect and pull when you open the health app"). The
+ * In "Only when needed" a Health open raises the ring link for a fresh pull
+ * (and while the glasses charge overnight it is the only thing that does). The
  * phone tab's `attach()` syncs the store, asks for that pull and draws - all
  * before the pull has even dialled. The pull lands ~20 s later (a dial, the
  * handshake, five record types), and the tab never looked again, so an open
  * showed the data from BEFORE the pull and the new data waited for the next
- * open. That defeats the mode: the open IS the only pull.
+ * open.
  *
  * ## How
  *

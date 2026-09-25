@@ -131,8 +131,8 @@ export class HealthViewModel extends Observable {
     // Live data first, so the purge happens before anything renders and
     // seeding is skipped entirely once real records exist. See health-live.ts.
     syncLiveRecords();
-    // "Only when needed" pulls only on an open, and that pull lands ~20 s
-    // after this method has drawn. Watch for it and draw again when it does
+    // In "Only when needed" the pull an open asks for is a fresh dial and
+    // lands ~20 s after this method has drawn. Watch for it and draw again when it does
     // (2026-09-24). Started BEFORE the ask, so a fast pull cannot slip past
     // the starting count; a no-op in Direct and "Only via glasses".
     this.stopOpenPullWatch?.();

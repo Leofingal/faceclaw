@@ -54,6 +54,7 @@ public final class RingLinkHarness {
     static final long CYCLE_TIMEOUT_REAL_MS = 20_000L;
 
     private static int checks;
+    private static boolean passAnnounced;
     private static int failures;
     private static File transcriptDir;
 
@@ -69,7 +70,8 @@ public final class RingLinkHarness {
         String only = System.getProperty("harness.only", "");
         if ("onDemandConsecutiveOpens".contains(only)) onDemandConsecutiveOpens();
         if ("onDemandStaleUpDeadLink".contains(only)) onDemandStaleUpDeadLink();
-        if ("onDemandTickTakesNoPull".contains(only)) onDemandTickTakesNoPull();
+        if ("onDemandTimedPulls".contains(only)) onDemandTimedPulls();
+        if ("onDemandChargingNight".contains(only)) onDemandChargingNight();
         if ("onDemandRingAbsent".contains(only)) onDemandRingAbsent();
         if ("onDemandDisconnectCallbackEitherWay".contains(only)) onDemandDisconnectCallbackEitherWay();
         if ("onDemandPagesAndAcks".contains(only)) onDemandPagesAndAcks();
@@ -171,23 +173,95 @@ public final class RingLinkHarness {
         rig.close();
     }
 
-    /** Part 2: no timed pulls in this mode. The :01/:31 tick asks and is refused. */
-    static void onDemandTickTakesNoPull() throws Exception {
-        section("on-demand: the aligned tick takes no pull");
+    /**
+     * Revision 2026-09-24 20:15 (Chris): "Only when needed" keeps its :01/:31
+     * timed pulls. With the glasses connected and not charging, three ticks in
+     * a row each raise the link, pull on a new link and drop it again.
+     */
+    static void onDemandTimedPulls() throws Exception {
+        section("on-demand: timed pulls with the glasses on");
         Rig rig = new Rig(true);
         rig.glassesConnect();
+        for (int i = 1; i <= 3; i++) {
+            SystemClock.advance(30 * 60_000L);
+            pullCycle(rig, "tick " + i, "tick");
+        }
+        expect("three ticks, three dials, three drops",
+            rig.ble().dials == 3 && rig.ble().deliberateDisconnects == 3);
+        expect("no tick was refused", rig.receipts("pullSkipped").isEmpty());
+        rig.close();
+    }
+
+    /**
+     * A night with the glasses in their case: every tick refused with a
+     * receipt and no dial; a Health open still pulls; a glasses link that
+     * drops and comes back in the case does not end the pause or fire the
+     * morning pull; taking them off the charger fires exactly one pull; and
+     * the next tick pulls as usual.
+     */
+    static void onDemandChargingNight() throws Exception {
+        section("on-demand: a night on the charger");
+        Rig rig = new Rig(true);
+        rig.glassesConnect();
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "evening tick", "tick");
+
+        rig.chargingReading(true);
+        int dials = rig.ble().dials;
         int pulls = rig.receipts("\"type\":\"pull\"").size();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             SystemClock.advance(30 * 60_000L);
             rig.requestPull("tick");
-            rig.runFor(1_000L);
+            rig.runFor(300L);
         }
-        expect("three ticks: no dial", rig.ble().dials == 0);
-        expect("three ticks: no pull receipt", rig.receipts("\"type\":\"pull\"").size() == pulls);
-        expect("three ticks: still idle, nothing wanted",
+        List<String> refused = rig.receipts("\"reason\":\"glasses-charging\"");
+        expect("four ticks on the charger: four refusals receipted, each a tick: " + refused.size(),
+            refused.size() == 4 && refused.stream().allMatch(l -> l.contains("\"type\":\"pullSkipped\"")
+                && l.contains("\"trigger\":\"tick\"")));
+        expect("four ticks on the charger: no dial, no pull",
+            rig.ble().dials == dials && rig.receipts("\"type\":\"pull\"").size() == pulls);
+        expect("on the charger: idle, nothing wanted",
             "idle".equals(rig.state()) && rig.stateJson().contains("\"wanted\":false"));
-        // An open straight after a refused tick is not blocked by it.
-        openCycle(rig, 1, "health-open");
+
+        SystemClock.advance(61_000L);
+        pullCycle(rig, "Health open on the charger", "health-open");
+
+        // The glasses link drops in the case and comes back; until the first
+        // battery poll on the new session the phase reads connected, not charging.
+        rig.glassesLinkDrops();
+        rig.glassesConnect();
+        int dialsFlicker = rig.ble().dials;
+        int pullsFlicker = rig.receipts("\"type\":\"pull\"").size();
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        rig.runFor(300L);
+        expect("a tick in the reconnect gap before the first battery poll is still refused",
+            rig.receipts("\"reason\":\"glasses-charging\"").size() == 5 && rig.ble().dials == dialsFlicker);
+        rig.chargingReading(true);
+        rig.runFor(1_000L);
+        expect("the first poll says charging again: no morning pull from the flicker",
+            rig.receipts("\"type\":\"pull\"").size() == pullsFlicker && rig.ble().dials == dialsFlicker);
+
+        // Morning: off the charger.
+        SystemClock.advance(30 * 60_000L);
+        int pullsMorning = rig.receipts("\"type\":\"pull\"").size();
+        int dialsMorning = rig.ble().dials;
+        rig.chargingReading(false);
+        rig.glassesConnect();
+        boolean swept = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() > pullsMorning
+            && "idle".equals(rig.state()));
+        List<String> morning = rig.receipts("\"type\":\"pull\"");
+        String sweep = morning.size() > pullsMorning ? morning.get(morning.size() - 1) : "(none)";
+        expect("off the charger: one pull, trigger charger-off, new link, back to idle  " + sweep,
+            swept && sweep.contains("\"trigger\":\"charger-off\"") && sweep.contains("\"link\":\"new\""));
+        rig.runFor(1_500L);
+        expect("off the charger: exactly one pull and one dial for it",
+            rig.receipts("\"type\":\"pull\"").size() == pullsMorning + 1 && rig.ble().dials == dialsMorning + 1);
+
+        SystemClock.advance(30 * 60_000L);
+        pullCycle(rig, "first tick of the day", "tick");
+        expect("the night's ticks were the only refusals",
+            rig.receipts("\"reason\":\"glasses-charging\"").size() == 5);
         rig.close();
     }
 
@@ -331,6 +405,21 @@ public final class RingLinkHarness {
                     && pulls.get(1).contains("\"trigger\":\"tick\"")
                     && pulls.get(2).contains("\"trigger\":\"health-open\""));
         }
+
+        // A charging stretch (revision 2026-09-24): Direct ignores it for pulls.
+        rig.chargingReading(true);
+        SystemClock.advance(30 * 60_000L);
+        rig.requestPull("tick");
+        boolean chargingTick = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() == 4);
+        expect("Direct: a tick while the glasses charge still pulls, over the held link",
+            chargingTick && rig.ble().dials == 2 && rig.receipts("pullSkipped").isEmpty());
+        rig.checkpoint(t, "charging-tick");
+        rig.chargingReading(false);
+        rig.glassesConnect();
+        rig.runFor(1_000L);
+        expect("Direct: off the charger, no extra pull and no re-dial of the held ring link",
+            rig.receipts("\"type\":\"pull\"").size() == 4 && rig.ble().dials == 2);
+        rig.checkpoint(t, "charger-off");
         writeTranscript("direct", t);
         rig.close();
     }
@@ -359,32 +448,36 @@ public final class RingLinkHarness {
      * state is idle again, then check the receipt and the link.
      */
     static void openCycle(Rig rig, int n, String trigger) throws Exception {
+        pullCycle(rig, "open " + n, trigger);
+    }
+
+    static void pullCycle(Rig rig, String n, String trigger) throws Exception {
         int pullsBefore = rig.receipts("\"type\":\"pull\"").size();
         int dialsBefore = rig.ble().dials;
         int skipsBefore = rig.receipts("ringConnectSkipped").size();
         int finishedBefore = rig.pullsFinished();
-        expect("open " + n + ": starts idle", "idle".equals(rig.state()));
+        expect(n + ": starts idle", "idle".equals(rig.state()));
         rig.requestPull(trigger);
         boolean done = rig.runUntil(() -> rig.receipts("\"type\":\"pull\"").size() > pullsBefore
             && "idle".equals(rig.state()));
         List<String> pulls = rig.receipts("\"type\":\"pull\"");
         String last = pulls.size() > pullsBefore ? pulls.get(pulls.size() - 1) : "(none)";
-        expect("open " + n + ": a new pull receipt, and the state back to idle", done);
-        expect("open " + n + ": exactly one new pull receipt", pulls.size() == pullsBefore + 1);
-        expect("open " + n + ": the pull is on a new link  " + last, last.contains("\"link\":\"new\""));
+        expect(n + ": a new pull receipt, and the state back to idle", done);
+        expect(n + ": exactly one new pull receipt", pulls.size() == pullsBefore + 1);
+        expect(n + ": the pull is on a new link  " + last, last.contains("\"link\":\"new\""));
         if (rig.hasTriggers()) {
-            expect("open " + n + ": the receipt says trigger " + trigger,
+            expect(n + ": the receipt says trigger " + trigger,
                 last.contains("\"trigger\":\"" + trigger + "\""));
         }
-        expect("open " + n + ": one dial for it", rig.ble().dials == dialsBefore + 1);
-        expect("open " + n + ": the manager holds no ring client afterwards", !rig.ble().hasGattClient(RING));
-        expect("open " + n + ": nothing wanted afterwards", rig.stateJson().contains("\"wanted\":false"));
-        expect("open " + n + ": no ringConnectSkipped", rig.receipts("ringConnectSkipped").size() == skipsBefore);
+        expect(n + ": one dial for it", rig.ble().dials == dialsBefore + 1);
+        expect(n + ": the manager holds no ring client afterwards", !rig.ble().hasGattClient(RING));
+        expect(n + ": nothing wanted afterwards", rig.stateJson().contains("\"wanted\":false"));
+        expect(n + ": no ringConnectSkipped", rig.receipts("ringConnectSkipped").size() == skipsBefore);
         if (finishedBefore >= 0) {
             // The count the phone Health tab watches to redraw when the pull lands.
-            expect("open " + n + ": the finished-pull count moved by exactly one",
+            expect(n + ": the finished-pull count moved by exactly one",
                 rig.pullsFinished() == finishedBefore + 1);
-            expect("open " + n + ": the communicator says it is on demand", rig.isOnDemand());
+            expect(n + ": the communicator says it is on demand", rig.isOnDemand());
         }
     }
 
@@ -419,7 +512,17 @@ public final class RingLinkHarness {
             this.ringAddress = ringAddress;
             files = Files.createTempDirectory("ring-link-harness").toFile();
             comm = new FaceclawBleCommunicator(new HarnessContext(files), R, L, ringAddress, onDemand);
-            pass = findMethod("ringLinkPass");
+            // The communicator's own ring section where it has one (164e444 on).
+            // Named here exactly: a wrong name silently fell back to the copy
+            // below until 2026-09-24's revision caught it - so the choice is
+            // printed once per run, and reported in the result.
+            pass = findMethod("runRingLinkPass");
+            if (!passAnnounced) {
+                passAnnounced = true;
+                System.out.println("ring pass: " + (pass != null
+                    ? "the communicator's own runRingLinkPass()"
+                    : "a copy of 0878764's run() sequence (this build has no runRingLinkPass)"));
+            }
             requestFor = findMethod("requestRingHealthNowFor", String.class);
             set("running", true);
         }
@@ -456,6 +559,25 @@ public final class RingLinkHarness {
             set("sessionReady", true);
             call("tryConnectRing", "initial");
             ble().drain();
+        }
+
+        /**
+         * A battery-poll answer from the glasses: exactly what the settings
+         * ACK handler does with it (updateChargingModeLocked under the lock).
+         */
+        void chargingReading(boolean charging) throws Exception {
+            Method m = FaceclawBleCommunicator.class.getDeclaredMethod(
+                "updateChargingModeLocked", boolean.class, int.class);
+            m.setAccessible(true);
+            synchronized (lockOf()) {
+                m.invoke(comm, charging, 80);
+            }
+            ble().drain();
+        }
+
+        /** The glasses' own BLE link drops (right arm), as Android reports it. */
+        void glassesLinkDrops() {
+            comm.onConnectionStateChange(R, false);
         }
 
         void requestPull(String trigger) throws Exception {

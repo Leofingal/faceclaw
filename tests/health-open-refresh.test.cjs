@@ -1,7 +1,7 @@
 // The phone Health tab's redraw-on-landing watch (app/health/health-open-refresh.ts).
 //
-// "Only when needed" pulls only when Health opens, and the pull lands ~20 s
-// after the tab has drawn. The watch reads the communicator's finished-pull
+// In "Only when needed" the pull a Health open asks for is a fresh dial and
+// lands ~20 s after the tab has drawn. The watch reads the communicator's finished-pull
 // count and redraws when it moves. Pinned here: it redraws when the pull lands
 // and not before, it stays silent (no timer at all) outside "Only when
 // needed", it stops at the end of its window and on stop(), and a failed

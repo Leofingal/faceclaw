@@ -456,9 +456,10 @@ export function syncLiveRecords(): LiveSyncResult {
 /**
  * What is asking for a pull. It rides into the pull receipt as `trigger`, and
  * in "Only when needed" it decides whether the ask is taken at all: that mode
- * connects when Health opens, pulls and drops the link, and refuses the timed
- * "tick" (Chris, 2026-09-24). The refusal is made in Java, which knows the
- * mode the live communicator was actually built with.
+ * refuses the timed "tick" while the glasses are on their charger, and takes a
+ * Health open always (Chris, 2026-09-24 revision). The refusal is made in
+ * Java, which knows the mode the live communicator was built with and holds
+ * the glasses' own charge reading.
  */
 export type RingPullTrigger = "health-open" | "tick";
 
@@ -543,9 +544,9 @@ export function startLiveHealthSync(): void {
  * This only *requests* a pull. The communicator still applies its own anti-spam
  * floor, so an extra call here can never hammer the ring.
  *
- * In "Only when needed" the communicator refuses these outright (2026-09-24):
- * that mode pulls when Health opens and at no other time. The tick keeps
- * running for the other modes and for the status lines that ride it.
+ * In "Only when needed" the communicator refuses these while the glasses are
+ * on their charger, with a receipt for each (2026-09-24 revision), and pulls
+ * once when they come off it. Otherwise every mode takes them as before.
  */
 let alignedPullSubscribed = false;
 

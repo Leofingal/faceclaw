@@ -256,6 +256,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     private String ringHealthPullRequestTrigger = RingProtocol.RING_PULL_TRIGGER_UNSPECIFIED;
     /**
+     * "Only when needed" only (2026-09-24 revision): the glasses' charge state
+     * as their own battery answers last reported it - 1 on the charger, 0 off
+     * it, -1 not heard yet. It is the reading behind the "charging" phase, but
+     * deliberately NOT {@code chargingMode}: that one is reset to false by every
+     * glasses link loss and transport rebuild, so after a reconnect in the case
+     * the phase reads "connected" until the first battery poll of the new
+     * session. This one is changed only by a battery answer, so a reconnect in
+     * the case neither lets a tick through nor fakes a morning. Guarded by
+     * {@code lock}.
+     */
+    private int glassesChargingLatched = -1;
+    /**
+     * "Only when needed" only: a pull to ask for on the next ring pass once the
+     * glasses session is ready - set when a battery answer says the glasses
+     * came off the charger (the morning pull). Guarded by {@code lock}.
+     */
+    private String ringPullWhenSessionReady;
+    /**
      * Aborted-pull retries spent since the last pull that COMPLETED its
      * sequence. Guarded by {@code lock}. See
      * {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
@@ -1524,8 +1542,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * is ready. Lifted out of {@link #run()} unchanged in order and content
      * (2026-09-24) so the ring-link harness
      * ({@code notes/ring-link-harness/}) drives exactly this sequence instead
-     * of a copy of it that could drift; the one addition is the first line,
-     * which returns at once outside "Only when needed".
+     * of a copy of it that could drift; the two additions are the first two
+     * lines, which do nothing outside "Only when needed".
      *
      * @return true when a ring dial was attempted, in which case the loop
      *     restarts its pass - exactly the {@code continue} run() always had
@@ -1534,6 +1552,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // "Only when needed" only: flags that say "up" with no GATT client
         // behind them are corrected before anything below trusts them.
         reconcileOnDemandRingLink("loop");
+        // "Only when needed" only: the morning pull armed when the glasses came
+        // off the charger. Never set in Direct or "Only via glasses".
+        runArmedRingPull();
 
         if (shouldAttemptRingConnect()) {
             tryConnectRing("retry");
@@ -2577,22 +2598,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /**
      * {@link #requestRingHealthNow()}, saying what is asking (2026-09-24):
      * {@code "health-open"} from either Health surface, {@code "tick"} from the
-     * :01/:31 cadence. The word rides into the pull receipt.
+     * :01/:31 cadence, {@code "charger-off"} for the morning pull. The word rides
+     * into the pull receipt.
      *
-     * <p>It also decides one thing. "Only when needed" means connect when Health
-     * opens, pull, drop - Chris, 2026-09-24: "it should just connect and pull
-     * when you open the health app" - so in that mode a timed ask is refused
-     * here, before it can raise the link or queue a pull
-     * ({@link RingProtocol#ringPullAskAccepted}). Every other mode takes every
-     * ask, exactly as {@code requestRingHealthNow()} always did. The decision is
-     * made here rather than in TypeScript because this object knows the mode it
-     * was actually built with; the setting can have changed since, and only
-     * takes effect on the next glasses connect.
+     * <p>It also decides one thing. In "Only when needed" a timed ask is refused
+     * while the glasses are on their charger - Chris, 2026-09-24: "if the glasses
+     * are charging - no pulls", the charger standing in for "asleep" - and the
+     * refusal leaves a {@code pullSkipped} receipt so a night shows the pause
+     * rather than silence ({@link RingProtocol#ringPullAskAccepted}). A Health
+     * open is always taken: an explicit ask beats the rule. Every other mode
+     * takes every ask, exactly as {@code requestRingHealthNow()} always did. The
+     * decision is made here rather than in TypeScript because this object knows
+     * the mode it was actually built with, and holds the glasses' own charge
+     * reading.
      */
     public void requestRingHealthNowFor(String trigger) {
         String cleanTrigger = RingProtocol.ringPullTrigger(trigger);
-        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger)) {
-            logLine("ring link on demand: " + cleanTrigger + " pull not taken, only a Health open raises the link");
+        boolean glassesCharging;
+        synchronized (lock) {
+            glassesCharging = glassesChargingLatched == 1;
+        }
+        if (!RingProtocol.ringPullAskAccepted(ringLinkOnDemand, cleanTrigger, glassesCharging)) {
+            logLine("ring link on demand: " + cleanTrigger + " pull not taken, the glasses are charging");
+            appendSleepReceipt(RingProtocol.pullSkippedReceiptLine(
+                System.currentTimeMillis(), cleanTrigger, RingProtocol.RING_PULL_SKIP_GLASSES_CHARGING));
             return;
         }
         synchronized (lock) {
@@ -4700,6 +4729,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * reconnect loop rebuild the session, layout, and first frame.
      */
     private void updateChargingModeLocked(boolean charging, int battery) {
+        if (ringLinkOnDemand) {
+            noteGlassesChargeReadingLocked(charging);
+        }
         if (charging == chargingMode) {
             if (chargingMode) {
                 setStateDisplay("charging", chargingStatusText(battery));
@@ -4719,6 +4751,41 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             chargingMode = false;
             logLine("glasses removed from charger; reconnecting");
             handleTransportFailure("charging ended");
+        }
+    }
+
+    /**
+     * "Only when needed" only (2026-09-24 revision). Every battery answer lands
+     * here before the phase logic, so the latch follows the glasses' own
+     * reading and nothing else. On-the-charger to off-the-charger arms one
+     * pull for when the session is back: Java tears the transport down on that
+     * same transition, and the ring logic only runs with the glasses session
+     * up. Caller holds {@code lock}.
+     */
+    private void noteGlassesChargeReadingLocked(boolean charging) {
+        int was = glassesChargingLatched;
+        glassesChargingLatched = charging ? 1 : 0;
+        if (was == 1 && !charging) {
+            ringPullWhenSessionReady = RingProtocol.RING_PULL_TRIGGER_CHARGER_OFF;
+            logLine("ring link on demand: glasses off the charger, one pull once the session is back");
+        } else if (was != 1 && charging) {
+            logLine("ring link on demand: glasses on the charger, timed pulls paused");
+        }
+    }
+
+    /**
+     * Ask for the pull {@link #noteGlassesChargeReadingLocked} armed, if any.
+     * Worker thread, from the ring pass, so the glasses session is up.
+     */
+    private void runArmedRingPull() {
+        String trigger;
+        synchronized (lock) {
+            trigger = ringPullWhenSessionReady;
+            ringPullWhenSessionReady = null;
+        }
+        if (trigger != null) {
+            logLine("ring link on demand: " + trigger + " pull");
+            requestRingHealthNowFor(trigger);
         }
     }
 

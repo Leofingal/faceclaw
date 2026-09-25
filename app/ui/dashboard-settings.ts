@@ -458,7 +458,7 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
   formatValue: (value) =>
     value === "direct" ? "Direct" : value === "on-demand" ? "Only when needed" : "Only via glasses",
   description:
-    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Only when needed: connect to the ring when you open Health (on the glasses or the phone), pull its data, and drop the link again - no timed pulls, so health data and the R1 battery are only as fresh as your last Health open, and the rest of the time the phone stays off the ring's radio as in Only via glasses. Takes effect on the next connection to the glasses.",
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Only when needed: connect to the ring only for a pull - every half hour, and whenever you open Health - and drop the link again afterwards, so the rest of the time the phone stays off the ring's radio as in Only via glasses. While the glasses are on their charger the half-hourly pulls pause (opening Health still pulls), and one pull runs when they come off it. Takes effect on the next connection to the glasses.",
 });
 
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model

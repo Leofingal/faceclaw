@@ -625,9 +625,9 @@ public final class RingProtocolSelfTest {
     }
 
     /**
-     * "Only when needed" becomes "when Health opens" (2026-09-24): the ask
-     * gate that refuses the timed tick in that mode, the trigger word on the
-     * pull receipt, and the two new receipt lines.
+     * "Only when needed", 2026-09-24 and its 20:15 revision: the ask gate that
+     * refuses the timed tick while the glasses charge, the trigger word on the
+     * pull receipt, and the new receipt lines.
      *
      * <p>As before, the control comes first: outside on-demand every ask is
      * taken, whatever it says, so Direct and "Only via glasses" pull exactly
@@ -636,25 +636,34 @@ public final class RingProtocolSelfTest {
     private static void testOpenOnlyTriggersAndReceipts() {
         section("open-only: ask gate, trigger word, receipts");
 
-        // Control: off means off.
-        String[] asks = {"health-open", "tick", "connect", "retry", "unspecified", null, "", "x\"y"};
+        // Control: off means off, charging or not.
+        String[] asks = {"health-open", "tick", "connect", "retry", "unspecified", "charger-off", null, "", "x\"y"};
         boolean offTakesAll = true;
         for (String ask : asks) {
-            offTakesAll &= RingProtocol.ringPullAskAccepted(false, ask);
+            offTakesAll &= RingProtocol.ringPullAskAccepted(false, ask, false)
+                && RingProtocol.ringPullAskAccepted(false, ask, true);
         }
-        expect("onDemand=false takes every ask, the tick included", offTakesAll);
+        expect("onDemand=false takes every ask, the tick included, charging or not", offTakesAll);
 
-        expect("on-demand takes a Health open", RingProtocol.ringPullAskAccepted(true, "health-open"));
-        expect("on-demand REFUSES the :01/:31 tick", !RingProtocol.ringPullAskAccepted(true, "tick"));
-        expect("on-demand takes an unlabelled ask (the old no-argument entry point)",
-            RingProtocol.ringPullAskAccepted(true, null)
-                && RingProtocol.ringPullAskAccepted(true, "unspecified"));
+        // Revision 2026-09-24 20:15: timed pulls back, paused while the glasses charge.
+        expect("on-demand takes the tick with the glasses off the charger",
+            RingProtocol.ringPullAskAccepted(true, "tick", false));
+        expect("on-demand REFUSES the tick while the glasses charge",
+            !RingProtocol.ringPullAskAccepted(true, "tick", true));
+        expect("on-demand takes a Health open while the glasses charge (an explicit ask beats the rule)",
+            RingProtocol.ringPullAskAccepted(true, "health-open", true)
+                && RingProtocol.ringPullAskAccepted(true, "health-open", false));
+        expect("on-demand takes the morning charger-off pull and an unlabelled ask while charging",
+            RingProtocol.ringPullAskAccepted(true, "charger-off", true)
+                && RingProtocol.ringPullAskAccepted(true, null, true)
+                && RingProtocol.ringPullAskAccepted(true, "unspecified", true));
 
         expect("known trigger words pass through",
             "health-open".equals(RingProtocol.ringPullTrigger("health-open"))
                 && "tick".equals(RingProtocol.ringPullTrigger("tick"))
                 && "connect".equals(RingProtocol.ringPullTrigger("connect"))
-                && "retry".equals(RingProtocol.ringPullTrigger("retry")));
+                && "retry".equals(RingProtocol.ringPullTrigger("retry"))
+                && "charger-off".equals(RingProtocol.ringPullTrigger("charger-off")));
         expect("null -> unspecified", "unspecified".equals(RingProtocol.ringPullTrigger(null)));
         expect("anything else -> other, so no raw TS string reaches the JSON",
             "other".equals(RingProtocol.ringPullTrigger("x\",\"evil\":\"1"))
@@ -685,6 +694,12 @@ public final class RingProtocolSelfTest {
         expect("a Health open that got no link leaves a pullSkipped line",
             skipped.startsWith("{\"type\":\"pullSkipped\"") && skipped.contains("\"trigger\":\"health-open\"")
                 && skipped.endsWith("\"reason\":\"no-link\"}"));
+
+        String paused = RingProtocol.pullSkippedReceiptLine(1000L, "tick", RingProtocol.RING_PULL_SKIP_GLASSES_CHARGING);
+        System.out.println("RECEIPT " + paused);
+        expect("a tick refused on the charger leaves a pullSkipped line saying so",
+            paused.startsWith("{\"type\":\"pullSkipped\"") && paused.contains("\"trigger\":\"tick\"")
+                && paused.endsWith("\"reason\":\"glasses-charging\"}"));
 
         String stale = RingProtocol.ringLinkStaleReceiptLine(1000L, "initial", 13_146_422L);
         System.out.println("RECEIPT " + stale);
