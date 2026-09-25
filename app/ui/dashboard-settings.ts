@@ -841,6 +841,20 @@ export const ghostSessionSetting = new ConfigSettingString({
   description: "Which cc-web session to follow. Setting it by hand turns auto-follow off.",
 });
 
+/**
+ * Mirror the phone's health, ring-receipt, voice-receipt and translation logs
+ * to the Ghost box (cc-web's POST /api/phone/logs, same host and token as
+ * above) on the :01/:31 tick. See util/log-upload.ts. On by default: it is
+ * how the logs are read when the phone is away from the desktop's cable.
+ */
+export const logUploadSetting = new ConfigSettingBoolean({
+  id: "log-upload",
+  label: "Send logs to Ghost box",
+  storageKey: "logUpload.enabled",
+  defaultValue: true,
+  description: "Every half hour, send new lines of the health, ring and translation logs to the Ghost box over Tailscale.",
+});
+
 /** Trim, drop a trailing slash, and assume http:// when no scheme was typed. */
 function normalizeGhostHost(raw: string): string {
   const trimmed = (raw ?? "").trim();

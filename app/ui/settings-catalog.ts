@@ -43,6 +43,7 @@ import {
   firmwareDebugFlagsSetting,
   forcePhoneMicSetting,
   lockScreenEnabledSetting,
+  logUploadSetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
   openAiApiKeySetting,
@@ -228,6 +229,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
       value(useMicControlSetting),
       value(forcePhoneMicSetting),
       value(showBleBandwidthSetting),
+      value(logUploadSetting),
     ],
   },
 ];

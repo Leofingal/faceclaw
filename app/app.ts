@@ -10,6 +10,7 @@ import { installNativeUserAgent } from './util/http'
 import { resyncSystemAppearance } from './native/system-appearance'
 import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
 import { startStatusLineRefresh } from './apps/status-refresh'
+import { startLogUpload } from './util/log-upload'
 
 installNativeUserAgent()
 registerShareIntentHandler()
@@ -29,6 +30,13 @@ startAlignedRingPull()
 // timer, two riders, no drift between them. The cheap half of the contract
 // (statusLine()) runs in the menu's paint path; this is the other half.
 startStatusLineRefresh()
+
+// Mirror the health, ring-receipt and translation logs to the Ghost box over
+// Tailscale, a third rider on the same tick, independent of the ring pull (so
+// it keeps going while ring pulls are refused for charging). Registered after
+// the status refresh on purpose: that one fires the whole tick at boot, and
+// this makes its own start-up run a little later instead. util/log-upload.ts.
+startLogUpload()
 
 // Live system dark/light switches while the app is running were confirmed
 // (Chris, both directions, 2026-09-02) to leave the Ghost companion's Terminal

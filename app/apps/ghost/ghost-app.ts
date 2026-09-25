@@ -8,7 +8,7 @@
  * while Chris was looking at it would defeat that.
  */
 import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
-import { textSettingMenuItem, toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { logUploadSetting, textSettingMenuItem, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import { type MenuItem } from "../../ui/menu";
 import {
   createInProcessWindow,
@@ -70,6 +70,7 @@ export function createGhostAppWindow(options: InProcessAppOptions): InProcessWin
             onChange: () => void layer.poll(),
           }),
           toggleSettingMenuItem(ghostSpeakSetting),
+          toggleSettingMenuItem(logUploadSetting),
         ]);
       },
     },
