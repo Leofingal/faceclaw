@@ -55,7 +55,20 @@ function javaReader(): ZoneReader | null {
     if (typeof java === "undefined" || !java?.util?.TimeZone) return null;
     const zone = java.util.TimeZone.getDefault();
     const id = String(zone.getID());
-    return { id, offsetMs: (utcMs: number) => Number(zone.getOffset(utcMs)) };
+    return {
+      id,
+      offsetMs: (utcMs: number) => {
+        // A bridge fault here must not take the health views down: fall back
+        // to the engine zone (the pre-2026-10-04 behaviour) for this instant.
+        try {
+          const offset = Number(zone.getOffset(utcMs));
+          if (Number.isFinite(offset)) return offset;
+        } catch (error) {
+          console.warn("local-zone: Java getOffset failed; using the JS engine zone", error);
+        }
+        return -new Date(utcMs).getTimezoneOffset() * MINUTE_MS;
+      },
+    };
   } catch {
     return null;
   }
