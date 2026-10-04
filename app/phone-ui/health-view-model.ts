@@ -31,7 +31,7 @@
  */
 
 import { Observable, Screen } from "@nativescript/core";
-import type { EventData, ImageSource, View } from "@nativescript/core";
+import type { EventData, ImageSource, TouchGestureEventData, View } from "@nativescript/core";
 
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
@@ -43,7 +43,13 @@ import {
   type CompanionDisplayClass,
 } from "../native/fold-state";
 import { hypnogramCaption } from "../health/health-chart";
-import { renderPhoneChart, type PhoneChartContent } from "../health/health-phone-chart";
+import {
+  phoneChartSlots,
+  renderPhoneChart,
+  slotAt,
+  type PhoneChartContent,
+  type PhoneChartRequest,
+} from "../health/health-phone-chart";
 import {
   RANGE_DAYS,
   RANGE_LABELS,
@@ -51,15 +57,33 @@ import {
   type RangeKey,
   formatDuration,
   formatValue,
-  hypnogram,
+  shortDate,
   shortWeekday,
   rollupSeries,
   assembleNights,
   sleepNights,
   sleepSummary,
-  stageSeconds,
 } from "../health/health-derive";
-import { stageLabel } from "../health/sleep-stages";
+import {
+  backToDrillSource,
+  canStepForward,
+  drillIntoDay,
+  healthViewState,
+  selectedDayMs,
+  stepDay,
+  withMetric,
+  withRange,
+  withSleepWindow,
+  type HealthViewState,
+  type SleepWindow,
+} from "../health/health-view-state";
+import {
+  buildNightTimeline,
+  clockText,
+  hourText,
+  sleepWindowBounds,
+  type NightTimeline,
+} from "../health/health-night-timeline";
 import { healthStore } from "../health/health-store-files";
 import { requestFreshPull, ringPullProgress, syncLiveRecords } from "../health/health-live";
 import { watchOpenPull } from "../health/health-open-refresh";
@@ -67,6 +91,7 @@ import { isFixtureData, seedFixturesIfNeeded } from "../health/health-seed";
 import { localFields } from "../util/local-zone";
 import {
   DAY_MS,
+  HOUR_MS,
   METRIC_LABELS,
   METRIC_UNITS,
   type RollupPoint,
@@ -83,8 +108,8 @@ const RANGE_ORDER: readonly RangeKey[] = ["day", "week", "month", "quarter"];
  * Chart height in DIPs, per display class.
  *
  * ⚠ EXPANDED RAISED 260 -> 380, Chris 2026-09-10: "make the chart itself
- * larger/more prominent". The width half of that change is in health-page.xml,
- * where the readout column moved from beside the chart to below it - the chart
+ * larger/more prominent". The width half of that change is in the layout
+ * (now health-body.xml), where the readout moved from beside the chart to below it - the chart
  * now gets the whole window width instead of window-minus-300dp, which on an
  * unfolded Fold 7 is most of the change. The extra height is so a chart twice
  * as wide does not end up a letterbox strip.
@@ -115,9 +140,35 @@ type ChipRow = {
 };
 type StatRow = { label: string; value: string };
 
+/** A tap that moves less than this (DIPs) between down and up is a tap, not a scroll. */
+const TAP_SLOP_DIPS = 12;
+
+const SLEEP_WINDOW_LABELS: Readonly<Record<SleepWindow, string>> = {
+  primary: "Night (8 PM - noon)",
+  full: "Full day (8 PM - 8 PM)",
+};
+
 export class HealthViewModel extends Observable {
-  private metric: SeriesMetric = "heartRate";
-  private range: RangeKey = "day";
+  /**
+   * Metric, range, day and sleep window live in the SHARED store, not here
+   * (2026-10-04, audit F8): the glasses Health app reads and writes the same
+   * copy, so the two screens mirror each other, and a fresh model on every
+   * main-page visit no longer resets the selection. See health-view-state.ts.
+   */
+  private get state(): HealthViewState {
+    return healthViewState.get();
+  }
+  private get metric(): SeriesMetric {
+    return this.state.metric;
+  }
+  private get range(): RangeKey {
+    return this.state.range;
+  }
+  private unsubscribeState: (() => void) | null = null;
+  /** What the last chart was drawn from, for mapping a tap back to a day. */
+  private lastRender: PhoneChartRequest | null = null;
+  private touchDown: { x: number; y: number } | null = null;
+  private timeline: NightTimeline | null = null;
   private displayClassValue: CompanionDisplayClass = "expanded";
   private unsubscribeFold: (() => void) | null = null;
   private chart: ImageSource | null = null;
@@ -160,6 +211,13 @@ export class HealthViewModel extends Observable {
       this.rebuild();
     });
     this.fixture = isFixtureData();
+    // Either screen may move the shared view; whoever moved it, redraw here.
+    this.unsubscribeState?.();
+    this.unsubscribeState = healthViewState.subscribe(() => {
+      this.notifySelection();
+      this.rebuild();
+    });
+    this.notifySelection();
     this.rebuild();
   }
 
@@ -168,6 +226,8 @@ export class HealthViewModel extends Observable {
     this.stopOpenPullWatch = null;
     this.unsubscribeFold?.();
     this.unsubscribeFold = null;
+    this.unsubscribeState?.();
+    this.unsubscribeState = null;
   }
 
   // -------------------------------------------------------------------------
@@ -198,18 +258,160 @@ export class HealthViewModel extends Observable {
     };
   }
 
+  /**
+   * Every selection goes through the shared store, and the store's
+   * subscription (set in `attach`) is what redraws. A model that is not
+   * attached still updates the store, so the glasses follow.
+   */
   private selectMetric(key: SeriesMetric): void {
-    if (key === this.metric) return;
-    this.metric = key;
-    this.notifyPropertyChange("metricChips", this.metricChips);
-    this.rebuild();
+    healthViewState.set(withMetric(this.state, key), "phone");
   }
 
   private selectRange(key: RangeKey): void {
-    if (key === this.range) return;
-    this.range = key;
+    healthViewState.set(withRange(this.state, key), "phone");
+  }
+
+  get sleepWindowChips(): ChipRow[] {
+    return (["primary", "full"] as const).map((key) =>
+      this.chip(key, SLEEP_WINDOW_LABELS[key], key === this.state.sleepWindow, () =>
+        healthViewState.set(withSleepWindow(this.state, key), "phone"),
+      ),
+    );
+  }
+
+  get sleepWindowVisibility(): "visible" | "collapse" {
+    return this.metric === "sleep" && this.range === "day" ? "visible" : "collapse";
+  }
+
+  // -------------------------------------------------------------------------
+  // The day view: stepping, and the way back to the multi-day view
+
+  get dayNavVisibility(): "visible" | "collapse" {
+    return this.range === "day" ? "visible" : "collapse";
+  }
+
+  /** "Today, Sun 4 Oct" or "Sat 3 Oct". For sleep, the day the night ends on. */
+  get dayLabel(): string {
+    const today = startOfLocalDay(Date.now());
+    const day = selectedDayMs(this.state, today);
+    return day === today ? `Today, ${shortDate(day)}` : shortDate(day);
+  }
+
+  get prevDayClass(): string {
+    return "health-step";
+  }
+
+  get nextDayClass(): string {
+    return canStepForward(this.state, startOfLocalDay(Date.now())) ? "health-step" : "health-step health-step-off";
+  }
+
+  onPrevDayTap(): void {
+    healthViewState.set(stepDay(this.state, -1, startOfLocalDay(Date.now())), "phone");
+  }
+
+  onNextDayTap(): void {
+    healthViewState.set(stepDay(this.state, 1, startOfLocalDay(Date.now())), "phone");
+  }
+
+  get backVisibility(): "visible" | "collapse" {
+    return this.state.drillFrom !== null && this.range === "day" ? "visible" : "collapse";
+  }
+
+  get backText(): string {
+    const from = this.state.drillFrom;
+    return from ? `‹ Back to ${RANGE_LABELS[from].toLowerCase()}` : "";
+  }
+
+  onBackTap(): void {
+    healthViewState.set(backToDrillSource(this.state), "phone");
+  }
+
+  /** Multi-day views say they can be tapped; nothing else on the chart does. */
+  get chartHintVisibility(): "visible" | "collapse" {
+    return this.range === "day" ? "collapse" : "visible";
+  }
+
+  // -------------------------------------------------------------------------
+  // The nap marker (sleep day view, primary window only)
+
+  get napMarkerText(): string {
+    const timeline = this.timeline;
+    if (!timeline || timeline.window !== "primary" || timeline.outside.length === 0) return "";
+    if (timeline.outside.length > 1) return `+ ${timeline.outside.length} more sleeps after noon ›`;
+    const outside = timeline.outside[0]!;
+    if (outside.kind === "spill") return `+ sleep until ${clockText(outside.endMs)} ›`;
+    return `+ nap ${clockText(outside.startMs)}, ${formatDuration((outside.endMs - outside.startMs) / 1000)} ›`;
+  }
+
+  get napMarkerVisibility(): "visible" | "collapse" {
+    return this.napMarkerText && this.metric === "sleep" && this.range === "day" ? "visible" : "collapse";
+  }
+
+  /** The marker is also the toggle: tapping it shows the full sleep day. */
+  onNapMarkerTap(): void {
+    healthViewState.set(withSleepWindow(this.state, "full"), "phone");
+  }
+
+  // -------------------------------------------------------------------------
+  // Tapping a day on a multi-day chart
+
+  /**
+   * The chart is one bitmap, so a tap is mapped to a day by position: the
+   * Image reports the touch in DIPs, `phoneChartSlots` says where each day was
+   * drawn in bitmap pixels, and `aspectFit`'s scale and centring connect the
+   * two. A touch that moved is a scroll and is ignored.
+   */
+  onChartTouch(args: TouchGestureEventData): void {
+    const x = args.getX();
+    const y = args.getY();
+    if (args.action === "down") {
+      this.touchDown = { x, y };
+      return;
+    }
+    if (args.action !== "up") {
+      if (args.action === "cancel") this.touchDown = null;
+      return;
+    }
+    const down = this.touchDown;
+    this.touchDown = null;
+    if (!down || Math.abs(x - down.x) > TAP_SLOP_DIPS || Math.abs(y - down.y) > TAP_SLOP_DIPS) return;
+    const size = (args.object as View)?.getActualSize?.();
+    if (!size) return;
+    this.tapChartAt(x, size.width, size.height);
+  }
+
+  /**
+   * A tap at `xDip` across an Image box of `boxWidthDips` x `boxHeightDips`.
+   * Returns the day it opened, or null when the tap was not on a day (or the
+   * view is already a day view).
+   */
+  tapChartAt(xDip: number, boxWidthDips: number, boxHeightDips: number): number | null {
+    const request = this.lastRender;
+    if (!request || this.range === "day" || boxWidthDips <= 0 || boxHeightDips <= 0) return null;
+    // aspectFit: the bitmap is scaled by the tighter of the two ratios and
+    // centred, so undo both.
+    const scale = Math.max(request.width / boxWidthDips, request.height / boxHeightDips);
+    const offsetX = (boxWidthDips - request.width / scale) / 2;
+    const bitmapX = (xDip - offsetX) * scale;
+    const slot = slotAt(phoneChartSlots(request), bitmapX);
+    if (!slot) return null;
+    const day = startOfLocalDay(slot.startMs);
+    healthViewState.set(drillIntoDay(this.state, day, startOfLocalDay(Date.now())), "phone");
+    return day;
+  }
+
+  private notifySelection(): void {
+    this.notifyPropertyChange("metricChips", this.metricChips);
     this.notifyPropertyChange("rangeChips", this.rangeChips);
-    this.rebuild();
+    this.notifyPropertyChange("sleepWindowChips", this.sleepWindowChips);
+    this.notifyPropertyChange("sleepWindowVisibility", this.sleepWindowVisibility);
+    this.notifyPropertyChange("dayNavVisibility", this.dayNavVisibility);
+    this.notifyPropertyChange("dayLabel", this.dayLabel);
+    this.notifyPropertyChange("prevDayClass", this.prevDayClass);
+    this.notifyPropertyChange("nextDayClass", this.nextDayClass);
+    this.notifyPropertyChange("backVisibility", this.backVisibility);
+    this.notifyPropertyChange("backText", this.backText);
+    this.notifyPropertyChange("chartHintVisibility", this.chartHintVisibility);
   }
 
   // -------------------------------------------------------------------------
@@ -309,8 +511,17 @@ export class HealthViewModel extends Observable {
   }
 
   get subhead(): string {
+    if (this.metric === "sleep" && this.range === "day") {
+      const today = startOfLocalDay(Date.now());
+      const day = selectedDayMs(this.state, today);
+      const bounds = sleepWindowBounds(day, this.state.sleepWindow);
+      return `${hourText(bounds.startMs)} ${shortWeekday(bounds.startMs)} to ${
+        this.state.sleepWindow === "primary" ? "noon" : hourText(bounds.endMs)
+      } ${shortWeekday(day)}`;
+    }
     const unit = METRIC_UNITS[this.metric];
-    const grain = this.granularity() === "hour" ? "by hour" : "by day";
+    const granularity = this.granularity();
+    const grain = granularity === "tenMinutes" ? "by 10 minutes" : granularity === "hour" ? "by hour" : "by day";
     return unit ? `${grain} · ${unit}` : grain;
   }
 
@@ -326,8 +537,14 @@ export class HealthViewModel extends Observable {
     return this.sleepCaption ? "visible" : "collapse";
   }
 
+  /**
+   * Day views chart at day scale (2026-10-04): steps in the ring's own
+   * 10-minute buckets, so a walk shows as the walk; HR, HRV and SpO2 by hour,
+   * which is what the ring reports for them.
+   */
   private granularity(): Granularity {
-    return this.range === "day" ? "hour" : "day";
+    if (this.range !== "day") return "day";
+    return this.metric === "steps" ? "tenMinutes" : "hour";
   }
 
   // -------------------------------------------------------------------------
@@ -352,16 +569,30 @@ export class HealthViewModel extends Observable {
     this.notifyPropertyChange("sampleBadgeVisibility", this.sampleBadgeVisibility);
     this.notifyPropertyChange("sleepCaptionText", this.sleepCaptionText);
     this.notifyPropertyChange("sleepCaptionVisibility", this.sleepCaptionVisibility);
+    this.notifyPropertyChange("dayLabel", this.dayLabel);
+    this.notifyPropertyChange("napMarkerText", this.napMarkerText);
+    this.notifyPropertyChange("napMarkerVisibility", this.napMarkerVisibility);
   }
 
+  /**
+   * The plotted window. A day view shows the SELECTED day (shared state);
+   * the multi-day views end on today, wherever the day view was stepped to,
+   * so "back to week" returns to the week that was tapped.
+   */
   private windowMs(): { startMs: number; endMs: number } {
-    const days = RANGE_DAYS[this.range];
     const today = startOfLocalDay(Date.now());
+    if (this.range === "day") {
+      const day = selectedDayMs(this.state, today);
+      return { startMs: day, endMs: addLocalDays(day, 1) };
+    }
+    const days = RANGE_DAYS[this.range];
     return { startMs: addLocalDays(today, -(days - 1)), endMs: addLocalDays(today, 1) };
   }
 
   private buildContent(): { content: PhoneChartContent; stats: StatRow[]; caption: string } {
     const { startMs, endMs } = this.windowMs();
+    this.timeline = null;
+    if (this.metric === "sleep" && this.range === "day") return this.buildNightContent(startMs);
     if (this.metric === "sleep") return this.buildSleepContent(startMs, endMs);
 
     const metric = this.metric as SampleMetric;
@@ -397,6 +628,7 @@ export class HealthViewModel extends Observable {
       });
     }
 
+    const tenMinutes = granularity === "tenMinutes";
     return {
       content: {
         kind: "metric",
@@ -404,9 +636,55 @@ export class HealthViewModel extends Observable {
         points,
         mode: metric === "steps" || metric === "calories" ? "bars" : "band",
         xLabel: (point) => this.formatAxisLabel(point),
+        // 144 slots: label the hours, and let collisions thin them.
+        labelThinning: tenMinutes ? "collide" : "step",
       },
-      stats: this.summariseSeries(points, metric),
+      stats: tenMinutes ? this.summariseTenMinutes(points) : this.summariseSeries(points, metric),
       caption: "",
+    };
+  }
+
+  /** The steps day view's readout: the total, and the busiest 10 minutes. */
+  private summariseTenMinutes(points: readonly RollupPoint[]): StatRow[] {
+    const withData = points.filter((point) => point.count > 0);
+    if (withData.length === 0) return [{ label: "No data", value: "for this day" }];
+    const total = withData.reduce((sum, point) => sum + point.sum, 0);
+    const busiest = withData.reduce((best, point) => (point.sum > best.sum ? point : best));
+    return [
+      { label: "Total", value: formatValue(total, "steps") },
+      { label: "Busiest 10 minutes", value: `${formatValue(busiest.sum, "steps")} at ${clockText(busiest.startMs)}` },
+    ];
+  }
+
+  /**
+   * Sleep's day view: the night as a timeline (2026-10-04). See
+   * `health-night-timeline.ts` for what counts as asleep, awake and no-data.
+   */
+  private buildNightContent(dayMs: number): { content: PhoneChartContent; stats: StatRow[]; caption: string } {
+    const store = healthStore();
+    const full = sleepWindowBounds(dayMs, "full");
+    const timeline = buildNightTimeline({
+      sessions: store.sleepSessions(),
+      // An hour before the window so an hourly bucket that started earlier
+      // still counts as overlapping it.
+      samples: store.samplesInRange(full.startMs - HOUR_MS, full.endMs),
+      resetsMs: store.ringResets(),
+      dayMs,
+      window: this.state.sleepWindow,
+    });
+    this.timeline = timeline;
+    const stats: StatRow[] = [];
+    if (timeline.hasSleep) {
+      stats.push({ label: "Asleep", value: formatDuration(timeline.asleepSec) });
+      stats.push({ label: "Awake", value: formatDuration(timeline.awakeSec) });
+    } else {
+      stats.push({ label: "No sleep recorded", value: "in this window" });
+    }
+    for (const resetMs of timeline.resetsMs) stats.push({ label: "Ring reset", value: clockText(resetMs) });
+    return {
+      content: { kind: "timeline", timeline },
+      stats,
+      caption: timeline.hasSleep ? hypnogramCaption() : "",
     };
   }
 
@@ -421,10 +699,9 @@ export class HealthViewModel extends Observable {
    * night's shape underneath thirty nights' totals, which invited reading it as
    * a summary of all of them.
    *
-   * Over a single Day the chart is the four stage LANES - the same view the
-   * glasses drill-down shows for sleep. A one-bar bar chart was never a chart,
-   * and Chris's §4 note asks the glasses sleep view to match "what the phone
-   * app's Day view shows", so this is the phone end of that agreement.
+   * ⚠ CHANGED 2026-10-04: the single Day is no longer the lanes here. It is
+   * the night TIMELINE (`buildNightContent`): the same four lanes, but in
+   * clock time, with awake gaps and no-data spans. The glasses keep the lanes.
    */
   private buildSleepContent(
     startMs: number,
@@ -433,11 +710,15 @@ export class HealthViewModel extends Observable {
     // Every stored block, not a pre-filtered set: which night a block belongs to
     // is decided by assembly (20:00 -> 20:00, by where the block ENDS), not by
     // the dayStartMs it happened to be stored with.
-    const sessions = healthStore().sleepSessions();
-    const nights = sleepNights(sessions, startMs, endMs);
+    const store = healthStore();
+    const sessions = store.sleepSessions();
+    // A gap with a ring reset in it is not awake (health-derive rule 4).
+    const resets = store.ringResets();
+    const nights = sleepNights(sessions, startMs, endMs, resets);
     const withData = nights.filter((night) => night.hasData);
-    // The latest ASSEMBLED night in the window: every block of it, gaps as wake.
-    const latest = assembleNights(sessions).find(
+    // The latest ASSEMBLED night in the window: every block of it, gaps as wake
+    // unless a reset falls in them.
+    const latest = assembleNights(sessions, resets).find(
       (night) => night.dayStartMs >= startMs && night.dayStartMs < endMs,
     );
 
@@ -466,22 +747,7 @@ export class HealthViewModel extends Observable {
       }
     }
 
-    if (this.range === "day") {
-      const summary = latest ? sleepSummary(latest) : null;
-      return {
-        content: {
-          kind: "lanes",
-          bands: latest ? hypnogram(latest) : [],
-          laneText: (stage) => ({
-            label: stageLabel(stage),
-            value: summary ? formatDuration(stageSeconds(stage, summary)) : "--",
-          }),
-        },
-        stats,
-        caption: latest ? hypnogramCaption() : "",
-      };
-    }
-
+    // The day view is `buildNightContent` (2026-10-04); this is week and up.
     return {
       content: {
         kind: "nights",
@@ -576,14 +842,14 @@ export class HealthViewModel extends Observable {
     const box = this.chartBoxDips;
     const availableDips = box ? box.width : Math.max(220, Screen.mainScreen.widthDIPs - 32);
     const boxHeightDips = box ? box.height : this.chartHeight;
-    return grayImageToPreviewSource(
-      renderPhoneChart({
-        width: Math.min(MAX_RENDER_WIDTH, Math.round(availableDips * RENDER_SCALE)),
-        height: Math.round(boxHeightDips * RENDER_SCALE),
-        font: getDefaultSmallFont(),
-        content,
-      }),
-    );
+    const request: PhoneChartRequest = {
+      width: Math.min(MAX_RENDER_WIDTH, Math.round(availableDips * RENDER_SCALE)),
+      height: Math.round(boxHeightDips * RENDER_SCALE),
+      font: getDefaultSmallFont(),
+      content,
+    };
+    this.lastRender = request;
+    return grayImageToPreviewSource(renderPhoneChart(request));
   }
 
   /**
@@ -593,7 +859,10 @@ export class HealthViewModel extends Observable {
    */
   private formatAxisLabel(point: RollupPoint): string {
     const date = localFields(point.startMs);
-    if (this.granularity() === "hour") return `${date.hours}`;
+    const granularity = this.granularity();
+    // The 10-minute day: label the top of every hour; collisions thin them.
+    if (granularity === "tenMinutes") return date.minutes === 0 ? `${date.hours}` : "";
+    if (granularity === "hour") return `${date.hours}`;
     if (this.range === "week") return shortWeekday(point.startMs);
     return `${date.date}`;
   }

@@ -1348,7 +1348,8 @@ Button.permissions-primary-dimmed {
 }
 
 /* ------------------------------------------------------------------------
- * HEALTH (phone-ui/health-page.xml)
+ * HEALTH (phone-ui/health-body.xml; the Settings route health-page.xml was
+ * removed 2026-10-04 - Health's phone view is the only home of the graphs)
  *
  * The chart is a grayscale bitmap produced by the same GrayImage renderer the
  * glasses use, so it arrives as light-on-black whatever the phone theme is.
@@ -1414,7 +1415,7 @@ Button.permissions-primary-dimmed {
   padding: 3 8;
 }
 
-/* Not debug leftover - see health-page.xml's header. */
+/* Not debug leftover - see health-view-model.ts's header (layoutMeta). */
 .health-layout-meta {
   font-size: 11;
   color: #999999;
@@ -1449,4 +1450,73 @@ Button.permissions-primary-dimmed {
 
 .ns-dark .health-layout-meta {
   color: #777777;
+}
+
+/* The day view's controls (2026-10-04): back to the multi-day view, step a
+ * day either way, and the nap marker that opens the full sleep day. Sized as
+ * touch targets first: the step arrows are 44dp wide. */
+.health-back {
+  font-size: 14;
+  color: #3b6fd6;
+  padding: 8 2 2 2;
+}
+
+.health-day-row {
+  margin-top: 6;
+}
+
+.health-step {
+  font-size: 22;
+  color: #222222;
+  width: 44;
+  height: 40;
+  text-align: center;
+  vertical-align: center;
+}
+
+.health-step-off {
+  color: #cccccc;
+}
+
+.health-day-label {
+  font-size: 16;
+  font-weight: bold;
+  color: #222222;
+  text-align: center;
+  vertical-align: center;
+}
+
+.health-nap-marker {
+  font-size: 13;
+  color: #3b6fd6;
+  border-color: #3b6fd6;
+  border-width: 1;
+  border-radius: 12;
+  padding: 4 10;
+  margin-top: 8;
+  horizontal-align: right;
+}
+
+.health-chart-hint {
+  font-size: 12;
+  color: #666666;
+}
+
+.ns-dark .health-back,
+.ns-dark .health-nap-marker {
+  color: #8ab0ff;
+  border-color: #8ab0ff;
+}
+
+.ns-dark .health-step,
+.ns-dark .health-day-label {
+  color: #f0f0f0;
+}
+
+.ns-dark .health-step-off {
+  color: #555555;
+}
+
+.ns-dark .health-chart-hint {
+  color: #aaaaaa;
 }

@@ -22,9 +22,10 @@
 
 import { GrayImage, type UiFont } from "../graphics/image";
 import { lineStep } from "../ui/metrics";
-import { GESTURE_SCROLL } from "../ui/gestures";
+import { GESTURE_CLICK, GESTURE_SCROLL } from "../ui/gestures";
 import {
   drawSleepLanes,
+  drawSleepStackChart,
   drawMetricChart,
   drawTextRight,
   hypnogramCaptionShort,
@@ -32,11 +33,15 @@ import {
   rangeAverageText,
 } from "./health-chart";
 import {
+  RANGE_DAYS,
   formatDuration,
+  formatValue,
   shortDate,
+  shortWeekday,
   stageSeconds,
   type DailySummary,
   type MetricSummary,
+  type RangeKey,
 } from "./health-derive";
 import {
   SAMPLE_METRIC_LABELS,
@@ -44,9 +49,11 @@ import {
   SAMPLE_METRIC_UNITS,
   type RollupPoint,
   type SampleMetric,
+  type SleepNight,
 } from "./health-types";
+import { GLASSES_RANGE_CYCLE } from "./health-view-state";
 import { stageLabel, type SleepStageName } from "./sleep-stages";
-import { localFields } from "../util/local-zone";
+import { localFields, localToMs } from "../util/local-zone";
 
 const MARGIN = 10;
 const GUTTER = 14;
@@ -74,8 +81,10 @@ export type GlanceFonts = { small: UiFont; large: UiFont };
  * to invent one out of the ring's three remaining gestures. Scrolling up to
  * leave a page you scrolled down into needs nothing.
  *
- * Click is wired to advance as well, so a user who only ever clicks still gets
- * round. Recorded as a call, not a spec.
+ * Click was wired to advance as well. ⚠ CHANGED 2026-10-04 (Chris
+ * 2026-10-01): on a plot page a click now cycles that plot's range, day ->
+ * week -> month, through the view state the phone shares
+ * (`health-view-state.ts`); only the overview still advances on a click.
  */
 export type GlancePage =
   | { kind: "overview" }
@@ -107,6 +116,18 @@ export type GlanceData = {
   /** Wall clock, passed in rather than read, so a preview can pin the date. */
   nowMs: number;
   fixture: boolean;
+  /**
+   * The shared view state's range and day (2026-10-04, audit F8): what the
+   * detail pages plot. Absent = today, by hour, which is what the pages drew
+   * before the state was shared. `summary`, `hourly` and `stageBands` are then
+   * for `dayMs`, not necessarily today.
+   */
+  range?: RangeKey;
+  dayMs?: number;
+  /** Per-day points over the range, per metric, when `range` is not "day". */
+  daily?: Partial<Record<SampleMetric, readonly RollupPoint[]>>;
+  /** Per-night stage totals over the range, when `range` is not "day". */
+  nights?: readonly SleepNight[];
 };
 
 export type GlanceSize = { width: number; height: number };
@@ -351,12 +372,17 @@ function drawMetricDetail(
 ): void {
   const { small, large } = fonts;
   const step = lineStep(small);
+  const range = data.range ?? "day";
+  if (range !== "day") {
+    drawMetricRange(image, size, fonts, metric, data, range);
+    return;
+  }
   const headerBottom = drawHeader(
     image,
     size,
     fonts,
     SAMPLE_METRIC_LABELS[metric].toUpperCase(),
-    "today, by hour",
+    `${dayWord(data)}, by hour`,
   );
   let y = headerBottom + 6;
 
@@ -404,7 +430,104 @@ function drawMetricDetail(
     );
   }
 
-  drawFooter(image, size, fonts, `${GESTURE_SCROLL} ${pageHint(metric)}`, data.fixture);
+  drawFooter(image, size, fonts, detailHint(pageHint(metric), range), data.fixture);
+}
+
+/** "today", or the selected day's date. */
+function dayWord(data: GlanceData): string {
+  if (data.dayMs === undefined) return "today";
+  const today = localDayOf(data.nowMs);
+  return data.dayMs === today ? "today" : shortDate(data.dayMs);
+}
+
+function localDayOf(ms: number): number {
+  const f = localFields(ms);
+  return localToMs(f.year, f.month, f.date);
+}
+
+const RANGE_WORDS: Readonly<Record<RangeKey, string>> = {
+  day: "day",
+  week: "week",
+  month: "month",
+  quarter: "3 months",
+};
+
+/** The footer of a plot page: scroll to the neighbours, click for the next range. */
+function detailHint(neighbours: string, range: RangeKey): string {
+  const index = GLASSES_RANGE_CYCLE.indexOf(range);
+  const next = index < 0 ? "day" : GLASSES_RANGE_CYCLE[(index + 1) % GLASSES_RANGE_CYCLE.length]!;
+  return `${GESTURE_SCROLL} ${neighbours}  ${GESTURE_CLICK} ${RANGE_WORDS[next]}`;
+}
+
+/**
+ * One parameter over a week or a month (2026-10-04): a click on the glasses
+ * cycles the plot day -> week -> month (Chris 2026-10-01), through the state
+ * the phone shares. One point per day, from the daily-rollup cache.
+ */
+function drawMetricRange(
+  image: GrayImage,
+  size: GlanceSize,
+  fonts: GlanceFonts,
+  metric: SampleMetric,
+  data: GlanceData,
+  range: RangeKey,
+): void {
+  const { small, large } = fonts;
+  const step = lineStep(small);
+  const days = RANGE_DAYS[range];
+  const headerBottom = drawHeader(
+    image,
+    size,
+    fonts,
+    SAMPLE_METRIC_LABELS[metric].toUpperCase(),
+    `${days} days, by day`,
+  );
+  let y = headerBottom + 6;
+  const points = data.daily?.[metric] ?? [];
+  const withData = points.filter((point) => point.count > 0);
+  const unit = SAMPLE_METRIC_UNITS[metric];
+
+  if (isCumulativeMetric(metric)) {
+    const total = withData.reduce((sum, point) => sum + point.sum, 0);
+    const text = withData.length > 0 ? `${formatValue(total / withData.length, metric)}` : "--";
+    image.drawText(large, MARGIN, y, text, INK.title);
+    image.drawText(
+      small,
+      MARGIN + large.measureText(text) + 6,
+      y + large.lineHeight - small.lineHeight - 1,
+      `${unit ? `${unit} ` : ""}a day, avg`,
+      INK.label,
+    );
+    y += large.lineHeight + 6;
+  } else {
+    const summary: MetricSummary =
+      withData.length === 0
+        ? { min: 0, max: 0, avg: 0, hasData: false }
+        : {
+            min: Math.min(...withData.map((point) => point.min)),
+            max: Math.max(...withData.map((point) => point.max)),
+            avg: withData.reduce((sum, point) => sum + point.avg, 0) / withData.length,
+            hasData: true,
+          };
+    image.drawText(small, MARGIN, y, rangeAverageText(summary, unit), INK.line);
+    y += step + 4;
+  }
+
+  const footerHeight = small.lineHeight + 8;
+  const chartHeight = size.height - y - MARGIN - footerHeight;
+  if (chartHeight >= 40) {
+    drawMetricChart(
+      image,
+      { x: MARGIN, y, width: size.width - MARGIN * 2, height: chartHeight },
+      {
+        metric,
+        points,
+        font: small,
+        xLabel: (point) => (range === "week" ? shortWeekday(point.startMs) : `${localFields(point.startMs).date}`),
+      },
+    );
+  }
+  drawFooter(image, size, fonts, detailHint(pageHint(metric), range), data.fixture);
 }
 
 function summaryFor(metric: SampleMetric, summary: DailySummary | null): MetricSummary {
@@ -461,13 +584,19 @@ function drawSleepDetail(
 ): void {
   const { small, large } = fonts;
   const step = lineStep(small);
+  const range = data.range ?? "day";
+  if (range !== "day") {
+    drawSleepRange(image, size, fonts, data, range);
+    return;
+  }
   const sleep = data.summary?.sleep ?? null;
-  const headerBottom = drawHeader(image, size, fonts, "SLEEP", "last night");
+  const word = dayWord(data);
+  const headerBottom = drawHeader(image, size, fonts, "SLEEP", word === "today" ? "last night" : `night to ${word}`);
   let y = headerBottom + 6;
 
   if (!sleep) {
     image.drawText(small, MARGIN, y, "No sleep record", INK.dim);
-    drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`, data.fixture);
+    drawFooter(image, size, fonts, detailHint("Calories · Summary", range), data.fixture);
     return;
   }
 
@@ -504,5 +633,45 @@ function drawSleepDetail(
   }
 
   image.drawText(small, MARGIN, y, hypnogramCaptionShort(), INK.faint);
-  drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`, data.fixture);
+  drawFooter(image, size, fonts, detailHint("Calories · Summary", range), data.fixture);
+}
+
+/** Sleep over a week or a month: the phone's diverging nightly bars. */
+function drawSleepRange(
+  image: GrayImage,
+  size: GlanceSize,
+  fonts: GlanceFonts,
+  data: GlanceData,
+  range: RangeKey,
+): void {
+  const { small, large } = fonts;
+  const nights = data.nights ?? [];
+  const headerBottom = drawHeader(image, size, fonts, "SLEEP", `${RANGE_DAYS[range]} nights`);
+  let y = headerBottom + 6;
+  const withData = nights.filter((night) => night.hasData);
+  const asleep = withData.map((night) => night.deepSec + night.remSec + night.lightSec);
+  const text = asleep.length > 0 ? formatDuration(asleep.reduce((a, b) => a + b, 0) / asleep.length) : "--";
+  image.drawText(large, MARGIN, y, text, INK.title);
+  image.drawText(
+    small,
+    MARGIN + large.measureText(text) + 6,
+    y + large.lineHeight - small.lineHeight - 1,
+    "a night, avg",
+    INK.label,
+  );
+  y += large.lineHeight + 6;
+  const footerHeight = small.lineHeight + 8;
+  const chartHeight = size.height - y - MARGIN - footerHeight;
+  if (chartHeight >= 40) {
+    drawSleepStackChart(
+      image,
+      { x: MARGIN, y, width: size.width - MARGIN * 2, height: chartHeight },
+      {
+        nights,
+        font: small,
+        xLabel: (night) => (range === "week" ? shortWeekday(night.startMs) : `${localFields(night.startMs).date}`),
+      },
+    );
+  }
+  drawFooter(image, size, fonts, detailHint("Calories · Summary", range), data.fixture);
 }

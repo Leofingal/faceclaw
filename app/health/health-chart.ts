@@ -32,8 +32,10 @@ import {
   type SleepNight,
   isCumulative,
 } from "./health-types";
-import { bandIsMeaningful, formatValue, primaryValue } from "./health-derive";
-import { STAGE_MAPPING_CONFIRMED, type SleepStageName } from "./sleep-stages";
+import { bandIsMeaningful, formatDuration, formatValue, primaryValue } from "./health-derive";
+import { STAGE_MAPPING_CONFIRMED, stageLabel, type SleepStageName } from "./sleep-stages";
+import { clockText, hourText, type NightTimeline } from "./health-night-timeline";
+import { localFields, nextLocalHour, startOfLocalHour } from "../util/local-zone";
 
 /**
  * The grey ramp. Everything drawn here uses one of these.
@@ -79,6 +81,13 @@ export type ChartOptions = {
    * column per bucket from zero. Defaults to bars for the cumulative metrics.
    */
   mode?: "band" | "bars";
+  /**
+   * How x labels are thinned. `step` (the default) labels every Nth slot.
+   * `collide` (2026-10-04, the 144-slot steps day) labels every slot whose
+   * `xLabel` is non-empty and skips one only when it would touch the last
+   * label drawn, so the caller decides WHICH slots carry a label (the hours).
+   */
+  labelThinning?: "step" | "collide";
 };
 
 /**
@@ -89,21 +98,31 @@ export type ChartOptions = {
  * the normal case, not an edge case, and a line that joins across them claims
  * a continuity the data does not have.
  */
-export function drawMetricChart(image: GrayImage, rect: ChartRect, options: ChartOptions): void {
-  const { metric, points, font } = options;
+/**
+ * The plot box `drawMetricChart` draws into: the value-label gutter on the
+ * left, the x labels underneath. Exported so a tap on the phone chart can be
+ * mapped back to the bucket under it with the SAME geometry the drawing used.
+ */
+export function metricPlotRect(rect: ChartRect, font: UiFont): ChartRect {
   const labelWidth = Math.max(34, font.measureText("8888") + 6);
   const labelHeight = font.lineHeight + 2;
-  const plot: ChartRect = {
+  return {
     x: rect.x + labelWidth,
     y: rect.y,
     width: Math.max(8, rect.width - labelWidth),
     height: Math.max(8, rect.height - labelHeight),
   };
+}
+
+/** Returns the plot box, or null when there was no data and nothing was plotted. */
+export function drawMetricChart(image: GrayImage, rect: ChartRect, options: ChartOptions): ChartRect | null {
+  const { metric, points, font } = options;
+  const plot = metricPlotRect(rect, font);
 
   const withData = points.filter((point) => point.count > 0);
   if (withData.length === 0) {
     drawNoData(image, rect, font);
-    return;
+    return null;
   }
 
   const bars = options.mode ? options.mode === "bars" : isCumulative(metric);
@@ -155,7 +174,8 @@ export function drawMetricChart(image: GrayImage, rect: ChartRect, options: Char
     }
   }
 
-  drawXLabels(image, plot, points, font, rect, options.xLabel);
+  drawXLabels(image, plot, points, font, rect, options.xLabel, options.labelThinning);
+  return plot;
 }
 
 function drawNoData(image: GrayImage, rect: ChartRect, font: UiFont): void {
@@ -177,8 +197,22 @@ function drawXLabels(
   font: UiFont,
   clip: ChartRect,
   xLabel: (point: never, index: number) => string,
+  thinning: "step" | "collide" = "step",
 ): void {
   const slotWidth = plot.width / Math.max(1, points.length);
+  if (thinning === "collide") {
+    let lastRight = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < points.length; index += 1) {
+      const text = xLabel(points[index]! as never, index);
+      if (!text) continue;
+      const width = font.measureText(text);
+      const x = Math.round(plot.x + index * slotWidth - width / 2);
+      if (x < clip.x || x + width > clip.x + clip.width || x < lastRight + 8) continue;
+      image.drawText(font, x, plot.y + plot.height + 2, text, INK.label);
+      lastRight = x + width;
+    }
+    return;
+  }
   const step = Math.max(1, Math.ceil(46 / Math.max(1, slotWidth)));
   const labelY = plot.y + plot.height + 2;
   for (let index = 0; index < points.length; index += step) {
@@ -372,6 +406,20 @@ function formatHourTick(hours: number): string {
   return hours >= 1 ? `${hours}` : `${Math.round(hours * 60)}m`;
 }
 
+/** The plot box `drawSleepStackChart` draws into; see `metricPlotRect`. */
+export function sleepStackPlotRect(rect: ChartRect, font: UiFont): ChartRect {
+  const labelWidth = Math.max(34, font.measureText("-88m") + 6);
+  const legendHeight = font.lineHeight + 4;
+  const labelHeight = font.lineHeight + 2;
+  return {
+    x: rect.x + labelWidth,
+    y: rect.y + legendHeight,
+    width: Math.max(8, rect.width - labelWidth),
+    height: Math.max(8, rect.height - labelHeight - legendHeight),
+  };
+}
+
+/** Returns the plot box, or null when no night had data. */
 export function drawSleepStackChart(
   image: GrayImage,
   rect: ChartRect,
@@ -380,24 +428,16 @@ export function drawSleepStackChart(
     font: UiFont;
     xLabel: (night: SleepNight, index: number) => string;
   },
-): void {
+): ChartRect | null {
   const { nights, font } = options;
-  const labelWidth = Math.max(34, font.measureText("-88m") + 6);
-  const legendHeight = font.lineHeight + 4;
-  const labelHeight = font.lineHeight + 2;
-  const plot: ChartRect = {
-    x: rect.x + labelWidth,
-    y: rect.y + legendHeight,
-    width: Math.max(8, rect.width - labelWidth),
-    height: Math.max(8, rect.height - labelHeight - legendHeight),
-  };
+  const plot = sleepStackPlotRect(rect, font);
 
   drawStageLegend(image, rect.x, rect.y, rect.width, font);
 
   const withData = nights.filter((night) => night.hasData);
   if (withData.length === 0) {
     drawNoData(image, rect, font);
-    return;
+    return null;
   }
 
   const hours = (seconds: number): number => seconds / 3600;
@@ -501,6 +541,7 @@ export function drawSleepStackChart(
     { ...rect, y: plot.y, height: plot.height },
     ((night: SleepNight, index: number) => options.xLabel(night, index)) as never,
   );
+  return plot;
 }
 
 /**
@@ -625,6 +666,183 @@ export function drawSleepLanes(
   // ends. Without this the lanes are a proportion with no anchor.
   const axisY = rect.y + LANE_ORDER.length * (laneHeight + laneGap);
   image.drawLine(laneX, axisY, laneX + laneWidth, axisY, INK.axis);
+}
+
+// ===========================================================================
+// The night as a timeline (the phone's sleep day view, 2026-10-04)
+
+/**
+ * One sleep day in CLOCK time: the four stage lanes of `drawSleepLanes`, now
+ * positioned where each run happened instead of squeezed end to end, so the
+ * shape of the night - when sleep started, the gaps, when it ended - is the
+ * picture. Chris (2026-10-04): "went to bed, slept 1 h, awake 2 h, then slept
+ * 6:31".
+ *
+ * What each mark means, top to bottom:
+ *   - a label row: block times, ring resets, no-data and awake gaps, each
+ *     dropped when it would collide with one already placed (resets first);
+ *   - a bar over each sleep block, its whole extent at a glance;
+ *   - the lanes, Awake / Light / REM / Deep (`SLEEP_LANE_ORDER`). An awake gap
+ *     between blocks fills the Awake lane exactly as wake inside a block does:
+ *     awake is awake;
+ *   - NO-DATA is diagonal hatching across all four lanes, so it can never be
+ *     read as any stage, and in particular never as awake;
+ *   - a ring reset is a dashed vertical rule through the lanes;
+ *   - the hour axis, in 12-hour clock text.
+ *
+ * ⚠ The hatching pitch, the bar, the label priorities and the 12-hour axis are
+ * mine; the spec named only "hatched" for no-data.
+ */
+export function drawNightTimeline(
+  image: GrayImage,
+  rect: ChartRect,
+  options: { timeline: NightTimeline; font: UiFont },
+): ChartRect | null {
+  const { timeline, font } = options;
+  const spanMs = timeline.endMs - timeline.startMs;
+  if (spanMs <= 0) return null;
+
+  const laneValue = (stage: SleepStageName): string => formatDuration(timeline.stageSec[stage]);
+  let gutter = 0;
+  for (const stage of SLEEP_LANE_ORDER) {
+    gutter = Math.max(gutter, font.measureText(stageLabel(stage)), font.measureText(laneValue(stage)));
+  }
+  gutter += 10;
+
+  const laneX = rect.x + gutter;
+  const laneWidth = Math.max(8, rect.width - gutter);
+  // Two label rows: a label that would collide on the first drops to the second.
+  const labelRowY = rect.y;
+  const LABEL_ROWS = 2;
+  const barY = labelRowY + LABEL_ROWS * (font.lineHeight + 2) + 1;
+  const barHeight = 5;
+  const lanesTop = barY + barHeight + 4;
+  const axisHeight = font.lineHeight + 6;
+  const laneGap = 4;
+  const laneHeight = Math.max(
+    6,
+    Math.floor((rect.y + rect.height - axisHeight - lanesTop - laneGap * (SLEEP_LANE_ORDER.length - 1)) / SLEEP_LANE_ORDER.length),
+  );
+  const lanesBottom = lanesTop + SLEEP_LANE_ORDER.length * laneHeight + (SLEEP_LANE_ORDER.length - 1) * laneGap;
+  const xOf = (ms: number): number => laneX + ((ms - timeline.startMs) / spanMs) * laneWidth;
+  const laneTop = (stage: SleepStageName): number =>
+    lanesTop + SLEEP_LANE_ORDER.indexOf(stage) * (laneHeight + laneGap);
+  const plot: ChartRect = { x: laneX, y: lanesTop, width: laneWidth, height: lanesBottom - lanesTop };
+
+  // Lane tracks and the gutter, as in drawSleepLanes.
+  for (const stage of SLEEP_LANE_ORDER) {
+    const top = laneTop(stage);
+    image.drawRect(laneX, top, laneWidth, laneHeight, INK.faint);
+    const twoLines = laneHeight >= font.lineHeight * 2;
+    const textTop = twoLines
+      ? top + Math.round((laneHeight - font.lineHeight * 2) / 2)
+      : top + Math.round((laneHeight - font.lineHeight) / 2);
+    image.drawText(font, rect.x, textTop, stageLabel(stage), INK.label);
+    if (twoLines) image.drawText(font, rect.x, textTop + font.lineHeight, laneValue(stage), INK.line);
+  }
+
+  const fillSpan = (startMs: number, endMs: number, top: number, height: number, ink: number): void => {
+    const left = Math.round(xOf(startMs));
+    const right = Math.round(xOf(endMs));
+    image.fillRect(left, top, Math.max(1, right - left), height, ink);
+  };
+
+  for (const span of timeline.spans) {
+    if (span.kind === "nodata") {
+      hatch(image, Math.round(xOf(span.startMs)), lanesTop, Math.round(xOf(span.endMs)), lanesBottom, INK.grid);
+    } else if (span.kind === "awake") {
+      fillSpan(span.startMs, span.endMs, laneTop("wake"), laneHeight, STAGE_INK.wake);
+    } else {
+      fillSpan(span.startMs, span.endMs, barY, barHeight, INK.bar);
+      for (const run of span.runs) {
+        if (run.stage) fillSpan(run.startMs, run.endMs, laneTop(run.stage), laneHeight, STAGE_INK[run.stage]);
+        else hatch(image, Math.round(xOf(run.startMs)), lanesTop, Math.round(xOf(run.endMs)), lanesBottom, INK.faint);
+      }
+    }
+  }
+
+  // Resets over everything else: a dashed rule through the bar and the lanes.
+  for (const resetMs of timeline.resetsMs) {
+    const x = Math.round(xOf(resetMs));
+    for (let y = barY; y < lanesBottom; y += 6) image.fillRect(x, y, 2, Math.min(4, lanesBottom - y), INK.title);
+  }
+
+  // The label row. Resets first (they explain the hatching), then blocks,
+  // then the gaps; anything that would touch a placed label is dropped.
+  const placed: [number, number, number][] = [];
+  const place = (text: string, x: number, ink: number): void => {
+    const width = font.measureText(text);
+    const left = Math.round(Math.max(rect.x, Math.min(rect.x + rect.width - width, x)));
+    const right = left + width;
+    for (let row = 0; row < LABEL_ROWS; row += 1) {
+      if (placed.some(([a, b, r]) => r === row && left < b + 8 && right > a - 8)) continue;
+      placed.push([left, right, row]);
+      image.drawText(font, left, labelRowY + row * (font.lineHeight + 2), text, ink);
+      return;
+    }
+  };
+  for (const resetMs of timeline.resetsMs) place(`Ring reset ${clockText(resetMs)}`, xOf(resetMs) + 4, INK.title);
+  for (const span of timeline.spans) {
+    if (span.kind !== "sleep") continue;
+    const text = `${clockText(span.blockStartMs)} - ${clockText(span.blockEndMs)}`;
+    const mid = (xOf(span.startMs) + xOf(span.endMs)) / 2;
+    // Centred on the block, and allowed to overhang a narrow one (a nap).
+    place(text, mid - font.measureText(text) / 2, INK.line);
+  }
+  for (const span of timeline.spans) {
+    if (span.kind === "sleep") continue;
+    const text =
+      span.kind === "awake"
+        ? `Awake ${formatDuration((span.endMs - span.startMs) / 1000)}`
+        : span.reason === "no-contact"
+          ? "No ring contact"
+          : "No data";
+    const width = xOf(span.endMs) - xOf(span.startMs);
+    if (width < font.measureText(text) + 4) continue;
+    place(text, (xOf(span.startMs) + xOf(span.endMs)) / 2 - font.measureText(text) / 2, INK.label);
+  }
+
+  // The hour axis: a tick every hour, a label wherever one fits.
+  image.drawLine(laneX, lanesBottom + 2, laneX + laneWidth, lanesBottom + 2, INK.axis);
+  let lastRight = Number.NEGATIVE_INFINITY;
+  let hour = startOfLocalHour(timeline.startMs);
+  if (hour < timeline.startMs) hour = nextLocalHour(hour);
+  let guard = 0;
+  while (hour <= timeline.endMs && guard < 48) {
+    guard += 1;
+    const x = Math.round(xOf(hour));
+    image.fillRect(x, lanesBottom + 2, 1, 4, INK.axis);
+    if (localFields(hour).hours % 2 === 0) {
+      const text = hourText(hour);
+      const width = font.measureText(text);
+      const left = Math.round(x - width / 2);
+      if (left >= rect.x && left + width <= rect.x + rect.width && left > lastRight + 10) {
+        image.drawText(font, left, lanesBottom + 6, text, INK.label);
+        lastRight = left + width;
+      }
+    }
+    hour = nextLocalHour(hour);
+  }
+
+  if (timeline.unresolved && !timeline.hasSleep) {
+    const message = "Sleep found, but its time could not be anchored to the clock";
+    image.drawText(font, laneX + 6, lanesTop + 4, message, INK.dim);
+  }
+  return plot;
+}
+
+/** Diagonal hatching over [x0, x1) x [y0, y1): the no-data mark. */
+function hatch(image: GrayImage, x0: number, y0: number, x1: number, y1: number, ink: number): void {
+  const pitch = 9;
+  for (let y = y0; y < y1; y += 1) {
+    let x = x0 + ((((pitch - ((x0 + y) % pitch)) % pitch) + pitch) % pitch);
+    // Two pixels wide: the bitmap is drawn at 2x and scaled to the screen,
+    // where a one-pixel line can alias away.
+    for (; x < x1; x += pitch) {
+      image.setPixel(x, y, ink);
+      if (x + 1 < x1) image.setPixel(x + 1, y, ink);
+    }
+  }
 }
 
 // ===========================================================================

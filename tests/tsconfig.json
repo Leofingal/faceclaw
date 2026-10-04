@@ -53,6 +53,8 @@
     "../app/ui/shell/top-bar.ts",
     "../app/g2/resume-receipt.ts",
     "../app/health/health-open-refresh.ts",
+    "../app/health/health-view-state.ts",
+    "../app/health/health-night-timeline.ts",
     "../app/util/log-upload-core.ts",
     "../app/apps/ghost/ghost-charge-mute.ts"
   ]

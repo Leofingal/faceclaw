@@ -10,12 +10,16 @@
                          owns the HealthViewModel and attaches it only while
                          this body is up, because attaching asks the ring for a
                          fresh pull.
-    health-page.xml      the Settings row, still there until the Settings
-                         rework removes it. Same component, its own model.
+
+  That is now its only host: the Settings -> Health route (health-page.xml)
+  was removed 2026-10-04 (audit F5), so "Health" is one thing.
+
+  Metric, range, day and sleep window are the SHARED Health view state
+  (health/health-view-state.ts, audit F8): the glasses Health app reads and
+  writes the same copy, so the two screens mirror each other both ways.
 
   Binds to HealthViewModel, never to MainViewModel. The fold/orientation and
-  layout notes for the chart itself are in health-page.xml's header and in
-  health-view-model.ts.
+  layout notes for the chart itself are in health-view-model.ts.
 
   It paints its own backdrop (.health-body in app.css) for the reason the app
   list does: on main-page it shares one grid cell with the other bodies, so
@@ -67,11 +71,47 @@
             </StackLayout>
         </ScrollView>
 
+        <!-- Sleep's day view only: Chris's two windows (2026-10-04). -->
+        <ScrollView orientation="horizontal" class="health-chip-scroll"
+            visibility="{{ sleepWindowVisibility }}">
+            <StackLayout orientation="horizontal">
+                <Repeater items="{{ sleepWindowChips }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout orientation="horizontal" />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <Label text="{{ label }}" tap="{{ onTap }}" class="{{ chipClass }}" />
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+        </ScrollView>
+
+        <!-- The day view's way back, and its day stepping (Chris
+             2026-10-01: "a way to move from day to day"). Arrows, not a
+             swipe: the chart already takes taps, and a horizontal swipe
+             inside a vertical ScrollView fights it. -->
+        <StackLayout visibility="{{ dayNavVisibility }}">
+            <Label text="{{ backText }}" visibility="{{ backVisibility }}"
+                tap="{{ onBackTap }}" class="health-back" />
+            <GridLayout columns="auto,*,auto" class="health-day-row">
+                <Label col="0" text="‹" tap="{{ onPrevDayTap }}" class="{{ prevDayClass }}" />
+                <Label col="1" text="{{ dayLabel }}" class="health-day-label" />
+                <Label col="2" text="›" tap="{{ onNextDayTap }}" class="{{ nextDayClass }}" />
+            </GridLayout>
+        </StackLayout>
+
+        <!-- A nap outside the primary window: the marker that says so, and
+             that flips the window to the full sleep day when tapped. -->
+        <Label text="{{ napMarkerText }}" visibility="{{ napMarkerVisibility }}"
+            tap="{{ onNapMarkerTap }}" class="health-nap-marker" />
+
         <!-- COMPACT: chart over readout. -->
         <StackLayout visibility="{{ compactVisibility }}">
             <Image src="{{ chartImage }}" height="{{ chartHeight }}" stretch="aspectFit"
-                layoutChanged="{{ onChartLayoutChanged }}"
+                layoutChanged="{{ onChartLayoutChanged }}" touch="{{ onChartTouch }}"
                 class="health-chart" horizontalAlignment="stretch" />
+            <Label text="Tap a day to open it" visibility="{{ chartHintVisibility }}"
+                class="health-chart-hint" />
             <Label text="{{ sleepCaptionText }}" visibility="{{ sleepCaptionVisibility }}"
                 class="home-row-meta" textWrap="true" />
             <Repeater items="{{ statRows }}">
@@ -102,8 +142,10 @@
              between them is the chart's height. -->
         <StackLayout visibility="{{ expandedVisibility }}">
             <Image src="{{ chartImage }}" height="{{ chartHeight }}" stretch="aspectFit"
-                layoutChanged="{{ onChartLayoutChanged }}"
+                layoutChanged="{{ onChartLayoutChanged }}" touch="{{ onChartTouch }}"
                 class="health-chart" horizontalAlignment="stretch" />
+            <Label text="Tap a day to open it" visibility="{{ chartHintVisibility }}"
+                class="health-chart-hint" />
             <Label text="{{ sleepCaptionText }}" visibility="{{ sleepCaptionVisibility }}"
                 class="home-row-meta" textWrap="true" />
             <Repeater items="{{ statRows }}">

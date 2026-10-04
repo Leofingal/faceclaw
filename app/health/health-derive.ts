@@ -11,6 +11,7 @@
 import {
   DAY_MS,
   HOUR_MS,
+  TEN_MINUTES_MS,
   type HealthSample,
   type Rollup,
   type RollupPoint,
@@ -27,7 +28,12 @@ import {
 import { addLocalDays, localFields, nextLocalHour } from "../util/local-zone";
 import { STAGE_DISPLAY_ORDER, type SleepStageName, stageNameForId } from "./sleep-stages";
 
-export type Granularity = "hour" | "day";
+/**
+ * `tenMinutes` (2026-10-04) is the steps day view's grain: the ring counts
+ * steps in 10-minute buckets, so a day of steps can show a walk as the walk,
+ * not smeared over its hour.
+ */
+export type Granularity = "tenMinutes" | "hour" | "day";
 
 /** How far back a chart looks. Hour granularity only makes sense within a day. */
 export type RangeKey = "day" | "week" | "month" | "quarter";
@@ -66,8 +72,9 @@ export function rollupSeries(
   },
 ): RollupPoint[] {
   const { metric, granularity, startMs, endMs } = options;
-  const spanMs = granularity === "hour" ? HOUR_MS : DAY_MS;
-  const align = granularity === "hour" ? startOfLocalHour : startOfLocalDay;
+  const spanMs = granularity === "tenMinutes" ? TEN_MINUTES_MS : granularity === "hour" ? HOUR_MS : DAY_MS;
+  const align =
+    granularity === "tenMinutes" ? startOfLocalTenMinutes : granularity === "hour" ? startOfLocalHour : startOfLocalDay;
 
   const buckets = new Map<number, HealthSample[]>();
   for (const sample of samples) {
@@ -100,7 +107,14 @@ export function rollupSeries(
 
 /** In the phone's current zone (2026-10-04), not the JS engine's start-up zone. */
 function nextBucketStart(startMs: number, granularity: Granularity): number {
+  if (granularity === "tenMinutes") return startMs + TEN_MINUTES_MS;
   return granularity === "hour" ? nextLocalHour(startMs) : addLocalDays(startMs, 1);
+}
+
+/** The local 10-minute slot containing `ms`: :00, :10 ... :50 of its local hour. */
+export function startOfLocalTenMinutes(ms: number): number {
+  const hour = startOfLocalHour(ms);
+  return hour + Math.floor((ms - hour) / TEN_MINUTES_MS) * TEN_MINUTES_MS;
 }
 
 /** The value a chart plots as "the" line for a metric. */
@@ -163,12 +177,13 @@ export function dailySummary(
   samples: readonly HealthSample[],
   sleepSessions: readonly SleepSession[],
   dayStartMs: number,
+  resetsMs: readonly number[] = [],
 ): DailySummary {
   const dayEndMs = nextBucketStart(dayStartMs, "day");
   const inDay = samples.filter(
     (sample) => sample.startMs >= dayStartMs && sample.startMs < dayEndMs,
   );
-  const night = assembleNight(sleepSessions, dayStartMs);
+  const night = assembleNight(sleepSessions, dayStartMs, resetsMs);
   return {
     dayStartMs,
     steps: Math.round(sumOf(inDay, "steps")),
@@ -306,6 +321,17 @@ function nightKeyOf(session: SleepSession): number {
  *    It is rounded to whole half-minutes, the resolution of every other
  *    segment, which keeps `sum(halfMinutes) * 30 == totalSec + wakeSec` true.
  *
+ * 4. **A gap with a ring RESET in it is NOT wake** (2026-10-04, Chris's ruling
+ *    for the night timeline: "never draw a no-data gap as awake"). The ring
+ *    lost its data across a reset, so nothing says the wearer was awake then.
+ *    Such a gap is left out entirely (no wake segment, not in `wakeSec` or
+ *    `gapSec`), so the week/month bars, the glasses lanes and the efficiency
+ *    agree with the phone's timeline. Pass the dated resets
+ *    (`HealthStore.ringResets`); with none, the 2026-09-13 rule is unchanged.
+ *    ⚠ The timeline also wants a sample in a gap before calling it awake;
+ *    this rule does not, because the long-range charts deliberately never
+ *    open the sample shards.
+ *
  * Two defensive rules with no measurement behind them, flagged as such: a
  * block wholly inside an earlier one is dropped as a duplicate, and resolved
  * and unresolved blocks are never mixed in one night (the resolved ones win),
@@ -313,7 +339,10 @@ function nightKeyOf(session: SleepSession): number {
  * blocks is kept as-is with no gap and would double-count the overlap; nothing
  * seen so far produces one.
  */
-export function assembleNights(sessions: readonly SleepSession[]): AssembledNight[] {
+export function assembleNights(
+  sessions: readonly SleepSession[],
+  resetsMs: readonly number[] = [],
+): AssembledNight[] {
   const byNight = new Map<number, SleepSession[]>();
   for (const session of sessions) {
     const key = nightKeyOf(session);
@@ -322,7 +351,7 @@ export function assembleNights(sessions: readonly SleepSession[]): AssembledNigh
     else byNight.set(key, [session]);
   }
   const nights: AssembledNight[] = [];
-  for (const [key, group] of byNight) nights.push(assembleGroup(key, group));
+  for (const [key, group] of byNight) nights.push(assembleGroup(key, group, resetsMs));
   return nights.sort((a, b) => b.dayStartMs - a.dayStartMs);
 }
 
@@ -330,11 +359,16 @@ export function assembleNights(sessions: readonly SleepSession[]): AssembledNigh
 export function assembleNight(
   sessions: readonly SleepSession[],
   dayStartMs: number,
+  resetsMs: readonly number[] = [],
 ): AssembledNight | null {
-  return assembleNights(sessions).find((night) => night.dayStartMs === dayStartMs) ?? null;
+  return assembleNights(sessions, resetsMs).find((night) => night.dayStartMs === dayStartMs) ?? null;
 }
 
-function assembleGroup(dayStartMs: number, group: readonly SleepSession[]): AssembledNight {
+function assembleGroup(
+  dayStartMs: number,
+  group: readonly SleepSession[],
+  resetsMs: readonly number[],
+): AssembledNight {
   const resolved = group.filter((session) => session.timeResolved);
   const pool = resolved.length > 0 ? resolved : group;
 
@@ -367,7 +401,9 @@ function assembleGroup(dayStartMs: number, group: readonly SleepSession[]): Asse
   let deepSec = 0;
   blocks.forEach((block, index) => {
     if (index > 0) {
-      const gapHalfMinutes = Math.max(0, Math.round((block.startMs - blocks[index - 1]!.endMs) / 30000));
+      const gapStart = blocks[index - 1]!.endMs;
+      const reset = resetsMs.some((ms) => ms >= gapStart && ms < block.startMs);
+      const gapHalfMinutes = reset ? 0 : Math.max(0, Math.round((block.startMs - gapStart) / 30000));
       if (gapHalfMinutes > 0) {
         segments.push({ stageId: -1, halfMinutes: gapHalfMinutes, gap: true });
         gapSec += gapHalfMinutes * 30;
@@ -416,9 +452,10 @@ export function sleepNights(
   sessions: readonly SleepSession[],
   startMs: number,
   endMs: number,
+  resetsMs: readonly number[] = [],
 ): SleepNight[] {
   const byDay = new Map<number, SleepNight>();
-  for (const night of assembleNights(sessions)) {
+  for (const night of assembleNights(sessions, resetsMs)) {
     if (night.dayStartMs < startMs || night.dayStartMs >= endMs) continue;
     byDay.set(night.dayStartMs, {
       startMs: night.dayStartMs,

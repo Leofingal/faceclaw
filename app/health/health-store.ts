@@ -70,6 +70,7 @@ import {
   startOfLocalDay,
 } from "./health-types";
 import { currentZoneId, localFields, localToMs } from "../util/local-zone";
+import { datedRingResets } from "./health-night-timeline";
 
 export interface HealthStorageBackend {
   exists(name: string): boolean;
@@ -89,6 +90,15 @@ const SAMPLE_PREFIX = "samples-";
 const SAMPLE_SUFFIX = ".jsonl";
 const SLEEP_FILE = "sleep.jsonl";
 const ROLLUP_FILE = "rollups.json";
+/**
+ * Written by Java into the same folder (2026-10-04 build note): the ringBoot
+ * receipts and the raw page journal. Read here only to DATE ring resets for the
+ * sleep timeline; this store never writes them.
+ */
+const RING_RECEIPTS_FILE = "ring-sleep-receipts.jsonl";
+const RING_JOURNAL_FILE = "ring-pages.jsonl";
+/** The receipts file is ~0.6 MB; re-read it at most this often. */
+const RING_RESETS_TTL_MS = 60_000;
 /**
  * 2 (2026-10-04): the file records the zone its day keys were computed in, and
  * is rebuilt when the phone's zone differs. A version-1 file has no zone and
@@ -152,6 +162,7 @@ export class HealthStore {
   private readonly shards = new Map<string, Map<string, HealthSample>>();
   private sleep: SleepSession[] | null = null;
   private rollups: RollupFile | null = null;
+  private resets: { atMs: number; resetsMs: number[] } | null = null;
 
   constructor(private readonly backend: HealthStorageBackend) {}
 
@@ -307,6 +318,28 @@ export class HealthStore {
       cursor = addLocalDays(cursor, 1);
     }
     return out;
+  }
+
+  /**
+   * Every dated ring reset, oldest first, in wall-clock ms. See
+   * `datedRingResets` for how an old, undated receipt is dated from the
+   * journal. Cached for a minute: the file is large and changes only on a
+   * connect.
+   */
+  ringResets(nowMs: number = Date.now()): number[] {
+    if (this.resets && nowMs - this.resets.atMs < RING_RESETS_TTL_MS && nowMs >= this.resets.atMs) {
+      return this.resets.resetsMs;
+    }
+    let resetsMs: number[] = [];
+    try {
+      const receipts = this.backend.exists(RING_RECEIPTS_FILE) ? this.backend.read(RING_RECEIPTS_FILE) : null;
+      const journal = this.backend.exists(RING_JOURNAL_FILE) ? this.backend.read(RING_JOURNAL_FILE) : null;
+      resetsMs = datedRingResets(receipts, journal);
+    } catch (error) {
+      console.warn("health store: ring resets unreadable", error);
+    }
+    this.resets = { atMs: nowMs, resetsMs };
+    return resetsMs;
   }
 
   /** Local midnight of the earliest day with any stored data, or null. */

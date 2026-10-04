@@ -157,8 +157,10 @@ export class MainViewModel extends Observable {
   readonly ghostCompanion = new GhostCompanionViewModel();
 
   /**
-   * Health's phone view: the graphs, the same model the Settings route's
-   * health-page builds for itself. Constructing it is free; ATTACHING it asks
+   * Health's phone view: the graphs (their only home since the Settings route
+   * was removed, 2026-10-04). Its selection lives in the shared Health view
+   * state, so a new model per visit no longer resets it. Constructing it is
+   * free; ATTACHING it asks
    * the ring for a fresh pull and subscribes to the fold, so that happens only
    * while its body is actually on screen. See syncHealthLifecycle.
    */
@@ -287,7 +289,7 @@ export class MainViewModel extends Observable {
     const wanted = this._hostsBodies && this.unsubscribers.length > 0 && this.phoneBody === "health";
     if (wanted && !this.healthAttached) {
       this.healthAttached = true;
-      // The same two calls health-page.ts makes from `loaded`.
+      // Attach first (it subscribes), then size the chart to the screen.
       this.health.attach();
       this.health.refreshLayout();
     } else if (!wanted && this.healthAttached) {
@@ -446,7 +448,7 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("portraitLayoutVisibility", this.portraitLayoutVisibility);
       this.notifyPropertyChange("landscapeLayoutVisibility", this.landscapeLayoutVisibility);
       // The graphs are a bitmap drawn at the current width, so they redraw on
-      // rotation; health-page.ts does the same from its own handler.
+      // rotation.
       if (this.healthAttached) this.health.refreshLayout();
     }
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
@@ -1172,15 +1174,6 @@ export class MainViewModel extends Observable {
    */
   onActiveAppsTap(): void {
     Frame.topmost()?.navigate("phone-ui/active-apps-page");
-  }
-
-  /**
-   * The health graphs: min/max/average per metric, by hour and by day, over
-   * whatever history the local store holds. The glasses' own Health app is the
-   * one-screen glance; this is the part that needs a phone to be worth having.
-   */
-  onHealthTap(): void {
-    Frame.topmost()?.navigate("phone-ui/health-page");
   }
 
   /**
