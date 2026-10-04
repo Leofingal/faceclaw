@@ -58,6 +58,8 @@ import {
 } from "../native/fold-state";
 import { GhostCompanionViewModel } from "./ghost-companion-view-model";
 import { ExocortexAppsViewModel } from "./exocortex-apps-view-model";
+import { HealthViewModel } from "./health-view-model";
+import { choosePhoneBody, phoneViewFor, type PhoneBody } from "./phone-views";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
@@ -135,8 +137,9 @@ export class MainViewModel extends Observable {
   //
   //   the FOLD    cover screen -> the glance; inner screen -> the full app.
   //   the GLASSES whichever app has the foreground window over there decides
-  //               what the phone's full app shows. Ghost focused -> Ghost's
-  //               companion. Anything else -> the app list.
+  //               what the phone's full app shows: that app's phone view if
+  //               it has one (phone-views.ts: Ghost's companion, Health's
+  //               graphs), otherwise the app list.
   //
   // Neither is a phone-side mode the user sets, which is the whole point: the
   // companion follows the wearer instead of being a menu he has to drive.
@@ -152,6 +155,22 @@ export class MainViewModel extends Observable {
 
   /** Ghost's companion screen. Built once; it owns its own feed subscription. */
   readonly ghostCompanion = new GhostCompanionViewModel();
+
+  /**
+   * Health's phone view: the graphs, the same model the Settings route's
+   * health-page builds for itself. Constructing it is free; ATTACHING it asks
+   * the ring for a fresh pull and subscribes to the fold, so that happens only
+   * while its body is actually on screen. See syncHealthLifecycle.
+   */
+  readonly health = new HealthViewModel();
+  private healthAttached = false;
+  /**
+   * True only on main-page, the one page that shows the bodies. Settings and
+   * the mirror page bind this same model and see the same foreground app, but
+   * must not start Health's ring pull for a body they never draw. Set by
+   * hub-page.ts, which already tells the pages apart.
+   */
+  private _hostsBodies = false;
 
   /**
    * The app list — main-page's home body since round 3, and the same view
@@ -234,6 +253,9 @@ export class MainViewModel extends Observable {
     };
     this.ghostCompanion.on(Observable.propertyChangeEvent, glanceHandler);
     this.unsubscribers.push(() => this.ghostCompanion.off(Observable.propertyChangeEvent, glanceHandler));
+    // The controller delivered its snapshot before this model counted as
+    // attached, so a resume onto Health has to start the graphs here.
+    this.syncHealthLifecycle();
   }
 
   /** Detach from the controller and settings; the page calls this when it lets go of the model. */
@@ -242,6 +264,36 @@ export class MainViewModel extends Observable {
       unsubscribe();
     }
     this.ghostCompanion.dispose();
+    this.syncHealthLifecycle();
+  }
+
+  /** See `_hostsBodies`. hub-page.ts sets it on every load. */
+  get hostsBodies(): boolean {
+    return this._hostsBodies;
+  }
+
+  set hostsBodies(value: boolean) {
+    if (this._hostsBodies === value) return;
+    this._hostsBodies = value;
+    this.syncHealthLifecycle();
+  }
+
+  /**
+   * Attach Health's model while its body is up on main-page and this model is
+   * live; dispose it otherwise. HealthViewModel.attach() is not idempotent (it
+   * would stack fold subscriptions), hence the flag.
+   */
+  private syncHealthLifecycle(): void {
+    const wanted = this._hostsBodies && this.unsubscribers.length > 0 && this.phoneBody === "health";
+    if (wanted && !this.healthAttached) {
+      this.healthAttached = true;
+      // The same two calls health-page.ts makes from `loaded`.
+      this.health.attach();
+      this.health.refreshLayout();
+    } else if (!wanted && this.healthAttached) {
+      this.healthAttached = false;
+      this.health.dispose();
+    }
   }
 
   get status(): string {
@@ -393,6 +445,9 @@ export class MainViewModel extends Observable {
       this._layoutOrientation = nextOrientation;
       this.notifyPropertyChange("portraitLayoutVisibility", this.portraitLayoutVisibility);
       this.notifyPropertyChange("landscapeLayoutVisibility", this.landscapeLayoutVisibility);
+      // The graphs are a bitmap drawn at the current width, so they redraw on
+      // rotation; health-page.ts does the same from its own handler.
+      if (this.healthAttached) this.health.refreshLayout();
     }
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
@@ -404,15 +459,20 @@ export class MainViewModel extends Observable {
   // =========================================================================
   // Which body the page is showing
   //
-  // Three, chosen by the fold and by the glasses (see the field comments):
-  // the cover glance, Ghost's companion, and the app list. Exactly one is
+  // Chosen by the fold and by the glasses (see the field comments): the cover
+  // glance, the foreground app's phone view (Ghost's companion, Health's
+  // graphs; the table is phone-views.ts), or the app list. Exactly one is
   // visible; they share the page's grid cell rather than being separate pages,
   // because neither signal is a navigation the user performed — a page swap
   // would put a back-stack entry behind a screen he never asked to leave.
   //
-  // Round 3 swapped the third one. It used to be faceclaw's device hub, which
+  // Round 3 swapped the last one. It used to be faceclaw's device hub, which
   // put the Exocortex app list three levels down; the hub is now Settings
   // (settings-hub-page) and the app list is what the phone lands on.
+  //
+  // Audit F1 (2026-10-04) replaced the hardcoded `=== "ghost"` that made Ghost
+  // the only app to move the phone: picking Health on either side left the
+  // phone on the list. Design rule 1 is that both screens move for every app.
 
   /**
    * Re-point fold tracking at the Activity on screen and re-read the posture.
@@ -433,7 +493,7 @@ export class MainViewModel extends Observable {
   private setForegroundApp(appId: string | null, title: string | null): void {
     if (this._foregroundAppId === appId && this._foregroundAppTitle === title) return;
     // Changing app over there ends any "show me the app list anyway" peek: the
-    // override exists to look away from Ghost, not to pin the phone.
+    // override exists to look away from an app's view, not to pin the phone.
     if (this._foregroundAppId !== appId) this._homeOverride = false;
     this._foregroundAppId = appId;
     this._foregroundAppTitle = title;
@@ -444,11 +504,24 @@ export class MainViewModel extends Observable {
   private notifyBodyChange(): void {
     this.notifyPropertyChange("coverGlanceVisibility", this.coverGlanceVisibility);
     this.notifyPropertyChange("ghostCompanionVisibility", this.ghostCompanionVisibility);
+    this.notifyPropertyChange("healthBodyVisibility", this.healthBodyVisibility);
     this.notifyPropertyChange("companionBodyVisibility", this.companionBodyVisibility);
     this.notifyPropertyChange("exocortexChromeVisibility", this.exocortexChromeVisibility);
     this.notifyPropertyChange("homeBodyVisibility", this.homeBodyVisibility);
-    this.notifyPropertyChange("ghostReturnRowVisibility", this.ghostReturnRowVisibility);
+    this.notifyPropertyChange("returnRowVisibility", this.returnRowVisibility);
+    this.notifyPropertyChange("returnRowTitle", this.returnRowTitle);
+    this.notifyPropertyChange("returnRowMeta", this.returnRowMeta);
     this.notifyPropertyChange("glassesGlanceText", this.glassesGlanceText);
+    this.syncHealthLifecycle();
+  }
+
+  /** The one body that is up; every visibility member below reads this. */
+  get phoneBody(): PhoneBody {
+    return choosePhoneBody(this._displayClass, this._foregroundAppId, this._homeOverride);
+  }
+
+  private bodyVisibility(body: PhoneBody): "visible" | "collapse" {
+    return this.phoneBody === body ? "visible" : "collapse";
   }
 
   private get isGhostForeground(): boolean {
@@ -456,27 +529,25 @@ export class MainViewModel extends Observable {
   }
 
   get coverGlanceVisibility(): "visible" | "collapse" {
-    return this._displayClass === "compact" ? "visible" : "collapse";
+    return this.bodyVisibility("cover");
   }
 
   get ghostCompanionVisibility(): "visible" | "collapse" {
-    return this._displayClass === "expanded" && this.isGhostForeground && !this._homeOverride
-      ? "visible"
-      : "collapse";
+    return this.bodyVisibility("ghost");
+  }
+
+  get healthBodyVisibility(): "visible" | "collapse" {
+    return this.bodyVisibility("health");
   }
 
   /**
-   * Whether the page is showing SOME app's companion — the cell the shared
-   * exocortex-header sits above.
-   *
-   * Ghost is the only app with a companion view today, so this is currently
-   * just its visibility. It exists as its own member anyway because the header
-   * is deliberately not Ghost's: when the generalized per-app companion
-   * mechanism lands, this becomes the OR across the per-app bodies and nothing
-   * about the header or the page structure has to change.
+   * Whether the page is showing SOME app's phone view — the cell the shared
+   * exocortex-header sits above. The OR across the per-app bodies, as the
+   * round-2 note planned: the header is deliberately not any one app's.
    */
   get companionBodyVisibility(): "visible" | "collapse" {
-    return this.ghostCompanionVisibility;
+    const body = this.phoneBody;
+    return body !== "cover" && body !== "list" ? "visible" : "collapse";
   }
 
   /**
@@ -492,24 +563,34 @@ export class MainViewModel extends Observable {
   }
 
   /**
-   * The app list — what the phone lands on, and the fallback whenever no
-   * companion applies. Round 3: this used to be faceclaw's device hub, which
-   * is now Settings, a tap away behind the header's gear.
+   * The app list — what the phone lands on, and the fallback whenever the
+   * foreground app has no phone view. Round 3: this used to be faceclaw's
+   * device hub, which is now Settings, a tap away behind the header's gear.
    */
   get homeBodyVisibility(): "visible" | "collapse" {
-    return this.coverGlanceVisibility === "collapse" && this.ghostCompanionVisibility === "collapse"
-      ? "visible"
-      : "collapse";
-  }
-
-  /** The way back to Ghost's companion after peeking at the app list. */
-  get ghostReturnRowVisibility(): "visible" | "collapse" {
-    return this._homeOverride && this.isGhostForeground ? "visible" : "collapse";
+    return this.bodyVisibility("list");
   }
 
   /**
-   * "Exocortex" in the header. From a companion it is the way out to the app
-   * list; on the app list it is already where you are, so it is a harmless
+   * The way back to the foreground app's view after "Exocortex" peeked at the
+   * app list. Ghost's row reads as it always did; Health's is the same row.
+   * (Audit F3 plans to retire the peek and this row together.)
+   */
+  get returnRowVisibility(): "visible" | "collapse" {
+    return this._homeOverride && phoneViewFor(this._foregroundAppId) ? "visible" : "collapse";
+  }
+
+  get returnRowTitle(): string {
+    return phoneViewFor(this._foregroundAppId)?.name ?? "";
+  }
+
+  get returnRowMeta(): string {
+    return phoneViewFor(this._foregroundAppId)?.returnMeta ?? "";
+  }
+
+  /**
+   * "Exocortex" in the header. From an app's view it is the way out to the
+   * app list; on the app list it is already where you are, so it is a harmless
    * re-assert. Either way the list is rebuilt, because the glasses can have
    * changed the shared order or visibility while the phone was elsewhere.
    */
@@ -519,7 +600,7 @@ export class MainViewModel extends Observable {
     this.notifyBodyChange();
   }
 
-  onShowGhostTap(): void {
+  onReturnRowTap(): void {
     this._homeOverride = false;
     this.notifyBodyChange();
   }

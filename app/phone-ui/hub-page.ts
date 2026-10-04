@@ -129,6 +129,10 @@ export function hubPageLoaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
+  // Only main-page draws the bodies, so only main-page may start a body's
+  // model (Health's asks the ring for a pull). Before attach(), which is what
+  // starts it on a resume.
+  if (model) model.hostsBodies = isExocortexChromePage(page)
   // Re-subscribe after a suspend/resume cycle (unloaded disposed the model);
   // a no-op on the first load after construction.
   model?.attach()
