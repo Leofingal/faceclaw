@@ -45,7 +45,7 @@ import { requestFreshPull, syncLiveRecords } from "../../health/health-live";
 import { noteHealthSteps } from "../../health/health-status";
 import { isFixtureData, seedFixturesIfNeeded } from "../../health/health-seed";
 import {
-  DAY_MS,
+  addLocalDays,
   SAMPLE_METRICS,
   startOfLocalDay,
   type RollupPoint,
@@ -106,7 +106,7 @@ class HealthLayer implements Layer {
     try {
       const store = healthStore();
       const today = startOfLocalDay(Date.now());
-      const samples = store.samplesInRange(today, today + DAY_MS);
+      const samples = store.samplesInRange(today, addLocalDays(today, 1));
       const sessions = store.sleepSessions();
       this.summary = dailySummary(samples, sessions, today);
       // Chris asked for the menu's step count to update "every 30 minutes, or
@@ -122,7 +122,7 @@ class HealthLayer implements Layer {
           metric,
           granularity: "hour",
           startMs: today,
-          endMs: today + DAY_MS,
+          endMs: addLocalDays(today, 1),
         });
       }
       this.hourly = hourly;

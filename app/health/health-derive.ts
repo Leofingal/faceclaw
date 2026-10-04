@@ -24,6 +24,7 @@ import {
   startOfLocalDay,
   startOfLocalHour,
 } from "./health-types";
+import { addLocalDays, localFields, nextLocalHour } from "../util/local-zone";
 import { STAGE_DISPLAY_ORDER, type SleepStageName, stageNameForId } from "./sleep-stages";
 
 export type Granularity = "hour" | "day";
@@ -97,11 +98,9 @@ export function rollupSeries(
   return points;
 }
 
+/** In the phone's current zone (2026-10-04), not the JS engine's start-up zone. */
 function nextBucketStart(startMs: number, granularity: Granularity): number {
-  const date = new Date(startMs);
-  if (granularity === "hour") date.setHours(date.getHours() + 1, 0, 0, 0);
-  else date.setDate(date.getDate() + 1);
-  return date.getTime();
+  return granularity === "hour" ? nextLocalHour(startMs) : addLocalDays(startMs, 1);
 }
 
 /** The value a chart plots as "the" line for a metric. */
@@ -491,13 +490,13 @@ const MONTHS = [
 
 /** "Fri". */
 export function shortWeekday(ms: number): string {
-  return WEEKDAYS[new Date(ms).getDay()] ?? "";
+  return WEEKDAYS[localFields(ms).weekday] ?? "";
 }
 
 /** "Thu 10 Sep". */
 export function shortDate(ms: number): string {
-  const date = new Date(ms);
-  return `${WEEKDAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  const date = localFields(ms);
+  return `${WEEKDAYS[date.weekday]} ${date.date} ${MONTHS[date.month]}`;
 }
 
 /** "6h 42m", or "--" when there is nothing to show. */

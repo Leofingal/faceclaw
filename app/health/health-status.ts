@@ -28,7 +28,7 @@
 
 import { dailySummary } from "./health-derive";
 import { healthStore } from "./health-store-files";
-import { DAY_MS, startOfLocalDay } from "./health-types";
+import { addLocalDays, startOfLocalDay } from "./health-types";
 
 let steps: number | null = null;
 let stepsDayStartMs: number | null = null;
@@ -63,7 +63,7 @@ export function noteHealthSteps(dayStartMs: number, value: number): void {
 export function refreshHealthStatus(nowMs: number = Date.now()): void {
   try {
     const today = startOfLocalDay(nowMs);
-    const samples = healthStore().samplesInRange(today, today + DAY_MS);
+    const samples = healthStore().samplesInRange(today, addLocalDays(today, 1));
     noteHealthSteps(today, dailySummary(samples, [], today).steps);
   } catch (error) {
     console.warn("health status refresh failed", error);

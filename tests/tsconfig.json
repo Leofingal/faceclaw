@@ -40,6 +40,7 @@
     "../app/apps/exocortex/app-run.ts",
     "../app/util/aligned-tick.ts",
     "../app/native/asr-model-defs.ts",
+    "../app/util/local-zone.ts",
     "../app/health/health-types.ts",
     "../app/health/health-derive.ts",
     "../app/health/health-store.ts",

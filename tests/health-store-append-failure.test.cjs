@@ -77,8 +77,10 @@ test("a changed value in the same batch still appends both lines, last one held"
 test("a failure in the second month's shard keeps the first month's samples held", () => {
   const backend = flakyBackend();
   const store = new HealthStore(backend);
-  const aug = new Date(2026, 7, 31, 23).getTime();
-  const sep = new Date(2026, 8, 1, 0).getTime();
+  // Shards are named by UTC month since 2026-10-04 (zone-independent), so the
+  // two samples straddle the UTC month edge, not the local one.
+  const aug = Date.UTC(2026, 7, 31, 23);
+  const sep = Date.UTC(2026, 8, 1, 0);
   const append = backend.append.bind(backend);
   backend.append = (name, text) => {
     if (name.includes("2026-09")) throw new Error("simulated append failure (september)");

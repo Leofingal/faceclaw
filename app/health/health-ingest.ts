@@ -206,6 +206,61 @@ export function parseRingClockSegments(json: string | null | undefined): RingClo
   }
 }
 
+// ===========================================================================
+// Clock-less records (2026-10-04)
+//
+// After a reset the ring has no clock until a connect sets it, and records it
+// closes meanwhile carry its UPTIME in seconds where a Unix time would go.
+// Measured on the 10-03 -> 04 night (ring-clock-fix return, addendum §3): a
+// sleep block stamped 9270 -> 33510, delivered at the 11:31 EDT connect after
+// a reset at 01:31:39 EDT, i.e. 04:06:09 -> 10:50:09 EDT. Stored as a 1970 row
+// before this, so it never showed.
+
+/** The firmware's floor for a real ring time (2000-01-01 or so): below it is uptime. */
+export const RING_TIME_FLOOR_SEC = 946080000;
+
+/** One `ringBoot` receipt: when it was seen, and the dated reset (null when undated). */
+export type RingBootDate = { atMs: number; bootAtMs: number | null };
+
+/** `ringBoot` lines out of `ring-sleep-receipts.jsonl`, oldest first. Bad lines are skipped. */
+export function parseRingBoots(text: string | null | undefined): RingBootDate[] {
+  const out: RingBootDate[] = [];
+  if (!text) return out;
+  for (const line of text.split("\n")) {
+    if (line.indexOf('"ringBoot"') < 0) continue;
+    try {
+      const parsed = JSON.parse(line) as { type?: string; atMs?: unknown; bootAtMs?: unknown };
+      if (parsed?.type !== "ringBoot" || typeof parsed.atMs !== "number") continue;
+      out.push({
+        atMs: parsed.atMs,
+        bootAtMs: typeof parsed.bootAtMs === "number" ? parsed.bootAtMs : null,
+      });
+    } catch {
+      // One unreadable line must not cost the rest.
+    }
+  }
+  return out.sort((a, b) => a.atMs - b.atMs);
+}
+
+/**
+ * The reset a clock-less record came from: the LAST ringBoot seen at or before
+ * the record arrived. Null when that boot is undated (no page trailer or no
+ * clock write on its link), when there is none, or when the dated end would lie
+ * after the record arrived (then the boot cannot be this record's: a reset we
+ * did not see came between). Null means "do not date it", never a guess.
+ */
+export function clocklessBootAtMs(
+  boots: readonly RingBootDate[],
+  receivedAtMs: number,
+  endUptimeSec: number,
+): number | null {
+  let latest: RingBootDate | null = null;
+  for (const boot of boots) if (boot.atMs <= receivedAtMs) latest = boot;
+  if (!latest || latest.bootAtMs === null) return null;
+  if (latest.bootAtMs + endUptimeSec * 1000 > receivedAtMs + 60_000) return null;
+  return latest.bootAtMs;
+}
+
 /** `SleepRecord.recordState`: 2 is the empty end-of-list marker, not a night. */
 const SLEEP_STATE_EMPTY = 2;
 
@@ -236,6 +291,11 @@ export type RingSleepRecordLike = {
 export function sleepWireFromRing(
   record: RingSleepRecordLike,
   clock: RingClockSegments,
+  /**
+   * The ringBoot receipts, needed only for a clock-less record (start below
+   * `RING_TIME_FLOOR_SEC`). A function so the caller reads the file only then.
+   */
+  boots: () => readonly RingBootDate[] = () => [],
 ): WireSleepRecord | null {
   if (Number(record.recordState) === SLEEP_STATE_EMPTY) return null;
   const segments: SleepSegment[] = [];
@@ -247,14 +307,25 @@ export function sleepWireFromRing(
     segments.push({ stageId: Number(segment.stage), halfMinutes: Number(segment.halfMinutes) });
   }
   const startTs = Number(record.startTs);
-  return {
-    kind: "sleep",
-    startTs,
-    endTs: Number(record.endTs),
+  const endTs = Number(record.endTs);
+  let clockCorrectionMs: number | undefined;
+  if (startTs < RING_TIME_FLOOR_SEC) {
+    // Uptime seconds: true time = the reset + uptime, so the "correction" is
+    // minus the reset instant. No dated reset: left unresolved (shown as an
+    // undated "last night"), which is honest; a 1970 row is not.
+    const bootAtMs = endTs < RING_TIME_FLOOR_SEC ? clocklessBootAtMs(boots(), Number(record.receivedAtMs), endTs) : null;
+    clockCorrectionMs = bootAtMs === null ? undefined : -bootAtMs;
+  } else {
     // The offset in force at the session's START, for both ends: the stage
     // segments are ring-clock durations, and the slew never steps back in the
     // quiet hours (RingProtocol.CLOCK_QUIET_*), so a night is not split.
-    clockCorrectionMs: ringClockOffsetSecAt(clock, startTs) * 1000,
+    clockCorrectionMs = ringClockOffsetSecAt(clock, startTs) * 1000;
+  }
+  return {
+    kind: "sleep",
+    startTs,
+    endTs,
+    ...(clockCorrectionMs === undefined ? {} : { clockCorrectionMs }),
     totalSec: Number(record.totalTime),
     wakeSec: Number(record.wakeTime),
     remSec: Number(record.remTime),

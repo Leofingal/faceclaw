@@ -62,11 +62,14 @@ import {
   type Rollup,
   type SampleMetric,
   type SleepSession,
+  DAY_MS,
   SAMPLE_METRICS,
+  addLocalDays,
   monthKey,
   rollupOf,
   startOfLocalDay,
 } from "./health-types";
+import { currentZoneId, localFields, localToMs } from "../util/local-zone";
 
 export interface HealthStorageBackend {
   exists(name: string): boolean;
@@ -86,7 +89,12 @@ const SAMPLE_PREFIX = "samples-";
 const SAMPLE_SUFFIX = ".jsonl";
 const SLEEP_FILE = "sleep.jsonl";
 const ROLLUP_FILE = "rollups.json";
-const ROLLUP_VERSION = 1;
+/**
+ * 2 (2026-10-04): the file records the zone its day keys were computed in, and
+ * is rebuilt when the phone's zone differs. A version-1 file has no zone and
+ * is rebuilt on first read, which `loadRollups` already did for any mismatch.
+ */
+const ROLLUP_VERSION = 2;
 
 /** On-disk sample line. Short keys: this is the file that grows. */
 type SampleLine = {
@@ -101,6 +109,8 @@ type SampleLine = {
 
 type RollupFile = {
   version: number;
+  /** The zone id (`util/local-zone.ts`) the day keys below were cut in. */
+  zone: string;
   /** `YYYY-MM-DD` -> metric -> rollup. */
   days: Record<string, Partial<Record<SampleMetric, Rollup>>>;
 };
@@ -109,11 +119,28 @@ function sampleKey(sample: { metric: SampleMetric; startMs: number; spanMs: numb
   return `${sample.metric}|${sample.startMs}|${sample.spanMs}`;
 }
 
+/** `YYYY-MM-DD` of the local day containing `ms`, in the phone's current zone. */
 function dayKey(ms: number): string {
-  const date = new Date(startOfLocalDay(ms));
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
+  const f = localFields(ms);
+  const month = `${f.month + 1}`.padStart(2, "0");
+  const day = `${f.date}`.padStart(2, "0");
+  return `${f.year}-${month}-${day}`;
+}
+
+/** Local midnight that a `YYYY-MM-DD` key names, plus `days`. */
+function dayKeyStart(key: string, days = 0): number {
+  const parts = key.split("-").map(Number);
+  return localToMs(parts[0]!, parts[1]! - 1, parts[2]! + days);
+}
+
+/**
+ * A legacy shard (2026-10-04) was named by the LOCAL month of the zone it was
+ * written in, which is at most 14 h from UTC. So a sample may sit in the shard
+ * of the UTC month a day either side of its own. This is the set to look in.
+ */
+function candidateShardNames(ms: number): string[] {
+  const names = [shardName(ms), shardName(ms - DAY_MS), shardName(ms + DAY_MS)];
+  return names.filter((name, index) => names.indexOf(name) === index);
 }
 
 function shardName(ms: number): string {
@@ -171,14 +198,18 @@ export class HealthStore {
     const staged = new Map<string, Map<string, HealthSample>>();
     for (const sample of samples) {
       if (!Number.isFinite(sample.startMs) || sample.spanMs <= 0) continue;
-      const name = shardName(sample.startMs);
+      // The shard already holding this bucket, if a legacy one does, so a
+      // re-delivered bucket is corrected in place and never held twice.
+      const key = sampleKey(sample);
+      const name =
+        candidateShardNames(sample.startMs).find((candidate) => this.loadShard(candidate).has(key)) ??
+        shardName(sample.startMs);
       const shard = this.loadShard(name);
       let stagedShard = staged.get(name);
       if (!stagedShard) {
         stagedShard = new Map();
         staged.set(name, stagedShard);
       }
-      const key = sampleKey(sample);
       const existing = stagedShard.get(key) ?? shard.get(key);
       if (existing && sameSample(existing, sample)) continue;
       stagedShard.set(key, sample);
@@ -240,9 +271,12 @@ export class HealthStore {
   /** Every stored sample overlapping [startMs, endMs). Exact - reads shards. */
   samplesInRange(startMs: number, endMs: number): HealthSample[] {
     const out: HealthSample[] = [];
+    const seen = new Set<string>();
     for (const name of this.shardNamesInRange(startMs, endMs)) {
-      for (const sample of this.loadShard(name).values()) {
-        if (sample.startMs >= startMs && sample.startMs < endMs) out.push(sample);
+      for (const [key, sample] of this.loadShard(name)) {
+        if (sample.startMs < startMs || sample.startMs >= endMs || seen.has(key)) continue;
+        seen.add(key);
+        out.push(sample);
       }
     }
     out.sort((a, b) => a.startMs - b.startMs);
@@ -270,9 +304,7 @@ export class HealthStore {
       guard += 1;
       const entry = file.days[dayKey(cursor)]?.[metric];
       if (entry) out.set(cursor, entry);
-      const next = new Date(cursor);
-      next.setDate(next.getDate() + 1);
-      cursor = next.getTime();
+      cursor = addLocalDays(cursor, 1);
     }
     return out;
   }
@@ -282,8 +314,7 @@ export class HealthStore {
     const file = this.loadRollups();
     const keys = Object.keys(file.days).sort();
     if (keys.length === 0) return null;
-    const parts = keys[0]!.split("-").map(Number);
-    return new Date(parts[0]!, parts[1]! - 1, parts[2]!).getTime();
+    return dayKeyStart(keys[0]!);
   }
 
   /** How many sample rows are held, across every loaded shard. */
@@ -303,9 +334,12 @@ export class HealthStore {
   rebuildRollups(): void {
     const days: RollupFile["days"] = {};
     const perDay = new Map<string, Map<SampleMetric, HealthSample[]>>();
+    const seen = new Set<string>();
     for (const name of this.backend.list()) {
       if (!name.startsWith(SAMPLE_PREFIX) || !name.endsWith(SAMPLE_SUFFIX)) continue;
-      for (const sample of this.loadShard(name).values()) {
+      for (const [sampleId, sample] of this.loadShard(name)) {
+        if (seen.has(sampleId)) continue;
+        seen.add(sampleId);
         const key = dayKey(sample.startMs);
         let byMetric = perDay.get(key);
         if (!byMetric) {
@@ -325,7 +359,7 @@ export class HealthStore {
       }
       days[key] = entry;
     }
-    this.rollups = { version: ROLLUP_VERSION, days };
+    this.rollups = { version: ROLLUP_VERSION, zone: currentZoneId(), days };
     this.persistRollups();
   }
 
@@ -334,9 +368,8 @@ export class HealthStore {
     const touched = new Set<string>();
     for (const sample of samples) touched.add(dayKey(sample.startMs));
     for (const key of touched) {
-      const parts = key.split("-").map(Number);
-      const dayStart = new Date(parts[0]!, parts[1]! - 1, parts[2]!).getTime();
-      const dayEnd = new Date(parts[0]!, parts[1]! - 1, parts[2]! + 1).getTime();
+      const dayStart = dayKeyStart(key);
+      const dayEnd = dayKeyStart(key, 1);
       const inDay = this.samplesInRange(dayStart, dayEnd);
       const entry: Partial<Record<SampleMetric, Rollup>> = {};
       for (const metric of SAMPLE_METRICS) {
@@ -356,15 +389,25 @@ export class HealthStore {
   // -------------------------------------------------------------------------
   // Loading
 
+  /**
+   * Every shard that can hold a sample in [startMs, endMs): the UTC months of
+   * the range widened by a day each side, for the legacy local-month names
+   * (`candidateShardNames`).
+   */
   private shardNamesInRange(startMs: number, endMs: number): string[] {
     const names: string[] = [];
-    const cursor = new Date(startOfLocalDay(startMs));
-    cursor.setDate(1);
+    const from = new Date(startMs - DAY_MS);
+    let year = from.getUTCFullYear();
+    let month = from.getUTCMonth();
     let guard = 0;
-    while (cursor.getTime() < endMs && guard < 240) {
+    while (Date.UTC(year, month, 1) < endMs + DAY_MS && guard < 240) {
       guard += 1;
-      names.push(`${SAMPLE_PREFIX}${monthKey(cursor.getTime())}${SAMPLE_SUFFIX}`);
-      cursor.setMonth(cursor.getMonth() + 1);
+      names.push(`${SAMPLE_PREFIX}${monthKey(Date.UTC(year, month, 1))}${SAMPLE_SUFFIX}`);
+      month += 1;
+      if (month === 12) {
+        month = 0;
+        year += 1;
+      }
     }
     return names;
   }
@@ -407,21 +450,35 @@ export class HealthStore {
     return sessions;
   }
 
+  /**
+   * The rollup cache, valid for the phone's CURRENT zone (2026-10-04).
+   *
+   * Its day keys are local calendar days, so they mean something only in the
+   * zone they were cut in. When the zone differs (in memory after a zone change
+   * mid-process, or on disk from before a trip) the whole cache is rebuilt from
+   * the raw shards rather than shifted: a day in one zone is not a whole day in
+   * another, so there is nothing to shift. Rebuild, not drop-and-leave-empty,
+   * because the week/month charts read nothing else. The shards are never
+   * touched; every absolute-time record survives.
+   */
   private loadRollups(): RollupFile {
-    if (this.rollups) return this.rollups;
-    const text = this.backend.exists(ROLLUP_FILE) ? this.backend.read(ROLLUP_FILE) : null;
-    if (text) {
-      try {
-        const parsed = JSON.parse(text) as RollupFile;
-        if (parsed?.version === ROLLUP_VERSION && parsed.days) {
-          this.rollups = parsed;
-          return parsed;
+    const zone = currentZoneId();
+    if (this.rollups && this.rollups.zone === zone) return this.rollups;
+    if (!this.rollups) {
+      const text = this.backend.exists(ROLLUP_FILE) ? this.backend.read(ROLLUP_FILE) : null;
+      if (text) {
+        try {
+          const parsed = JSON.parse(text) as RollupFile;
+          if (parsed?.version === ROLLUP_VERSION && parsed.zone === zone && parsed.days) {
+            this.rollups = parsed;
+            return parsed;
+          }
+        } catch {
+          // Falls through to a rebuild - the cache is always reconstructible.
         }
-      } catch {
-        // Falls through to a rebuild - the cache is always reconstructible.
       }
     }
-    this.rollups = { version: ROLLUP_VERSION, days: {} };
+    this.rollups = { version: ROLLUP_VERSION, zone, days: {} };
     this.rebuildRollups();
     return this.rollups;
   }

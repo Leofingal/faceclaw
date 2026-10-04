@@ -46,6 +46,7 @@ import {
   type SampleMetric,
 } from "./health-types";
 import { stageLabel, type SleepStageName } from "./sleep-stages";
+import { localFields } from "../util/local-zone";
 
 const MARGIN = 10;
 const GUTTER = 14;
@@ -398,7 +399,7 @@ function drawMetricDetail(
         // Just format the hour - `drawMetricChart` already thins labels to
         // whatever the column width fits. Thinning here as well multiplies the
         // two and leaves a single label at midnight.
-        xLabel: (point) => `${new Date(point.startMs).getHours()}`,
+        xLabel: (point) => `${localFields(point.startMs).hours}`,
       },
     );
   }

@@ -45,9 +45,11 @@
 
 import {
   convertRecords,
+  parseRingBoots,
   parseRingClockSegments,
   ringSecToRealMs,
   sleepWireFromRing,
+  type RingBootDate,
   type RingClockSegments,
   type WireHourlyRecord,
   type WireRecord,
@@ -56,7 +58,6 @@ import {
 import { Utils } from "@nativescript/core";
 import { markLiveData, purgeFixtureData } from "./health-seed";
 import { healthStore } from "./health-store-files";
-import { startOfLocalDay } from "./health-types";
 import { File, knownFolders } from "@nativescript/core";
 import { onAlignedTick, startAlignedTick, __alignedTickInternals } from "../util/aligned-tick";
 import type { RingPullProgress } from "./health-open-refresh";
@@ -123,6 +124,27 @@ function ringClockSegments(): RingClockSegments | null {
   }
 }
 
+/**
+ * The ringBoot receipts, for dating a clock-less sleep record (2026-10-04).
+ * Read lazily, at most once per sync, and only when such a record turns up.
+ * Java flushes the dated ringBoot line on the first page's arrival, before that
+ * page is journaled, so a page in the journal finds its boot already written.
+ */
+function ringBootsReader(): () => readonly RingBootDate[] {
+  let held: readonly RingBootDate[] | null = null;
+  return () => {
+    if (held) return held;
+    held = [];
+    try {
+      const path = `${knownFolders.documents().getFolder("health").path}/ring-sleep-receipts.jsonl`;
+      if (File.exists(path)) held = parseRingBoots(File.fromPath(path).readTextSync());
+    } catch (error) {
+      console.warn("health live: ringBoot receipts unreadable; clock-less sleep stays undated", error);
+    }
+    return held;
+  };
+}
+
 function anchorToMs(clock: RingClockSegments, anchorUnixSeconds: number): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
   return ringSecToRealMs(clock, anchorUnixSeconds);
@@ -165,20 +187,22 @@ function anchorToMs(clock: RingClockSegments, anchorUnixSeconds: number): number
  * Holding every day makes the replay idempotent instead of destructive — and
  * no theory about WHY records replay is needed for that to hold.
  *
- * The day key is `startOfLocalDay(corrected anchor)`, which is the ring's own
- * day start, not calendar midnight — the ring's day begins at 20:00 local
- * because its clock runs 4h fast. That is fine: the key is an identity, and
- * the per-bucket timestamps carry the real wall-clock placement.
+ * **The key is the ring's raw anchor second** (2026-10-04). It was
+ * `startOfLocalDay(corrected anchor)`, a local midnight in whatever zone the
+ * JS process held, so after a zone change the same ring-day got a second key
+ * and started accumulating again from empty beside the stranded first. The
+ * raw anchor is the ring-day's own identity: no zone and no clock offset in
+ * it. The per-bucket timestamps carry the real placement, and the day totals
+ * are summed from the stored buckets at display time, so this is a merge aid
+ * for the ring-day still filling, not a store of day totals.
  */
 type StepDayBuckets = { [index: string]: { steps: number; active: number; total: number } };
 
 type StepBucketLedger = {
-  /** `dayStartMs` (as a string key) -> that day's buckets. */
-  days: { [dayStartMs: string]: StepDayBuckets };
+  version: 2;
+  /** The ring's raw day-anchor second (as a string key) -> that ring-day's buckets. */
+  ringDays: { [anchorSec: string]: StepDayBuckets };
 };
-
-/** The pre-2026-09-12 single-day shape, migrated on read rather than dropped. */
-type LegacyStepBucketLedger = { dayStartMs: number; buckets: StepDayBuckets };
 
 /** How many ring-days to keep. Enough for a weekly chart, bounded on disk. */
 const LEDGER_DAYS_KEPT = 7;
@@ -187,27 +211,19 @@ function ledgerPath(): string {
   return `${knownFolders.documents().getFolder("health").path}/steps-ledger.json`;
 }
 
-function readLedger(clock: RingClockSegments): StepBucketLedger | null {
+/**
+ * The ledger, or null. A file in an older shape (keyed by a local midnight) is
+ * NOT migrated: those keys cannot be mapped to a ring anchor without the zone
+ * they were cut in, and nothing is lost by starting over, because every bucket
+ * the old ledger held was already written to the sample store as its own
+ * absolute-time sample. The next pull's buckets merge into a fresh entry; a
+ * redelivered window carries its full (larger) total, never an increment.
+ */
+function readLedger(): StepBucketLedger | null {
   try {
     if (!File.exists(ledgerPath())) return null;
-    const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as
-      | StepBucketLedger
-      | LegacyStepBucketLedger;
-    if (parsed && (parsed as StepBucketLedger).days) return parsed as StepBucketLedger;
-    // Migrate the single-day shape rather than discarding it: the file on the
-    // phone holds real step data the ring may not re-deliver.
-    //
-    // ⚠ RE-KEY IT. The legacy `dayStartMs` was `startOfLocalDay(RAW anchor)`,
-    // computed before the anchor was offset-corrected, so carrying it across
-    // verbatim files the day 4h too late — under a key the corrected code will
-    // never write to again. The accumulated buckets would sit there stranded
-    // while the same ring-day restarted empty beside them. Measured doing
-    // exactly that on 2026-09-12: a ledger with "2 days" that were one day.
-    const legacy = parsed as LegacyStepBucketLedger;
-    if (typeof legacy?.dayStartMs === "number" && legacy.buckets) {
-      const corrected = ringSecToRealMs(clock, legacy.dayStartMs / 1000);
-      return { days: { [String(startOfLocalDay(corrected))]: legacy.buckets } };
-    }
+    const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as Partial<StepBucketLedger>;
+    if (parsed && parsed.version === 2 && parsed.ringDays) return parsed as StepBucketLedger;
     return null;
   } catch {
     return null;
@@ -216,8 +232,8 @@ function readLedger(clock: RingClockSegments): StepBucketLedger | null {
 
 /** Keep the ledger bounded. Newest `LEDGER_DAYS_KEPT` days survive. */
 function pruneLedger(ledger: StepBucketLedger): void {
-  const keys = Object.keys(ledger.days).sort((a, b) => Number(b) - Number(a));
-  for (const key of keys.slice(LEDGER_DAYS_KEPT)) delete ledger.days[key];
+  const keys = Object.keys(ledger.ringDays).sort((a, b) => Number(b) - Number(a));
+  for (const key of keys.slice(LEDGER_DAYS_KEPT)) delete ledger.ringDays[key];
 }
 
 function writeLedger(ledger: StepBucketLedger): void {
@@ -230,14 +246,13 @@ function writeLedger(ledger: StepBucketLedger): void {
 
 /** Merge this pull's buckets into that ring-day's ledger and return its full set. */
 function accumulateStepBuckets(
-  clock: RingClockSegments,
-  dayStartMs: number,
+  anchorSec: number,
   delivered: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[],
 ): { index: number; steps: number; activeCalories: number; totalCalories: number }[] {
-  const ledger: StepBucketLedger = readLedger(clock) ?? { days: {} };
-  const dayKey = String(dayStartMs);
-  const day: StepDayBuckets = ledger.days[dayKey] ?? {};
-  ledger.days[dayKey] = day;
+  const ledger: StepBucketLedger = readLedger() ?? { version: 2, ringDays: {} };
+  const dayKey = String(anchorSec);
+  const day: StepDayBuckets = ledger.ringDays[dayKey] ?? {};
+  ledger.ringDays[dayKey] = day;
   for (const bucket of delivered) {
     const existing = day[String(bucket.index)];
     // Max, not overwrite — see the type's header. Keeps the merge order-independent.
@@ -259,13 +274,13 @@ function accumulateStepBuckets(
   const calories = merged.reduce((acc, b) => acc + b.totalCalories, 0);
   console.log(
     `health live: steps ledger +${delivered.length} delivered -> ${merged.length} buckets held ` +
-      `for ring-day ${new Date(dayStartMs).toISOString()}, ${steps} steps / ${calories} cal, ` +
-      `${Object.keys(ledger.days).length} days in ledger`,
+      `for ring-day anchor ${anchorSec}, ${steps} steps / ${calories} cal, ` +
+      `${Object.keys(ledger.ringDays).length} days in ledger`,
   );
   return merged;
 }
 
-function toWire(record: any, clock: RingClockSegments): WireRecord | null {
+function toWire(record: any, clock: RingClockSegments, boots: () => readonly RingBootDate[]): WireRecord | null {
   const cmdHi = Number(record.cmdHi);
 
   const metric = HOURLY_METRIC[cmdHi];
@@ -333,7 +348,7 @@ function toWire(record: any, clock: RingClockSegments): WireRecord | null {
     const anchorMs = anchorToMs(clock, anchorSec);
     if (anchorMs === null) return { kind: "steps", anchorMs: null, buckets };
     // Hand convertSteps() the whole day, not just this pull's increment.
-    const accumulated = accumulateStepBuckets(clock, startOfLocalDay(anchorMs), buckets);
+    const accumulated = accumulateStepBuckets(anchorSec, buckets);
     // Each bucket undone with the offset in force at its own ring time.
     const dated = accumulated.map((b) => ({ ...b, startMs: ringSecToRealMs(clock, anchorSec + b.index * 600) }));
     return { kind: "steps", anchorMs, buckets: dated };
@@ -342,7 +357,7 @@ function toWire(record: any, clock: RingClockSegments): WireRecord | null {
   if (cmdHi === CMD_SLEEP) {
     // The shipping conversion, including the clock correction, is in
     // health-ingest.ts so its known-good windows are tested through it.
-    const wire = sleepWireFromRing(record, clock);
+    const wire = sleepWireFromRing(record, clock, boots);
     if (!wire) return null;
     const correction = wire.clockCorrectionMs ?? 0;
     // The assertion log for the sleep clock correction. A handful of sleep
@@ -438,9 +453,10 @@ export function syncLiveRecords(): LiveSyncResult {
     return EMPTY;
   }
   const wire: WireRecord[] = [];
+  const boots = ringBootsReader();
   for (let i = 0; i < size; i++) {
     try {
-      const converted = toWire(records.get(i), clock);
+      const converted = toWire(records.get(i), clock, boots);
       if (converted) wire.push(converted);
     } catch (error) {
       console.warn("health live: skipped an undecodable record", error);

@@ -13,6 +13,14 @@
  * tested with no BLE anywhere near them.
  */
 
+import {
+  addLocalDays as zoneAddLocalDays,
+  localFields,
+  localToMs,
+  startOfLocalDay as zoneStartOfLocalDay,
+  startOfLocalHour as zoneStartOfLocalHour,
+} from "../util/local-zone";
+
 /** The five metrics the phone view can graph. */
 export type SeriesMetric = "heartRate" | "spo2" | "hrv" | "steps" | "sleep";
 
@@ -127,10 +135,9 @@ export const NIGHT_BOUNDARY_HOUR = 20;
  * Calendar arithmetic, not `+ 4h`, so a DST change cannot move the boundary.
  */
 export function sleepNightDayStartMs(ms: number): number {
-  const date = new Date(ms);
-  if (date.getHours() >= NIGHT_BOUNDARY_HOUR) date.setDate(date.getDate() + 1);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
+  // In the phone's CURRENT zone, read fresh (2026-10-04): see util/local-zone.ts.
+  const f = localFields(ms);
+  return localToMs(f.year, f.month, f.date + (f.hours >= NIGHT_BOUNDARY_HOUR ? 1 : 0));
 }
 
 /**
@@ -245,23 +252,38 @@ export const SAMPLE_METRIC_SHORT_LABELS: Readonly<Record<SampleMetric, string>> 
   calories: "Calories",
 };
 
-/** Local midnight of the day containing `ms`. */
+/**
+ * Local midnight of the day containing `ms`, in the phone's CURRENT zone.
+ *
+ * ⚠ CHANGED 2026-10-04. These used `Date`'s local getters, which answer in the
+ * zone the JS process started in (Japan, for a day after landing home). They
+ * now delegate to `util/local-zone.ts`, which reads Java's zone fresh. The
+ * names stay so every caller follows without an edit.
+ */
 export function startOfLocalDay(ms: number): number {
-  const date = new Date(ms);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
+  return zoneStartOfLocalDay(ms);
 }
 
 /** Local top-of-hour containing `ms`. */
 export function startOfLocalHour(ms: number): number {
-  const date = new Date(ms);
-  date.setMinutes(0, 0, 0);
-  return date.getTime();
+  return zoneStartOfLocalHour(ms);
 }
 
-/** `YYYY-MM`, in local time - the storage shard key. */
+/** Local midnight `days` calendar days on from the day containing `ms` (DST-safe). */
+export function addLocalDays(ms: number, days: number): number {
+  return zoneAddLocalDays(ms, days);
+}
+
+/**
+ * `YYYY-MM` of `ms` in UTC - the sample shard key.
+ *
+ * ⚠ CHANGED 2026-10-04 from the local month. A file name must not depend on
+ * the zone a sample was written in, or one bucket re-delivered after a trip
+ * lands in a second shard and is counted twice. Shards written under the old
+ * local key are still read; see `HealthStore.shardNamesInRange`.
+ */
 export function monthKey(ms: number): string {
   const date = new Date(ms);
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  return `${date.getFullYear()}-${month}`;
+  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
+  return `${date.getUTCFullYear()}-${month}`;
 }

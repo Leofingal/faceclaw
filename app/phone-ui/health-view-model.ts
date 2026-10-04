@@ -64,6 +64,7 @@ import { healthStore } from "../health/health-store-files";
 import { requestFreshPull, ringPullProgress, syncLiveRecords } from "../health/health-live";
 import { watchOpenPull } from "../health/health-open-refresh";
 import { isFixtureData, seedFixturesIfNeeded } from "../health/health-seed";
+import { localFields } from "../util/local-zone";
 import {
   DAY_MS,
   METRIC_LABELS,
@@ -71,6 +72,7 @@ import {
   type RollupPoint,
   type SampleMetric,
   type SeriesMetric,
+  addLocalDays,
   startOfLocalDay,
 } from "../health/health-types";
 
@@ -355,7 +357,7 @@ export class HealthViewModel extends Observable {
   private windowMs(): { startMs: number; endMs: number } {
     const days = RANGE_DAYS[this.range];
     const today = startOfLocalDay(Date.now());
-    return { startMs: today - (days - 1) * DAY_MS, endMs: today + DAY_MS };
+    return { startMs: addLocalDays(today, -(days - 1)), endMs: addLocalDays(today, 1) };
   }
 
   private buildContent(): { content: PhoneChartContent; stats: StatRow[]; caption: string } {
@@ -384,9 +386,7 @@ export class HealthViewModel extends Observable {
           sum: entry?.sum ?? 0,
           count: entry?.count ?? 0,
         });
-        const next = new Date(cursor);
-        next.setDate(next.getDate() + 1);
-        cursor = next.getTime();
+        cursor = addLocalDays(cursor, 1);
       }
     } else {
       points = rollupSeries(store.samplesInRange(startMs, endMs), {
@@ -592,9 +592,9 @@ export class HealthViewModel extends Observable {
    * leave a single label on the axis.
    */
   private formatAxisLabel(point: RollupPoint): string {
-    const date = new Date(point.startMs);
-    if (this.granularity() === "hour") return `${date.getHours()}`;
+    const date = localFields(point.startMs);
+    if (this.granularity() === "hour") return `${date.hours}`;
     if (this.range === "week") return shortWeekday(point.startMs);
-    return `${date.getDate()}`;
+    return `${date.date}`;
   }
 }
