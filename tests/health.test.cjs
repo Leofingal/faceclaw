@@ -30,7 +30,7 @@ const {
 } = require("../.test-build/app/health/health-derive.js");
 const {
   convertRecords,
-  sleepClockOffsetMs,
+  ringClockOffsetSecAt,
   sleepIdentityHolds,
 } = require("../.test-build/app/health/health-ingest.js");
 const {
@@ -249,7 +249,8 @@ test("a sleep session is stored with its time marked unresolved", () => {
 // `files/health/sleep.jsonl` under com.faceclaw.app. Its wall-clock known-good
 // (06:21:01 -> 09:25:31 EDT, under the 1x correction) is pinned in
 // `tests/health-night.test.cjs`, TZ-pinned so it never skips. It used to be
-// pinned here at -8h, which was wrong - see `sleepClockOffsetMs`.
+// pinned here at -8h, which was wrong. Since 2026-10-04 the correction comes
+// from the ring clock history (`ringClockOffsetSecAt`), not the JS zone.
 const REAL_SLEEP_RECORD = {
   kind: "sleep",
   startTs: 1789222861,
@@ -276,9 +277,10 @@ const REAL_SLEEP_RECORD = {
 
 test("a clock correction promotes a sleep session to a real placement", () => {
   const rawStartMs = REAL_SLEEP_RECORD.startTs * 1000;
-  // The shipping correction, so this says what the RULE is rather than
-  // restating a constant that would rot at the November DST change.
-  const correction = sleepClockOffsetMs(rawStartMs);
+  // The shipping lookup, with the history the pre-2026-10-04 build implies in
+  // EDT: the ring 4 h ahead from the start.
+  const correction = ringClockOffsetSecAt([[0, 14400]], REAL_SLEEP_RECORD.startTs) * 1000;
+  assert.equal(correction, 4 * 3600 * 1000);
 
   const result = convertRecords([{ ...REAL_SLEEP_RECORD, clockCorrectionMs: correction }]);
   assert.equal(result.sleep.length, 1);

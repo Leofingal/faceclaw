@@ -45,8 +45,10 @@
 
 import {
   convertRecords,
-  ringClockOffsetMs,
+  parseRingClockSegments,
+  ringSecToRealMs,
   sleepWireFromRing,
+  type RingClockSegments,
   type WireHourlyRecord,
   type WireRecord,
   type WireStepsRecord,
@@ -102,13 +104,28 @@ function activeCommunicator(): any {
   }
 }
 
-// The ring clock corrections (`ringClockOffsetMs`, `sleepClockOffsetMs`) live in
-// `health-ingest.ts`, with their evidence, so tests can run them under node.
+// The ring clock correction lives in `health-ingest.ts`, with its evidence, so
+// tests can run it under node. Its input is the offset history the handshake
+// keeps in files/health/ring-clock.json (2026-10-04), read once per sync here.
 
-function anchorToMs(anchorUnixSeconds: number, applyClockOffset: boolean): number | null {
+/**
+ * The ring clock's offset history, from the Java side that writes it. Null
+ * when unavailable: the sync then stores nothing and commits nothing, so the
+ * pages are read again next tick rather than dated with a guessed offset.
+ */
+function ringClockSegments(): RingClockSegments | null {
+  try {
+    const dir = new java.io.File(Utils.android.getApplicationContext().getFilesDir(), "health");
+    return parseRingClockSegments(String((com as any).faceclaw.app.RingClockState.historyJson(dir)));
+  } catch (error) {
+    console.warn("health live: ring clock history unavailable", error);
+    return null;
+  }
+}
+
+function anchorToMs(clock: RingClockSegments, anchorUnixSeconds: number): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
-  const ms = anchorUnixSeconds * 1000;
-  return applyClockOffset ? ms - ringClockOffsetMs(ms) : ms;
+  return ringSecToRealMs(clock, anchorUnixSeconds);
 }
 
 /**
@@ -170,7 +187,7 @@ function ledgerPath(): string {
   return `${knownFolders.documents().getFolder("health").path}/steps-ledger.json`;
 }
 
-function readLedger(): StepBucketLedger | null {
+function readLedger(clock: RingClockSegments): StepBucketLedger | null {
   try {
     if (!File.exists(ledgerPath())) return null;
     const parsed = JSON.parse(File.fromPath(ledgerPath()).readTextSync()) as
@@ -188,7 +205,7 @@ function readLedger(): StepBucketLedger | null {
     // exactly that on 2026-09-12: a ledger with "2 days" that were one day.
     const legacy = parsed as LegacyStepBucketLedger;
     if (typeof legacy?.dayStartMs === "number" && legacy.buckets) {
-      const corrected = legacy.dayStartMs - ringClockOffsetMs(legacy.dayStartMs);
+      const corrected = ringSecToRealMs(clock, legacy.dayStartMs / 1000);
       return { days: { [String(startOfLocalDay(corrected))]: legacy.buckets } };
     }
     return null;
@@ -213,10 +230,11 @@ function writeLedger(ledger: StepBucketLedger): void {
 
 /** Merge this pull's buckets into that ring-day's ledger and return its full set. */
 function accumulateStepBuckets(
+  clock: RingClockSegments,
   dayStartMs: number,
   delivered: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[],
 ): { index: number; steps: number; activeCalories: number; totalCalories: number }[] {
-  const ledger: StepBucketLedger = readLedger() ?? { days: {} };
+  const ledger: StepBucketLedger = readLedger(clock) ?? { days: {} };
   const dayKey = String(dayStartMs);
   const day: StepDayBuckets = ledger.days[dayKey] ?? {};
   ledger.days[dayKey] = day;
@@ -247,7 +265,7 @@ function accumulateStepBuckets(
   return merged;
 }
 
-function toWire(record: any): WireRecord | null {
+function toWire(record: any, clock: RingClockSegments): WireRecord | null {
   const cmdHi = Number(record.cmdHi);
 
   const metric = HOURLY_METRIC[cmdHi];
@@ -263,7 +281,14 @@ function toWire(record: any): WireRecord | null {
         min: Number(group.min),
       });
     }
-    return { kind: "hourly", metric, anchorMs: anchorToMs(Number(record.anchorUnixSeconds), true), groups };
+    const anchorSec = Number(record.anchorUnixSeconds);
+    const anchorMs = anchorToMs(clock, anchorSec);
+    // Each group undone with the offset in force at its own ring hour.
+    const dated =
+      anchorMs === null
+        ? groups
+        : groups.map((g) => ({ ...g, startMs: ringSecToRealMs(clock, anchorSec + g.hourIndex * 3600) }));
+    return { kind: "hourly", metric, anchorMs, groups: dated };
   }
 
   if (cmdHi === CMD_STEPS) {
@@ -304,17 +329,20 @@ function toWire(record: any): WireRecord | null {
     // 4h fast and its day starts at ITS midnight. A ring-day therefore straddles
     // two calendar days, and the buckets land on whichever real day they fall
     // in — which is the point.
-    const anchorMs = anchorToMs(Number(record.anchorUnixSeconds), true);
+    const anchorSec = Number(record.anchorUnixSeconds);
+    const anchorMs = anchorToMs(clock, anchorSec);
     if (anchorMs === null) return { kind: "steps", anchorMs: null, buckets };
     // Hand convertSteps() the whole day, not just this pull's increment.
-    const accumulated = accumulateStepBuckets(startOfLocalDay(anchorMs), buckets);
-    return { kind: "steps", anchorMs, buckets: accumulated };
+    const accumulated = accumulateStepBuckets(clock, startOfLocalDay(anchorMs), buckets);
+    // Each bucket undone with the offset in force at its own ring time.
+    const dated = accumulated.map((b) => ({ ...b, startMs: ringSecToRealMs(clock, anchorSec + b.index * 600) }));
+    return { kind: "steps", anchorMs, buckets: dated };
   }
 
   if (cmdHi === CMD_SLEEP) {
     // The shipping conversion, including the clock correction, is in
     // health-ingest.ts so its known-good windows are tested through it.
-    const wire = sleepWireFromRing(record);
+    const wire = sleepWireFromRing(record, clock);
     if (!wire) return null;
     const correction = wire.clockCorrectionMs ?? 0;
     // The assertion log for the sleep clock correction. A handful of sleep
@@ -403,10 +431,16 @@ export function syncLiveRecords(): LiveSyncResult {
     (Number(batch.getUndecoded()) ? `, ${batch.getUndecoded()} undecoded` : "") +
     (Number(batch.getCorrupt()) ? `, ${batch.getCorrupt()} corrupt` : "");
 
+  const clock = ringClockSegments();
+  if (!clock) {
+    // Nothing committed: the same pages come back next tick.
+    console.warn(`health live: ${size} records (${journalNote}) held - no ring clock history to date them`);
+    return EMPTY;
+  }
   const wire: WireRecord[] = [];
   for (let i = 0; i < size; i++) {
     try {
-      const converted = toWire(records.get(i));
+      const converted = toWire(records.get(i), clock);
       if (converted) wire.push(converted);
     } catch (error) {
       console.warn("health live: skipped an undecodable record", error);

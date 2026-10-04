@@ -190,13 +190,28 @@ export class FaceclawVoiceControlBridge {
    * an "outcome" line in files/voice/capture-receipts.jsonl keyed to that
    * capture. Diagnostic only: never throws, no-op off Android.
    */
-  noteCaptureOutcome(outcome: CaptureOutcome, via: string): void {
+  noteCaptureOutcome(outcome: CaptureOutcome | (string & {}), via: string): void {
     if (!global.isAndroid) return;
     try {
       this.controller?.appendCaptureOutcome(outcome, via);
     } catch {
       // A receipt must never break the dictation flow.
     }
+  }
+
+  /**
+   * The last raw input event the dashboard saw (kind, event, source), kept so
+   * the Ghost dictation's input receipts can say what the glasses actually
+   * sent (2026-10-04). Set for every input; read only while dictating.
+   */
+  private lastRawInputText = "";
+
+  noteRawInput(description: string): void {
+    this.lastRawInputText = description;
+  }
+
+  lastRawInput(): string {
+    return this.lastRawInputText;
   }
 
   /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */

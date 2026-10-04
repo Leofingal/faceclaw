@@ -2086,6 +2086,13 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      // For the Ghost dictation's input receipts (2026-10-04): what the glasses
+      // actually sent, so a tap reported as a scroll is attributable.
+      const raw = event as { eventType?: number; eventSource?: number };
+      voiceControlBridge.noteRawInput(
+        `${event.kind} ${typeof raw.eventType === "number" ? eventLabel(event.kind, raw.eventType) : "-"} ` +
+          `${typeof raw.eventSource === "number" ? sourceName(raw.eventSource) : "-"}`,
+      );
       // The gesture, plus which app is on screen and whether input goes to it,
       // the sidebar, or a shell overlay. Java only knows the raw event codes,
       // and without the target the export says what was pressed but not who

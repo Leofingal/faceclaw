@@ -276,11 +276,25 @@ public final class RingProtocol {
      * DATA page anchors, ring to phone.
      */
     public static byte[] buildDayAnchorWrite(int seq, int nonce, long clockSeconds) {
+        return buildDayAnchorWrite(seq, nonce, clockSeconds, (short) ((ANCHOR_MARK_LO << 8) | ANCHOR_MARK_HI));
+    }
+
+    /**
+     * 00:05 with the time zone in it (2026-10-04). The two bytes Even writes
+     * after the nonce, {@code 10 ff}, are int16 LE -240: minutes EAST of UTC
+     * for EDT, the zone every Even capture was taken in. openCFW's clock
+     * transition consumes exactly this pair, "signed UTC-offset minutes and
+     * UInt32 Unix seconds" (r1 TIME-HEALTH-ROLLOVER-CORRELATION.md), and the
+     * ring echoes the same two bytes in front of its page day anchors. So
+     * this is the real zone, not a constant: until 2026-10-04 we hardcoded
+     * -240 even in Japan. In EDT the frame is byte-identical to before.
+     */
+    public static byte[] buildDayAnchorWrite(int seq, int nonce, long clockSeconds, int tzMinutesEast) {
         byte[] payload = new byte[8];
         payload[0] = (byte) (nonce & 0xff);
         payload[1] = (byte) ((nonce >>> 8) & 0xff);
-        payload[2] = (byte) ANCHOR_MARK_HI;
-        payload[3] = (byte) ANCHOR_MARK_LO;
+        payload[2] = (byte) (tzMinutesEast & 0xff);
+        payload[3] = (byte) ((tzMinutesEast >>> 8) & 0xff);
         writeIntLe(payload, 4, (int) clockSeconds);
         return buildFrame(CHAN_DEVICE, KIND_DATA, CMD_HI_DEVICE, 0x05, seq, payload);
     }
@@ -1125,6 +1139,36 @@ public final class RingProtocol {
     }
 
     /**
+     * As above, plus the ring link's signal strength (2026-10-04):
+     * {@code rssiDbm} is what Android's readRemoteRssi answered at the start
+     * of this pull, in dBm, or null when it did not answer. Goes in before
+     * {@code link}, like trigger, so a reader keyed on the old tail matches.
+     */
+    public static String sleepPullReceiptLine(long requestedWallMs, long finishedWallMs, boolean rspSeen,
+                                              int pages, int otherPages, boolean newLink, String trigger,
+                                              Integer rssiDbm) {
+        return withRssi(sleepPullReceiptLine(requestedWallMs, finishedWallMs, rspSeen, pages, otherPages,
+            newLink, trigger), rssiDbm);
+    }
+
+    /** The pullAborted line with the pull's RSSI (null = not read). */
+    public static String pullAbortedReceiptLine(long requestedWallMs, long finishedWallMs, String trigger,
+                                                String reason, int atCommand, int attempted, int answered,
+                                                boolean newLink, Integer rssiDbm) {
+        return withRssi(pullAbortedReceiptLine(requestedWallMs, finishedWallMs, trigger, reason, atCommand,
+            attempted, answered, newLink), rssiDbm);
+    }
+
+    private static String withRssi(String line, Integer rssiDbm) {
+        int at = line.lastIndexOf(",\"link\":");
+        if (at < 0) {
+            return line;
+        }
+        return line.substring(0, at) + ",\"rssi\":" + (rssiDbm == null ? "null" : rssiDbm.toString())
+            + line.substring(at);
+    }
+
+    /**
      * One line per pull that ABORTED (2026-09-24). Until now an aborted pull
      * left no receipt at all - the pull line is written at the sleep type, and
      * an abort at the first write never gets there - which is how "Only when
@@ -1467,6 +1511,199 @@ public final class RingProtocol {
     }
 
     /**
+     * The ringBoot line with the reset dated (2026-10-04). {@code bootAtMs} =
+     * the wall time of this link's 00:0E clock write minus the page trailer,
+     * which is the per-boot constant every health page ends with
+     * ({@link #pageTrailerSeconds}): the ring's uptime, in seconds, when its
+     * clock was first set after the boot (lost-nights return §3,
+     * {@code [inferred]}). After a reset the ring has no clock until a phone
+     * writes one, and the connect that sees the boot signature is the one
+     * that writes it, so that write is the first set. {@code bootAtMs} and
+     * {@code trailerSec} are null when no page or no clock write came on the
+     * link. Same fields as the short form, then these three, so a reader of
+     * the old line still matches.
+     */
+    public static String ringBootReceiptLine(long wallMs, long linkAgeMs, int prevPushSeq,
+            long clockSetWallMs, long trailerSec) {
+        boolean dated = clockSetWallMs > 0 && trailerSec >= 0;
+        String head = ringBootReceiptLine(wallMs, linkAgeMs, prevPushSeq);
+        return head.substring(0, head.length() - 1)
+            + ",\"clockSetMs\":" + (clockSetWallMs > 0 ? Long.toString(clockSetWallMs) : "null")
+            + ",\"trailerSec\":" + (trailerSec >= 0 ? Long.toString(trailerSec) : "null")
+            + ",\"bootAtMs\":" + (dated ? Long.toString(clockSetWallMs - trailerSec * 1000L) : "null") + "}";
+    }
+
+    /**
+     * The last four bytes of a health DATA page, u32 LE: constant from one
+     * ring reset to the next, across every page type and every clock write
+     * (measured 2026-10-03: 18 -> 1005 -> 1440 -> 340 -> 1174, changing only
+     * at a ringBoot). -1 for a payload too short to carry it.
+     */
+    public static long pageTrailerSeconds(Frame page) {
+        if (page == null || page.payload == null || page.payload.length < 8) {
+            return -1L;
+        }
+        return readUInt32Le(page.payload, page.payload.length - 4);
+    }
+
+    // ------------------------------------------------------------------
+    // The ring's clock: Even's scheme, reached by a slew (2026-10-04)
+    // ------------------------------------------------------------------
+    //
+    // Even writes plain UTC seconds into 00:0E and 00:05 and the real zone
+    // into 00:05 (sequence-match return §3.1/§3.3). We wrote `now - zone
+    // offset`: UTC+4 h in EDT, UTC-9 h in JST. Flying east that moved the
+    // ring's clock 13 h BACK, and the ring dropped every record not newer
+    // than its last (the Japan heart-rate hole).
+    //
+    // Getting from UTC+4 h to UTC is itself a 4 h backward move, and the
+    // firmware's clock transition (openCFW r1 TIME-HEALTH-ROLLOVER-
+    // CORRELATION.md) resets the sleep engine on a backward jump of >= 180 s
+    // and FORMATS THE HEALTH DATABASE on >= 3600 s. So the clock goes back at
+    // most CLOCK_MAX_BACK_STEP_SEC per connect, and forward in one write.
+    // The offset the ring holds ("ring clock minus true UTC") is persisted by
+    // RingClockState, so a restart resumes the slew where it was.
+
+    /** Largest backward move in one write: 10 s under the firmware's 180 s line. */
+    public static final long CLOCK_MAX_BACK_STEP_SEC = 170L;
+    /** At most one backward step per this much wall time, so a reconnect storm cannot stack steps. */
+    public static final long CLOCK_BACK_STEP_SPACING_MS = 10L * 60_000L;
+    /**
+     * A backward step never takes the ring's local clock back across an hour
+     * boundary, and keeps this margin from it: the ring appends the previous
+     * hour's record when its local hour changes, and resets its day caches at
+     * local midnight (openCFW, local-hour boundary).
+     */
+    public static final long CLOCK_HOUR_EDGE_MARGIN_SEC = 30L;
+    /**
+     * No backward steps between these local hours (phone zone): a step inside
+     * an open sleep session would shorten the session's ring-clock span.
+     */
+    public static final int CLOCK_QUIET_FROM_HOUR = 22;
+    public static final int CLOCK_QUIET_UNTIL_HOUR = 8;
+
+    /** One connect's clock write, decided before it is sent. */
+    public static final class ClockPlan {
+        /** True UTC seconds at the decision: the target value. */
+        public final long nowSec;
+        /** The phone's zone, minutes east of UTC, for 00:05. */
+        public final int tzMinutes;
+        /** Ring clock minus UTC before this write, as last committed. */
+        public final long prevOffsetSec;
+        /** Ring clock minus UTC after this write. 0 = Even's scheme. */
+        public final long offsetSec;
+        /** The u32 that goes into 00:0E and both 00:05s. */
+        public final long writtenSec;
+        /** What set the size of the move: see {@link #planClockWrite}. */
+        public final String limit;
+
+        ClockPlan(long nowSec, int tzMinutes, long prevOffsetSec, long offsetSec, String limit) {
+            this.nowSec = nowSec;
+            this.tzMinutes = tzMinutes;
+            this.prevOffsetSec = prevOffsetSec;
+            this.offsetSec = offsetSec;
+            this.writtenSec = nowSec + offsetSec;
+            this.limit = limit;
+        }
+
+        public long stepSec() {
+            return offsetSec - prevOffsetSec;
+        }
+    }
+
+    /**
+     * Where this connect writes the ring's clock. Pure.
+     *
+     * <p>The target is offset 0 (true UTC). An offset at or below 0 goes
+     * straight to 0: a forward move is safe at any size ({@code limit}
+     * "forward", or "at-target"). An offset above 0 comes down by at most
+     * {@link #CLOCK_MAX_BACK_STEP_SEC}, and by less, or not at all, when:
+     * the phone's local hour is in the quiet window ("quiet-hours"); the last
+     * backward step was under {@link #CLOCK_BACK_STEP_SPACING_MS} ago
+     * ("spacing"); or the full step would cross the ring's local hour
+     * boundary ("hour-edge"). Otherwise "step-cap", or "last-step" for the
+     * final, smaller one.
+     *
+     * @param nowMs            true wall time
+     * @param tzMinutes        phone zone, minutes east of UTC, at nowMs
+     * @param currentOffsetSec ring clock minus UTC, as last committed
+     * @param lastBackStepAtMs wall time of the last committed backward step, 0 = never
+     */
+    public static ClockPlan planClockWrite(long nowMs, int tzMinutes, long currentOffsetSec, long lastBackStepAtMs) {
+        long nowSec = Math.floorDiv(nowMs, 1000L);
+        if (currentOffsetSec <= 0) {
+            return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, 0L,
+                currentOffsetSec == 0 ? "at-target" : "forward");
+        }
+        long step = Math.min(CLOCK_MAX_BACK_STEP_SEC, currentOffsetSec);
+        String limit = step < CLOCK_MAX_BACK_STEP_SEC ? "last-step" : "step-cap";
+        int localHour = (int) (Math.floorMod(nowSec + tzMinutes * 60L, 86_400L) / 3600L);
+        boolean quiet = localHour >= CLOCK_QUIET_FROM_HOUR || localHour < CLOCK_QUIET_UNTIL_HOUR;
+        if (quiet) {
+            step = 0L;
+            limit = "quiet-hours";
+        } else if (lastBackStepAtMs > 0 && nowMs >= lastBackStepAtMs
+                && nowMs - lastBackStepAtMs < CLOCK_BACK_STEP_SPACING_MS) {
+            step = 0L;
+            limit = "spacing";
+        } else {
+            long ringLocalSec = nowSec + currentOffsetSec + tzMinutes * 60L;
+            long room = Math.max(0L, Math.floorMod(ringLocalSec, 3600L) - CLOCK_HOUR_EDGE_MARGIN_SEC);
+            if (room < step) {
+                step = room;
+                limit = "hour-edge";
+            }
+        }
+        return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, currentOffsetSec - step, limit);
+    }
+
+    /**
+     * The clock offset in force when the ring stamped {@code ringSec}.
+     * {@code segments} are {from ring second, offset} pairs in write order;
+     * the first one (from 0) is the offset before any write this state knows
+     * of. The LAST segment whose start is at or before {@code ringSec} wins:
+     * after a backward step the ring re-lives up to 170 s of ring time, and
+     * those seconds are read as the newer offset, so a stamp is out by at most
+     * one step. An empty list reads 0.
+     */
+    public static long clockOffsetSecAt(long[][] segments, long ringSec) {
+        if (segments == null || segments.length == 0) {
+            return 0L;
+        }
+        for (int i = segments.length - 1; i >= 0; i--) {
+            if (segments[i][0] <= ringSec) {
+                return segments[i][1];
+            }
+        }
+        return segments[0][1];
+    }
+
+    /**
+     * One {@code ringClock} receipt line per clock write: the value written,
+     * the target (true UTC), and the gap still to slew. {@code rsp} is the
+     * ring's 00:0E answer; {@code committed} says the new offset was saved
+     * (only with an RSP, so an unanswered write never lets the next step
+     * start from a value the ring may not hold). {@code note} says why the
+     * state was seeded, or null.
+     */
+    public static String ringClockReceiptLine(long wallMs, ClockPlan plan, boolean written, boolean rsp,
+            boolean committed, String note) {
+        return "{\"type\":\"ringClock\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"writtenSec\":" + plan.writtenSec
+            + ",\"targetSec\":" + plan.nowSec
+            + ",\"gapSec\":" + plan.offsetSec
+            + ",\"prevGapSec\":" + plan.prevOffsetSec
+            + ",\"stepSec\":" + plan.stepSec()
+            + ",\"tzMin\":" + plan.tzMinutes
+            + ",\"limit\":\"" + jsonSafe(plan.limit) + "\""
+            + ",\"written\":" + written
+            + ",\"rsp\":" + rsp
+            + ",\"committed\":" + committed
+            + (note == null ? "" : ",\"note\":\"" + jsonSafe(note) + "\"") + "}";
+    }
+
+    /**
      * Battery-shaped device frames, receipt-log only (2026-09-15): the 00:01 RSP
      * (asked for in every handshake and pull), the hourly 00:7F push of the
      * same shape (09-15 capture pkt 4502), and the 00:03 push, one byte after
@@ -1560,6 +1797,36 @@ public final class RingProtocol {
             + ",\"inCase\":" + inCase
             + ",\"onFace\":" + onFace
             + ",\"why\":" + (why == null ? "null" : "\"" + jsonSafe(why) + "\"") + "}";
+    }
+
+    // ------------------------------------------------------------------
+    // Glasses-link journal (2026-10-04): files/health/glasses-link.jsonl
+    // ------------------------------------------------------------------
+
+    /**
+     * One line per glasses link state change: {@code event} is one of start,
+     * workerStart, attempt, armConnected, ready, armUp, armLost, failure,
+     * halted, loopError, disconnect, workerStop. {@code redialInMs} is how long
+     * until the worker loop dials again (-1 = not scheduled: the session is up,
+     * or the loop is halted or stopping); {@code halted} and {@code running} are
+     * the two flags that stop it dialling at all. {@code suppressed} counts
+     * identical lines folded into this one (attempt/failure repeat every few
+     * seconds while the glasses are away). Exists because on 10-03 at 22:12 EDT
+     * the glasses link died, the app never dialled again, and nothing on the
+     * phone said why.
+     */
+    public static String glassesLinkReceiptLine(long wallMs, String event, String arm, String reason,
+            long redialInMs, boolean halted, boolean running, boolean sessionReady, int suppressed) {
+        return "{\"type\":\"glassesLink\",\"at\":\"" + localStamp(wallMs) + "\""
+            + ",\"atMs\":" + wallMs
+            + ",\"event\":\"" + jsonSafe(event) + "\""
+            + (arm == null ? "" : ",\"arm\":\"" + jsonSafe(arm) + "\"")
+            + (reason == null ? "" : ",\"reason\":\"" + jsonSafe(reason) + "\"")
+            + ",\"redialInMs\":" + (redialInMs >= 0 ? Long.toString(redialInMs) : "null")
+            + ",\"halted\":" + halted
+            + ",\"running\":" + running
+            + ",\"sessionReady\":" + sessionReady
+            + (suppressed > 0 ? ",\"suppressed\":" + suppressed : "") + "}";
     }
 
     /**

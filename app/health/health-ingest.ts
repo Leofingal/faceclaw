@@ -68,7 +68,13 @@ export type WireHourlyRecord = {
    * zero bytes instead.
    */
   anchorMs: number | null;
-  groups: readonly { hourIndex: number; avg: number; max: number; min: number }[];
+  /**
+   * `startMs`, when present, is the group's own true start (2026-10-04): during
+   * the clock slew the offset changes inside a ring-day, so each group is
+   * undone with the offset in force at its own ring hour. Absent, the group is
+   * `anchorMs + hourIndex h`, as before.
+   */
+  groups: readonly { hourIndex: number; avg: number; max: number; min: number; startMs?: number }[];
 };
 
 /** `RingProtocol.StepsRecord` (`05:01`). */
@@ -77,7 +83,8 @@ export type WireStepsRecord = {
   /** The day anchor. Steps pages always carried one in the capture. */
   anchorMs: number | null;
   /** Raw buckets. `index` is the ring's own, whose meaning is NOT known. */
-  buckets: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[];
+  /** `startMs` as for hourly groups: the bucket's own true start, when known. */
+  buckets: readonly { index: number; steps: number; activeCalories: number; totalCalories: number; startMs?: number }[];
 };
 
 /** `RingProtocol.SleepRecord` (`06:01`). */
@@ -111,7 +118,7 @@ export type WireSleepRecord = {
    * omitted when the caller cannot say. Supplying it is what promotes the
    * session from `timeResolved: false` to a real placement - see
    * `convertSleep`. The value itself is the producer's problem, not this
-   * module's: see `sleepClockOffsetMs` below, which `sleepWireFromRing` applies.
+   * module's: `sleepWireFromRing` takes it from the ring clock history.
    */
   clockCorrectionMs?: number;
 };
@@ -133,73 +140,70 @@ export type ConversionResult = {
 // in `tests/health-night.test.cjs`, not against a restated constant.
 
 /**
- * The ring timestamps in a frame 4 hours ahead of real time, and that is our
- * own doing: the handshake sets its clock to `now + 14400s`, because that is
- * what a real Even write carries (verified against six of them). Even's app
- * evidently subtracts the same offset on the way back out. We were not, so
- * every hourly sample landed 4 hours in the future.
+ * The ring's clock, 2026-10-04: an OFFSET HISTORY, not a zone.
  *
- * MEASURED, not theorised. Stored samples read 09:00/10:00/11:00 local while
- * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
- * is exactly right for a ring that had just reported the current hour.
+ * Until 2026-10-04 the handshake set the ring to `now - zone offset` (UTC+4 h
+ * in EDT, UTC-9 h in JST: the sign was inverted) and this module undid it with
+ * `ringClockOffsetMs()`, the JS zone offset at the record's raw instant. Two
+ * faults: the sign error itself, and the JS zone, which in a long-running app
+ * process is the zone the process STARTED in. On 10-03 the app still stamped
+ * JST (+09:00) receipts hours after landing in the US, and stored the
+ * in-flight nap 9 h late (`sleep.jsonl` row 10-04 11:15Z, ring 02:55:30Z).
  *
- * ⚠ This value is PAIRED with the offset in `sendRingHandshake()`. They must
- * move together.
+ * Now the handshake slews the ring toward Even's value, plain UTC (0), at most
+ * 170 s back per connect, and records every committed change in
+ * `files/health/ring-clock.json` (`RingClockState.java`) as
+ * `[ring second, offset]` segments. A ring timestamp is undone with the
+ * offset in force when the ring STAMPED it, read from those segments: no zone
+ * is involved, so the two sides cannot drift apart again, and once the slew
+ * is done the offset is 0 and this is the identity.
  *
- * Both were hardcoded to 14400. As of 2026-09-12 both COMPUTE it: 14400 was
- * only ever right because every capture behind this work was taken in EDT,
- * where 14400s is the magnitude of the UTC offset. Computing it is identical
- * today and survives DST.
- *
- * ⚠ MIND THE SIGN. The quantity is "how far AHEAD of real time the ring's clock
- * runs", which is the magnitude of a west-of-UTC offset — positive 14400 in
- * EDT. `getTimezoneOffset()` is already minutes WEST of UTC (+240 in EDT), so
- * it is used as-is, NOT negated. Java's `TimeZone.getOffset()` uses the
- * opposite convention and is negated there; the two agree on +14400.
- *
- * Worth recording because the first cut of this change got the sign backwards
- * on both sides at once — consistently, so they stayed "paired", and still
- * wrong by 8 hours. Only the handshake's own assertion log caught it.
- *
- * Note this direction is the OPPOSITE of the "ring stores naive local time"
- * hypothesis (which predicts `epoch + utc_offset`, i.e. 4h behind). Measured
- * behaviour is 4h ahead. The hypothesis is unconfirmed; the measurement rules.
+ * The known-good EDT windows in `tests/health-night.test.cjs` still hold
+ * through this path with the history the old build implies, `[[0, 14400]]`.
  */
-export function ringClockOffsetMs(atMs: number): number {
-  return new Date(atMs).getTimezoneOffset() * 60 * 1000;
+export type RingClockSegments = readonly (readonly [number, number])[];
+
+/**
+ * Seconds the ring's clock ran ahead of true UTC when it stamped `ringSec`.
+ * The last segment starting at or before `ringSec` wins (mirrors
+ * `RingProtocol.clockOffsetSecAt`); before the first, the first; none, 0.
+ */
+export function ringClockOffsetSecAt(segments: RingClockSegments, ringSec: number): number {
+  if (!segments || segments.length === 0) return 0;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i]![0] <= ringSec) return segments[i]![1];
+  }
+  return segments[0]![1];
+}
+
+/** A ring timestamp (seconds, ring clock) as true epoch ms. */
+export function ringSecToRealMs(segments: RingClockSegments, ringSec: number): number {
+  return (ringSec - ringClockOffsetSecAt(segments, ringSec)) * 1000;
 }
 
 /**
- * Sleep timestamps take the SAME correction as every other record type (-4h in
- * EDT).
- *
- * ⚠ EMPIRICAL. From 2026-09-12 to 2026-09-13 this was TWICE the hourly
- * correction (-8h), and that was wrong. The -8h rested on reading the one block
- * the phone had stored as the night's FIRST block, with the missing hours after
- * it. It was the night's LAST block: on both nights so far the phone has only
- * received the block that ends at wake (see `awaitRingHealthDataIdle` in
- * FaceclawBleCommunicator.java for the suspected cause), so the missing time
- * sits BEFORE it.
- *
- * The evidence, night of 2026-09-12 -> 13, a 6h34m block:
- *   - under -8h it reads 22:35 -> 05:09, an hour before Chris went to bed;
- *   - under -4h it reads 02:35:08 -> 09:09:38, and Chris confirms waking ~09:09;
- *   - hourly heart rate, on the -4h frame already validated for hourly samples,
- *     shows an awake bump in the 02:00 hour (max 96) and a rise at 09:00
- *     (max 104);
- *   - `sleep.jsonl` was last written at 09:21.
- * Under the same rule the 2026-09-12 block is 06:21:01 -> 09:25:31, which is
- * also the LAST block of that night, not its first.
- *
- * Nothing here explains why sleep and hourly agree; the point is that the
- * measurement no longer asks for a special case. Kept as its own function so
- * that if a future record says sleep differs after all, the fix is one line.
- *
- * Evaluated at the RAW instant, like the hourly path, so within ~4h of a DST
- * switch it can pick the wrong side by an hour.
+ * `ring-clock.json` (or `RingClockState.historyJson()`) -> segments, or null
+ * when it cannot be read. A caller with no history must not guess: the sync
+ * skips and retries rather than date records with a made-up offset.
  */
-export function sleepClockOffsetMs(atMs: number): number {
-  return ringClockOffsetMs(atMs);
+export function parseRingClockSegments(json: string | null | undefined): RingClockSegments | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as { segments?: unknown };
+    const raw = parsed?.segments;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    const out: [number, number][] = [];
+    for (const pair of raw) {
+      if (!Array.isArray(pair) || pair.length !== 2) return null;
+      const from = Number(pair[0]);
+      const offset = Number(pair[1]);
+      if (!Number.isFinite(from) || !Number.isFinite(offset)) return null;
+      out.push([from, offset]);
+    }
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 /** `SleepRecord.recordState`: 2 is the empty end-of-list marker, not a night. */
@@ -229,7 +233,10 @@ export type RingSleepRecordLike = {
  * here so the known-good windows can be asserted through it. Returns null for
  * the RECSTATE=2 end-of-list marker.
  */
-export function sleepWireFromRing(record: RingSleepRecordLike): WireSleepRecord | null {
+export function sleepWireFromRing(
+  record: RingSleepRecordLike,
+  clock: RingClockSegments,
+): WireSleepRecord | null {
   if (Number(record.recordState) === SLEEP_STATE_EMPTY) return null;
   const segments: SleepSegment[] = [];
   const raw = record.segments;
@@ -244,7 +251,10 @@ export function sleepWireFromRing(record: RingSleepRecordLike): WireSleepRecord 
     kind: "sleep",
     startTs,
     endTs: Number(record.endTs),
-    clockCorrectionMs: sleepClockOffsetMs(startTs * 1000),
+    // The offset in force at the session's START, for both ends: the stage
+    // segments are ring-clock durations, and the slew never steps back in the
+    // quiet hours (RingProtocol.CLOCK_QUIET_*), so a night is not split.
+    clockCorrectionMs: ringClockOffsetSecAt(clock, startTs) * 1000,
     totalSec: Number(record.totalTime),
     wakeSec: Number(record.wakeTime),
     remSec: Number(record.remTime),
@@ -289,7 +299,7 @@ function convertHourly(record: WireHourlyRecord, result: ConversionResult): void
     return;
   }
   for (const group of record.groups) {
-    const startMs = record.anchorMs + group.hourIndex * HOUR_MS;
+    const startMs = group.startMs ?? record.anchorMs + group.hourIndex * HOUR_MS;
     result.samples.push({
       metric: record.metric,
       startMs,
@@ -344,7 +354,7 @@ function convertSteps(record: WireStepsRecord, result: ConversionResult): void {
   }
   const anchorMs = record.anchorMs;
   for (const bucket of record.buckets) {
-    const startMs = anchorMs + bucket.index * TEN_MINUTES_MS;
+    const startMs = bucket.startMs ?? anchorMs + bucket.index * TEN_MINUTES_MS;
     result.samples.push({
       metric: "steps",
       startMs,

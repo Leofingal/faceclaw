@@ -12,11 +12,16 @@ const assert = require("node:assert/strict");
 
 const {
   convertRecords,
-  ringClockOffsetMs,
-  sleepClockOffsetMs,
+  parseRingClockSegments,
+  ringClockOffsetSecAt,
+  ringSecToRealMs,
   sleepIdentityHolds,
   sleepWireFromRing,
 } = require("../.test-build/app/health/health-ingest.js");
+
+// The ring clock history the pre-2026-10-04 build implies in EDT: the ring
+// 4 h ahead of UTC from the start (that build wrote now + 14400).
+const EDT_LEGACY = [[0, 14400]];
 const {
   assembleNight,
   assembleNights,
@@ -60,8 +65,8 @@ function asRingRecord(row, startTs, endTs) {
 }
 
 /** Through the shipping path: Java-shaped record -> wire -> stored session. */
-function shipped(ringRecord) {
-  const wire = sleepWireFromRing(ringRecord);
+function shipped(ringRecord, clock = EDT_LEGACY) {
+  const wire = sleepWireFromRing(ringRecord, clock);
   const { sleep } = convertRecords([wire]);
   assert.equal(sleep.length, 1);
   return sleep[0];
@@ -74,10 +79,56 @@ test("this file really is running in EDT", () => {
   assert.equal(new Date(ROW_0913.startMs).getTimezoneOffset(), 240);
 });
 
-test("sleep takes the same clock correction as hourly samples: 1x, -4h in EDT", () => {
-  const at = ROW_0913.startMs;
-  assert.equal(sleepClockOffsetMs(at), ringClockOffsetMs(at));
-  assert.equal(sleepClockOffsetMs(at), 4 * HOUR_MS);
+test("sleep takes the same clock correction as hourly samples: 1x, -4h under the old EDT write", () => {
+  const ringSec = ROW_0913.startMs / 1000 + 4 * 3600;
+  const wire = sleepWireFromRing(asRingRecord(ROW_0913, ringSec, ringSec + 60), EDT_LEGACY);
+  assert.equal(wire.clockCorrectionMs, ringClockOffsetSecAt(EDT_LEGACY, ringSec) * 1000);
+  assert.equal(wire.clockCorrectionMs, 4 * HOUR_MS);
+});
+
+// ---------------------------------------------------------------------------
+// The slew history (2026-10-04)
+
+test("offset history: the segment in force when the ring stamped the time wins", () => {
+  // Seeded at +14400, then two 170 s steps written at ring 1791142095 and 1791144065.
+  const segs = [[0, 14400], [1791142095, 14230], [1791144065, 14060]];
+  assert.equal(ringClockOffsetSecAt(segs, 1791000000), 14400, "before the first write: the seed");
+  assert.equal(ringClockOffsetSecAt(segs, 1791142095), 14230, "at a write: the new offset");
+  assert.equal(ringClockOffsetSecAt(segs, 1791143000), 14230);
+  assert.equal(ringClockOffsetSecAt(segs, 1791200000), 14060);
+  assert.equal(ringClockOffsetSecAt(segs, 5), 14400, "an uptime stamp after a reset reads the seed");
+  assert.equal(ringClockOffsetSecAt([], 1791200000), 0, "no history: 0");
+  // Hand-computed: ring 1791143000 under +14230 is true 1791128770 s.
+  assert.equal(ringSecToRealMs(segs, 1791143000), 1791128770 * 1000);
+});
+
+test("offset history: done slewing is the identity", () => {
+  const segs = [[0, 14400], [1791200000, 0]];
+  assert.equal(ringSecToRealMs(segs, 1791300000), 1791300000 * 1000);
+});
+
+test("offset history parses the Java state file and refuses junk", () => {
+  const json = '{"v":1,"offsetSec":14230,"lastBackStepAtMs":1791127865000,"seed":"legacy-zone","seedOffsetSec":14400,"seededAtMs":1791127865000,"segments":[[0,14400],[1791142095,14230]]}';
+  assert.deepEqual(parseRingClockSegments(json), [[0, 14400], [1791142095, 14230]]);
+  assert.equal(parseRingClockSegments(""), null);
+  assert.equal(parseRingClockSegments("{}"), null);
+  assert.equal(parseRingClockSegments('{"segments":[[1,"x"]]}'), null);
+});
+
+test("the 10-03 nap, which the JS-zone correction stored 9 h late, lands at 12:15 PDT", () => {
+  // ring-sleep-receipts, 10-03 16:02:16 PDT page: startTs 1791080130, endTs 1791084120.
+  // The ring then sat at UTC+7 h: the 11:22 PDT connect after a reset wrote now + 25200
+  // (pages from 18:31Z on read +6.93 h). The stale JS zone (JST) stored it 9 h late
+  // instead, at 1791112530000 = 10-04 11:15:30Z.
+  const row = {
+    totalSec: 3180, wakeSec: 810, remSec: 690, lightSec: 1890, deepSec: 600,
+    segments: [{ stageId: 0, halfMinutes: 27 }, { stageId: 2, halfMinutes: 14 }, { stageId: 3, halfMinutes: 20 },
+               { stageId: 2, halfMinutes: 49 }, { stageId: 1, halfMinutes: 23 }],
+    endMs: 1791068536670,
+  };
+  const nap = shipped(asRingRecord(row, 1791080130, 1791084120), [[0, 25200]]);
+  assert.equal(new Date(nap.startMs).toISOString(), "2026-10-03T19:15:30.000Z");
+  assert.notEqual(nap.startMs, 1791112530000);
 });
 
 test("known-good, night of 09-12 -> 13: the 6h34m block is 02:35:08 -> 09:09:38", () => {

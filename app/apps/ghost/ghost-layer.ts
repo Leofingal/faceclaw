@@ -118,6 +118,15 @@ const AUTO_SEND_TICK_MS = 1000;
 const LISTEN_TIMEOUT_MS = 120_000;
 
 /**
+ * A scroll-up while listening (not adding) finishes the capture like a tap once
+ * the mic has been open this long, even before the recogniser reports text
+ * (2026-10-04; ghost-send-tap-lost return §5: the speech-bearing abandons were
+ * 9-15 s, the deliberate scroll-throughs mostly under 5 s and empty). Below it,
+ * with nothing heard, scroll-up still abandons.
+ */
+const SCROLL_COMMIT_AFTER_MS = 3_000;
+
+/**
  * A slow-rotating glyph, evaluated fresh at paint time rather than driven by
  * its own timer. Chris, 2026-09-01: wanted this — until now only shown while
  * actively dictating (paintMic, below) — on the ordinary feed screen's meta
@@ -249,6 +258,8 @@ export class GhostLayer implements Layer {
   private listenTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   /** Seconds left before the confirm screen sends itself. 0 = not counting. */
   private autoSendLeft = 0;
+  /** When the current "listening" began (Date.now()), for SCROLL_COMMIT_AFTER_MS. */
+  private listenStartedAtMs = 0;
 
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
@@ -639,22 +650,39 @@ export class GhostLayer implements Layer {
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
     // Any deliberate gesture ends a catch-up hold — see catchUpHoldUuid.
     this.catchUpHoldUuid = null;
+    const before = this.micStateLabel();
     switch (event.type) {
       case "scroll-up":
         this.step(-1);
-        return;
+        break;
       case "scroll-down":
         this.step(1);
-        return;
+        break;
       case "click":
         await this.tap();
-        return;
+        break;
       case "double-click":
         this.back();
-        return;
+        break;
       default:
-        return;
+        break;
     }
+    // 2026-10-04 (ghost-send-tap-lost return §5): every gesture that lands
+    // while a dictation is live or waiting goes into the capture receipts,
+    // with the raw event the glasses sent and what it did to the mic. The
+    // next "my tap became a scroll" is then one grep, not an inference.
+    const after = this.micStateLabel();
+    if (before !== "idle" || after !== "idle") {
+      voiceControlBridge.noteCaptureOutcome(
+        `input ${event.type}`,
+        `ghost ${before}->${after} raw ${voiceControlBridge.lastRawInput()}`,
+      );
+    }
+  }
+
+  /** The mic state for the input receipts: "listening+adding" for a refine's capture. */
+  private micStateLabel(): string {
+    return this.micState + (this.addingToRaw && this.micState === "listening" ? "+adding" : "");
   }
 
   /** Text from the phone keyboard or the shell's voice input: send it as a reply. */
@@ -679,6 +707,37 @@ export class GhostLayer implements Layer {
       this.resetMic();
       this.requestRender();
       return;
+    }
+    // 2026-10-04, two fixes from the 09-30 lost sends (ghost-send-tap-lost
+    // return §5). The glasses' touchpad reports some end-of-dictation taps as
+    // scrolls, and a scroll-up while listening threw the dictation away.
+    if (delta < 0 && this.micState === "listening" && this.onMicSurface()) {
+      // "Adding...": scroll-up cancels only the addition and puts the
+      // original text back on the confirm screen, as a refine whose addition
+      // never transcribed already does (armTranscriptTimeout). Until now it
+      // discarded the original too (22:12 on 09-30).
+      if (this.addingToRaw) {
+        voiceControlBridge.noteCaptureOutcome("addition-cancelled", "ghost");
+        this.abortCapture();
+        this.heard = this.renderCaptured();
+        this.enterConfirming();
+        this.requestRender();
+        return;
+      }
+      // Speech was heard (the recogniser committed a segment: on-device
+      // Parakeet decodes at each pause, so this is "after speech ends"), or
+      // the mic has been open SCROLL_COMMIT_AFTER_MS: scroll-up finishes
+      // listening like a tap, so the text lands on the confirm screen (where
+      // scroll-up or double-tap still cancels, and an empty result sends
+      // nothing). A deliberate abandon now takes two gestures; a misread tap
+      // sends as meant. Every abandon with speech in it was 9-15 s long, the
+      // deliberate scroll-throughs mostly under 5 s and empty (return §5).
+      // A quick scroll through the mic slot still abandons (below).
+      if (this.interim.trim() || Date.now() - this.listenStartedAtMs >= SCROLL_COMMIT_AFTER_MS) {
+        voiceControlBridge.noteCaptureOutcome("scroll-commit", "ghost");
+        this.commitCapture();
+        return;
+      }
     }
     if (this.inApproval) {
       this.approvalStep(delta);
@@ -1026,6 +1085,7 @@ export class GhostLayer implements Layer {
     this.interim = "";
     this.micStatus = "";
     this.micState = "listening";
+    this.listenStartedAtMs = Date.now();
     if (!this.capturing) {
       this.capturing = true;
       // endpointing false: this is push-to-talk with a committing tap, which

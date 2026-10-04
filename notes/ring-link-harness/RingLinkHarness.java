@@ -91,6 +91,12 @@ public final class RingLinkHarness {
         // 2026-09-25 evening: no timed ring pull while the glasses mic runs.
         if ("onDemandMicSessionTicks".contains(only)) onDemandMicSessionTicks();
         if ("directMicSessionTicks".contains(only)) directMicSessionTicks();
+        // 2026-10-04: the ring clock slewed to Even's scheme; ringBoot dated; RSSI per pull.
+        if ("ringClockSlewFromHome".contains(only)) ringClockSlewFromHome();
+        if ("ringClockForwardFromJapan".contains(only)) ringClockForwardFromJapan();
+        if ("ringClockResumeAfterRestart".contains(only)) ringClockResumeAfterRestart();
+        if ("ringClockUnansweredWrite".contains(only)) ringClockUnansweredWrite();
+        if ("ringBootDatedAndRssi".contains(only)) ringBootDatedAndRssi();
 
         System.out.println();
         if (failures == 0) {
@@ -930,6 +936,272 @@ public final class RingLinkHarness {
             expect(n + ": the finished-pull count moved by exactly one",
                 rig.pullsFinished() == finishedBefore + 1);
             expect(n + ": the communicator says it is on demand", rig.isOnDemand());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The ring clock (2026-10-04)
+    // ------------------------------------------------------------------
+
+    /** Virtual wall clock for the clock write, when the build has the seam. */
+    static final long[] WALL = {0L};
+
+    /**
+     * Point the communicator's clock-write wall time at {@link #WALL}. False on
+     * a build without the seam (the base): its writes then use the real clock,
+     * and the harness measures them against the real clock instead.
+     */
+    static boolean useVirtualWall(long startMs) {
+        WALL[0] = startMs;
+        try {
+            Field f = FaceclawBleCommunicator.class.getDeclaredField("ringClockWallMs");
+            f.setAccessible(true);
+            f.set(null, (java.util.function.LongSupplier) () -> WALL[0]);
+            return true;
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    static void restoreWall() {
+        try {
+            Field f = FaceclawBleCommunicator.class.getDeclaredField("ringClockWallMs");
+            f.setAccessible(true);
+            f.set(null, (java.util.function.LongSupplier) System::currentTimeMillis);
+        } catch (ReflectiveOperationException ignored) {
+            // the base has no seam
+        }
+    }
+
+    /**
+     * The ring's offset from true UTC after each 00:0E the fake ring received
+     * since {@code from}: the u32 minus the wall time the build used (virtual
+     * when it has the seam, else the real time the frame arrived).
+     */
+    static List<long[]> clockOffsetsSince(int from, boolean virtual) {
+        List<long[]> out = new ArrayList<>();
+        synchronized (FaceclawBleManager.clockWrites) {
+            for (int i = from; i < FaceclawBleManager.clockWrites.size(); i++) {
+                long[] w = FaceclawBleManager.clockWrites.get(i);
+                if (w[0] != 0x0E) continue;
+                long wallSec = virtual ? Math.floorDiv(WALL[0], 1000L) : Math.floorDiv(w[3], 1000L);
+                out.add(new long[] {w[1], w[1] - wallSec});
+            }
+        }
+        return out;
+    }
+
+    /** The zone minutes in the 00:05 frames received since {@code from}. */
+    static List<Long> anchorZonesSince(int from) {
+        List<Long> out = new ArrayList<>();
+        synchronized (FaceclawBleManager.clockWrites) {
+            for (int i = from; i < FaceclawBleManager.clockWrites.size(); i++) {
+                long[] w = FaceclawBleManager.clockWrites.get(i);
+                if (w[0] == 0x05) out.add(w[2]);
+            }
+        }
+        return out;
+    }
+
+    /** One Health-open connect at virtual wall + 30 min; returns the ring offset it wrote, or null. */
+    static Long clockConnect(Rig rig, String n, boolean virtual) throws Exception {
+        int before = FaceclawBleManager.clockWrites.size();
+        WALL[0] += 30L * 60_000L;
+        SystemClock.advance(6L * 60_000L);
+        pullCycle(rig, n, "health-open");
+        List<long[]> writes = clockOffsetsSince(before, virtual);
+        return writes.isEmpty() ? null : writes.get(writes.size() - 1)[1];
+    }
+
+    /**
+     * The instruction's known-good, home case: the ring starts at UTC + 4 h
+     * (what 062fb8a writes in EDT, and where the ring sat on 10-04). Each
+     * connect's write must step back by at most 170 s, and the slew must reach
+     * plain UTC. Starts 11:01:05 EDT so the first write meets the hour edge.
+     * Hand-computed first write, 11:31:05 EDT = 1791127865: 1791127865 + 14230.
+     */
+    static void ringClockSlewFromHome() throws Exception {
+        section("ring clock: from UTC+4 h (home) to UTC, at most 170 s back per connect");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        // 30 min before 11:31:05 EDT; clockConnect adds 30 min before each connect.
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            // The fake ring's write list is shared by every scenario in the run.
+            int start = FaceclawBleManager.clockWrites.size();
+            Long first = clockConnect(rig, "clock 1", virtual);
+            long firstWrite = clockOffsetsSince(start, virtual).isEmpty() ? -1L
+                : clockOffsetsSince(start, virtual).get(0)[0];
+            System.out.println("  connect 1 wrote " + firstWrite + " (offset " + first + " s"
+                + (virtual ? "" : ", measured against the real clock") + ")");
+            expect("connect 1 writes 1791127865 + 14230 = 1791142095 (hand-computed), not now + 14400",
+                virtual && firstWrite == 1791142095L);
+            long prev = first == null ? Long.MIN_VALUE : first;
+            boolean small = prev == 14230L;
+            int connects = 1;
+            int stalled = 0;
+            StringBuilder trace = new StringBuilder("  offsets: " + prev);
+            while (prev > 0 && connects < 200 && stalled < 30) {
+                Long next = clockConnect(rig, "clock " + (connects + 1), virtual);
+                connects++;
+                if (next == null) {
+                    small = false;
+                    break;
+                }
+                long step = next - prev;
+                if (step < -170L || step > 0L) small = false;
+                if (!small) break;
+                stalled = step == 0L ? stalled + 1 : 0;
+                // Quiet hours (22:00-08:00, 20 connects) leave the offset where it is.
+                if (step != 0L) trace.append(' ').append(next);
+                prev = next;
+            }
+            System.out.println(trace);
+            System.out.println("  " + connects + " connects (one per 30 min of virtual wall time)");
+            expect("every write stepped back 0..170 s (" + connects + " connects)", small);
+            expect("the slew reached plain UTC (offset 0)", prev == 0L);
+            List<String> clockLines = rig.receipts("\"type\":\"ringClock\"");
+            expect("one ringClock receipt per connect: " + clockLines.size(), clockLines.size() == connects);
+            expect("the first receipt says the state was seeded from the old EDT value",
+                !clockLines.isEmpty() && clockLines.get(0).contains("\"note\":\"seeded legacy-zone 14400\""));
+            expect("the last receipt shows gap 0",
+                !clockLines.isEmpty() && clockLines.get(clockLines.size() - 1).contains("\"gapSec\":0,"));
+            List<Long> zones = anchorZonesSince(start);
+            expect("every 00:05 carries EDT, -240 (Even's 10 ff)", !zones.isEmpty() && zones.stream().allMatch(z -> z == -240L));
+            rig.close();
+        } finally {
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * The Japan state, UTC - 9 h: the move to Even's value is FORWARD, so one
+     * write does it. On 062fb8a the write is now - 32400 and 00:05 says -240.
+     */
+    static void ringClockForwardFromJapan() throws Exception {
+        section("ring clock: from UTC-9 h (JST) to UTC in one forward write");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+        boolean virtual = useVirtualWall(1791127865000L);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            int before = FaceclawBleManager.clockWrites.size();
+            Long first = clockConnect(rig, "jst 1", virtual);
+            Long second = clockConnect(rig, "jst 2", virtual);
+            System.out.println("  JST writes: offsets " + first + ", " + second + " s");
+            expect("the first JST connect writes plain UTC (offset 0)", first != null && first == 0L);
+            expect("and stays there", second != null && second == 0L);
+            List<Long> zones = anchorZonesSince(before);
+            System.out.println("  00:05 zones: " + zones);
+            expect("00:05 carries the real zone, +540", !zones.isEmpty() && zones.stream().allMatch(z -> z == 540L));
+            List<String> lines = rig.receipts("\"type\":\"ringClock\"");
+            expect("the receipt says forward, from -32400",
+                !lines.isEmpty() && lines.get(0).contains("\"prevGapSec\":-32400") && lines.get(0).contains("\"limit\":\"forward\""));
+            rig.close();
+        } finally {
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /** An app restart mid-slew resumes from the saved offset, not from the seed. */
+    static void ringClockResumeAfterRestart() throws Exception {
+        section("ring clock: a restart mid-slew resumes where it was");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            Long a = clockConnect(rig, "pre 1", virtual);
+            Long b = clockConnect(rig, "pre 2", virtual);
+            rig.close();
+            Rig again = new Rig(true, RING, rig.files);
+            again.glassesConnect();
+            Long c = clockConnect(again, "post 1", virtual);
+            System.out.println("  offsets " + a + ", " + b + " | restart | " + c);
+            expect("before the restart: 14230 then 14060", a != null && a == 14230L && b != null && b == 14060L);
+            expect("after it: 13890, not the seed again", c != null && c == 13890L);
+            again.close();
+        } finally {
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * The ring leaves one 00:0E unanswered: that write is receipted but not
+     * committed, so the next step starts from the last ANSWERED offset and is
+     * at most 170 s back from either value the ring may hold.
+     */
+    static void ringClockUnansweredWrite() throws Exception {
+        section("ring clock: an unanswered 00:0E is not a base");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            Long a = clockConnect(rig, "answered", virtual);
+            FaceclawBleManager.silentClockSet = true;
+            Long b;
+            try {
+                b = clockConnect(rig, "silent", virtual);
+            } finally {
+                FaceclawBleManager.silentClockSet = false;
+            }
+            Long c = clockConnect(rig, "answered again", virtual);
+            System.out.println("  offsets " + a + ", " + b + " (no RSP), " + c);
+            expect("answered 14230; the silent one wrote 14060; the next writes 14060 again",
+                a != null && a == 14230L && b != null && b == 14060L && c != null && c == 14060L);
+            List<String> lines = rig.receipts("\"type\":\"ringClock\"");
+            expect("the silent write's receipt says rsp false, committed false",
+                lines.size() >= 2 && lines.get(1).contains("\"rsp\":false,\"committed\":false"));
+            rig.close();
+        } finally {
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * A ring reset seen on a connect: the ringBoot line waits for the first
+     * page and is dated from its trailer; the pull line carries the RSSI.
+     */
+    static void ringBootDatedAndRssi() throws Exception {
+        section("ringBoot dated from the page trailer; RSSI in the pull line");
+        FaceclawBleManager.pagesPerHealthRequest = 1;
+        FaceclawBleManager.pageTrailerSec = 1174L;
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            FaceclawBleManager.bootHelloOnNextConnect = true;
+            SystemClock.advance(61_000L);
+            pullCycle(rig, "boot", "health-open");
+            List<String> boots = rig.receipts("\"type\":\"ringBoot\"");
+            String boot = boots.isEmpty() ? "(none)" : boots.get(0);
+            System.out.println("  " + boot);
+            expect("one ringBoot line", boots.size() == 1);
+            long clockSet = RingProtocol.jsonLongField(boot, "clockSetMs", -1L);
+            long bootAt = RingProtocol.jsonLongField(boot, "bootAtMs", -1L);
+            expect("it carries trailerSec 1174 and bootAtMs = clockSetMs - 1174000",
+                boot.contains("\"trailerSec\":1174") && clockSet > 0 && bootAt == clockSet - 1_174_000L);
+            List<String> pulls = rig.receipts("\"type\":\"pull\"");
+            expect("the pull line carries rssi -67", lastContains(pulls, "\"rssi\":-67,"));
+            FaceclawBleManager.rssiDbm = null;
+            SystemClock.advance(61_000L);
+            pullCycle(rig, "no rssi", "health-open");
+            expect("an unanswered RSSI read is null", lastContains(rig.receipts("\"type\":\"pull\""), "\"rssi\":null,"));
+            rig.close();
+        } finally {
+            FaceclawBleManager.pagesPerHealthRequest = 0;
+            FaceclawBleManager.pageTrailerSec = -1L;
+            FaceclawBleManager.bootHelloOnNextConnect = false;
+            FaceclawBleManager.rssiDbm = -67;
         }
     }
 

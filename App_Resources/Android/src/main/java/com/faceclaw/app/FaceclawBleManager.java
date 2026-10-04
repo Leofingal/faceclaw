@@ -50,6 +50,9 @@ public class FaceclawBleManager {
     private final ConcurrentHashMap<String, CountDownLatch> writeLatches = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Integer> writeStatuses = new ConcurrentHashMap<>();
 
+    private final ConcurrentHashMap<String, CountDownLatch> rssiLatches = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> rssiValues = new ConcurrentHashMap<>();
+
     private volatile FaceclawBleListener listener;
 
     // Process-wide outbound-traffic totals, sampled by the phone UI's BLE
@@ -200,6 +203,37 @@ public class FaceclawBleManager {
             Integer status = mtuStatuses.remove(address);
             mtuLatches.remove(address);
             return status != null && status == BluetoothGatt.GATT_SUCCESS;
+        }
+    }
+
+    /**
+     * The link's received signal strength in dBm, or null when there is no
+     * client, the read could not start, failed, or did not answer within
+     * {@code timeoutMs} (2026-10-04, for the ring pull receipts).
+     */
+    public Integer readRemoteRssi(String address, int timeoutMs) {
+        synchronized (gattLock(address)) {
+            BluetoothGatt gatt = gattClients.get(address);
+            if (gatt == null) {
+                return null;
+            }
+            CountDownLatch latch = new CountDownLatch(1);
+            rssiLatches.put(address, latch);
+            rssiValues.remove(address);
+            boolean started;
+            try {
+                started = gatt.readRemoteRssi();
+            } catch (RuntimeException e) {
+                started = false;
+            }
+            if (!started) {
+                rssiLatches.remove(address);
+                return null;
+            }
+            boolean answered = awaitLatch(latch, timeoutMs);
+            rssiLatches.remove(address);
+            Integer value = rssiValues.remove(address);
+            return answered ? value : null;
         }
     }
 
@@ -481,6 +515,18 @@ public class FaceclawBleManager {
             String address = gatt.getDevice().getAddress();
             mtuStatuses.put(address, status);
             CountDownLatch latch = mtuLatches.remove(address);
+            if (latch != null) {
+                latch.countDown();
+            }
+        }
+
+        @Override
+        public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
+            String address = gatt.getDevice().getAddress();
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                rssiValues.put(address, rssi);
+            }
+            CountDownLatch latch = rssiLatches.remove(address);
             if (latch != null) {
                 latch.countDown();
             }

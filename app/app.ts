@@ -11,9 +11,26 @@ import { resyncSystemAppearance } from './native/system-appearance'
 import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
 import { startStatusLineRefresh } from './apps/status-refresh'
 import { startLogUpload } from './util/log-upload'
+import { Utils } from '@nativescript/core'
+
+declare const com: any
+
+function recordProcessStart(): void {
+  try {
+    com.faceclaw.app.FaceclawProcessStart.record(Utils.android.getApplicationContext())
+  } catch (error) {
+    console.warn('process start record failed', error)
+  }
+}
 
 installNativeUserAgent()
 registerShareIntentHandler()
+
+// One processStart line per app process in files/health/glasses-link.jsonl
+// (2026-10-04): Android's own start reason (launcher, boot, a service, a
+// broadcast) and the previous process's exit, so a restart can be explained
+// from the box without adb. Java side: FaceclawProcessStart.java.
+recordProcessStart()
 
 // Ring health records live only in the communicator's memory until something
 // stores them. Both health surfaces store on open, but a pull that lands while

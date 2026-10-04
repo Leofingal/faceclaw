@@ -162,6 +162,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * night can be read from the box (the uploader mirrors files/health/).
      */
     private static final String GLASSES_STATE_RECEIPTS_FILE = "glasses-state.jsonl";
+    /**
+     * The glasses-link journal (2026-10-04), files/health/glasses-link.jsonl:
+     * one line per link state change, and the process start line
+     * (FaceclawProcessStart). Uploaded with the rest of files/health.
+     */
+    static final String GLASSES_LINK_FILE = "glasses-link.jsonl";
+    private static final long GLASSES_LINK_MAX_BYTES = 4L * 1024L * 1024L;
+    /** Repeats of the same attempt/failure line inside this window are counted, not written. */
+    private static final long GLASSES_LINK_REPEAT_GAP_MS = 60_000L;
     /** Hard stop on the glasses-state receipt. A line is ~200 bytes; a day is a few hundred. */
     private static final long GLASSES_STATE_RECEIPTS_MAX_BYTES = 4L * 1024L * 1024L;
     /** Raw wear frames written per communicator, in case some firmware floods them. */
@@ -218,6 +227,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean ringHealthRspSeen;
     /** Set by any DEVICE-channel RSP; see sendRingDeviceFrameAwaitRsp. Guarded by lock. */
     private boolean ringDeviceRspSeen;
+    /** The glasses-link journal's repeat folding: last folded key, when written, how many folded since. Guarded by lock. */
+    private String glassesLinkLastKey;
+    private long glassesLinkLastAtMs;
+    private int glassesLinkSuppressed;
+    /** The exception text of the connect attempt that just failed, for its journal line. Worker thread. */
+    private String glassesLinkConnectError;
+    /** Whether the last sendRingDeviceFrameAwaitRsp got its RSP. Worker thread only. */
+    private boolean ringLastDeviceFrameAnswered;
+    /**
+     * Wall time of this link's 00:0E clock write, 0 = none yet on this link.
+     * Dates a ringBoot (bootAtMs = this - page trailer). Guarded by lock.
+     */
+    private long ringClockSetWallMs;
+    /**
+     * A ringBoot seen on this link whose line waits for the first page's
+     * trailer to date it: {wallMs, linkAgeMs, prevPushSeq}, or null. Guarded by lock.
+     */
+    private long[] ringPendingBoot;
+    /**
+     * Wall clock for the ring clock write only. Harness seam (the ring-link
+     * harness moves it to walk a 4 h slew through 85 connects); the app never
+     * changes it.
+     */
+    static volatile java.util.function.LongSupplier ringClockWallMs = System::currentTimeMillis;
     /**
      * True from a completed handshake until the next pull starts: that pull sends
      * Even's connect-time device REQs (incl. 00:04). A pull on a held link keeps
@@ -603,6 +636,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             workerThread = new Thread(this, "FaceclawBleCommunicator");
             workerThread.start();
         }
+        noteGlassesLink("start", null, ringLinkOnDemand ? "ring on demand" : null);
     }
 
     public void disconnect() {
@@ -621,6 +655,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             audioPacketListener = null;
             threadToJoin = workerThread;
         }
+        noteGlassesLink("disconnect", null, "disconnect() called");
         setStateDisplay("disconnecting", "Disconnecting...");
         interruptibleSleep.interrupt();
         if (threadToJoin != null) {
@@ -1591,6 +1626,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     @Override public void run() {
         logLine(String.format(Locale.US, "communicator start R=%s L=%s ring=%s%s", rightAddress, leftAddress,
             ringAddress, ringLinkOnDemand ? " (on demand)" : ""));
+        noteGlassesLink("workerStart", null, null);
         while (true) {
             try {
                 if (!running) {
@@ -1628,10 +1664,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
             } catch (Throwable t) {
                 logLine("communicator loop error: " + safeMessage(t));
+                noteGlassesLink("loopError", null, t.getClass().getSimpleName() + ": " + safeMessage(t));
                 handleTransportFailure("loop error");
             }
         }
         logLine("communicator stop");
+        noteGlassesLink("workerStop", null, null);
     }
 
     /**
@@ -1986,6 +2024,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         long arrivalWallMs = System.currentTimeMillis();
+        boolean bootWaitsForTrailer;
+        synchronized (lock) {
+            bootWaitsForTrailer = ringPendingBoot != null;
+        }
+        if (bootWaitsForTrailer) {
+            flushPendingRingBoot(RingProtocol.pageTrailerSeconds(frame));
+        }
         RingProtocol.HealthRecord record = null;
         try {
             record = RingProtocol.decode(frame, arrivalWallMs);
@@ -2232,7 +2277,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("ring BOOT signature: 00:08 push seq 00, previous push seq "
             + (prevPushSeq >= 0 ? Integer.toHexString(prevPushSeq) : "none") + ", link age "
             + (linkAgeMs >= 0 ? linkAgeMs + "ms" : "unknown"));
-        appendSleepReceipt(RingProtocol.ringBootReceiptLine(System.currentTimeMillis(), linkAgeMs, prevPushSeq));
+        // 2026-10-04: the line now waits for this link's first health page, whose
+        // trailer dates the reset (bootAtMs). Flushed undated if no page comes:
+        // at the end of the connect, or at the start of the next one.
+        flushPendingRingBoot(-1L);
+        synchronized (lock) {
+            ringPendingBoot = new long[] {System.currentTimeMillis(), linkAgeMs, prevPushSeq};
+        }
     }
 
     private void handleRenderNotification(String address, byte[] data) {
@@ -2275,6 +2326,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // link; the sequence counter restarts on the next connect.
                     ringReassembler.reset();
                     clearRingOutboundLocked("link dropped");
+                    // A ringBoot still waiting for a page trailer goes out undated.
+                    flushPendingRingBoot(-1L);
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
                 return;
@@ -2302,6 +2355,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
         interruptibleSleep.interrupt();
+        noteGlassesLink(connected ? "armUp" : "armLost", armLabel(address), null);
         if (connected) {
             setStateDisplay("connected", "Connected.");
         } else if (!reconnectHalted) {
@@ -2313,6 +2367,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void connectLoopOnce() throws InterruptedException {
         setStateDisplay("connecting", "Connecting to the glasses...");
+        noteGlassesLink("attempt", null, null);
         try {
             connectArm(rightAddress, true);
             connectArm(leftAddress, true);
@@ -2361,6 +2416,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             setStateDisplay("connected", "Connected.");
             logLine("session ready");
+            noteGlassesLink("ready", null, null);
             synchronized (lock) {
                 // Query settings promptly on the first session so firmware
                 // version/capabilities (and battery) arrive without waiting for
@@ -2377,6 +2433,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             tryConnectRing("initial");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
+            glassesLinkConnectError = safeMessage(t);
             String unpairedArm = firstUnpairedArm();
             if (unpairedArm != null) {
                 handleUnpairedFailure(unpairedArm);
@@ -2404,6 +2461,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
             throw new IllegalStateException("connect failed: " + address);
         }
+        noteGlassesLink("armConnected", armLabel(address), null);
         // requestConnectionPriority has no callback in this Android compile target, so there is
         // no reliable completion point to keep it in the global GATT operation pipeline. But it's
         // important enough for performance that we call it anyways.
@@ -2529,6 +2587,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void connectRing() {
         logLine("connecting direct ring " + ringAddress);
+        // A ringBoot held from an earlier link that never saw a page goes out
+        // undated now; this link's clock write is not the one that dates it.
+        flushPendingRingBoot(-1L);
+        synchronized (lock) {
+            ringClockSetWallMs = 0L;
+        }
         // autoConnect=true (see FaceclawBleManager.connect's 3-arg overload) -
         // matches what Even's own app does for this device specifically.
         // Direct connect (false, the default used for the glasses) was
@@ -2861,6 +2925,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             runRingHealthPullAccounted(trigger);
         } finally {
             ringHealthPullsFinished++;
+            // The pull's first page dated any ringBoot; one with no page goes out undated.
+            flushPendingRingBoot(-1L);
         }
     }
 
@@ -3003,6 +3069,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringReconnectAfterMs = now + ConnectionOptions.RING_RECONNECT_DELAY_MS;
         }
         logLine("ring link on demand: nothing waiting on ring data, dropping the direct ring link");
+        flushPendingRingBoot(-1L);
         bleManager.disconnect(ringAddress);
         // THE 2026-09-23 BUG, fixed here. bleManager.disconnect() is
         // gatt.disconnect() then gatt.close(), and a closed GATT gets no more
@@ -3164,15 +3231,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // ⚠ PAIRED with `ringClockOffsetMs()` in `app/health/health-live.ts`,
         // which subtracts the same quantity on the way back out. These two must
         // move together; both now compute the value rather than hardcoding EDT.
-        long nowMs = System.currentTimeMillis();
-        long clockOffsetSeconds = -TimeZone.getDefault().getOffset(nowMs) / 1000L;
-        long liveClockSeconds = (nowMs / 1000L) + clockOffsetSeconds;
-        // Asserted at every handshake: in EDT this must read 14400. The clock write
-        // is the part of this protocol that took two sessions to get working, so a
-        // changed value here is the one way a working pull silently breaks.
-        Log.i(TAG, "ring handshake clock offset seconds = " + clockOffsetSeconds
-                + " (tz " + TimeZone.getDefault().getID() + ")");
-        byte[] clock = le32(liveClockSeconds);
+        //
+        // ⚠⚠ SUPERSEDED 2026-10-04: everything above about the VALUE. The sign
+        // was inverted (UTC+4 h in EDT, UTC-9 h in JST: the mirror of local
+        // time), and Even writes plain UTC plus the real zone (sequence-match
+        // return §3.3). Flying east moved the ring's clock 13 h back and it
+        // dropped every record not newer than its last. The ring now heads for
+        // Even's value by RingProtocol.planClockWrite: at most 170 s back per
+        // connect (a >= 180 s backward jump resets the sleep engine, >= 3600 s
+        // formats the health store), forward in one write. Where it is between
+        // connects lives in files/health/ring-clock.json (RingClockState); the
+        // JS store sync reads the same file to undo the offset, so the two
+        // sides can no longer drift apart. Every write leaves a ringClock
+        // receipt: value written, target, remaining gap.
+        long nowMs = ringClockWallMs.getAsLong();
+        java.io.File healthDir = new java.io.File(appContext.getFilesDir(), "health");
+        RingClockState clockState = RingClockState.load(healthDir, nowMs);
+        int tzMinutes = RingClockState.zoneMinutesEast(nowMs);
+        RingProtocol.ClockPlan clockPlan = RingProtocol.planClockWrite(nowMs, tzMinutes,
+            clockState.offsetSec, clockState.lastBackStepAtMs);
+        long liveClockSeconds = clockPlan.writtenSec;
+        Log.i(TAG, "ring handshake clock: offset " + clockPlan.prevOffsetSec + " -> " + clockPlan.offsetSec
+                + " s (" + clockPlan.limit + "), tz " + tzMinutes + " min (" + TimeZone.getDefault().getID() + ")");
 
         // 2026-09-14 (sleep lobe, even-sequence-match): order, repetition and
         // pacing copied from a complete Even connect - bazzite-desktop
@@ -3197,7 +3277,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         long clockSeconds = liveClockSeconds;
         int[] handshake = {0x08, 0x0e, 0x05, 0x01, 0x05, 0x0a, 0x0a};
         for (int cmdLo : handshake) {
-            if (!sendRingDeviceFrameAwaitRsp(cmdLo, clockSeconds, "handshake")) {
+            boolean written = sendRingDeviceFrameAwaitRsp(cmdLo, clockSeconds, tzMinutes, "handshake");
+            if (cmdLo == 0x0e) {
+                noteRingClockWrite(healthDir, clockPlan, clockState, written, ringLastDeviceFrameAnswered);
+            }
+            if (!written) {
                 return;
             }
         }
@@ -3215,6 +3299,56 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringPullFollowsHandshake = true;
         }
         logLine("ring health: sent device-channel handshake (8 frames, Even br4l order)");
+    }
+
+    /**
+     * After this connect's 00:0E: commit the new clock offset only if the ring
+     * answered (an unanswered write may or may not have landed, and the next
+     * backward step must start from a value the ring certainly holds or is
+     * ahead of), stamp the link's clock-set time for ringBoot dating, and leave
+     * the ringClock receipt either way.
+     */
+    private void noteRingClockWrite(java.io.File healthDir, RingProtocol.ClockPlan plan, RingClockState before,
+            boolean written, boolean answered) {
+        long wallMs = System.currentTimeMillis();
+        boolean committed = false;
+        if (written && answered) {
+            try {
+                RingClockState.commit(healthDir, plan, ringClockWallMs.getAsLong());
+                committed = true;
+            } catch (RuntimeException e) {
+                logLine("ring clock: commit failed: " + safeMessage(e));
+            }
+        }
+        if (written) {
+            synchronized (lock) {
+                ringClockSetWallMs = wallMs;
+            }
+        }
+        String note = before.seededNow ? "seeded " + before.seed + " " + before.seedOffsetSec : null;
+        appendSleepReceipt(RingProtocol.ringClockReceiptLine(wallMs, plan, written, answered, committed, note));
+        logLine("ring clock write " + plan.writtenSec + " target " + plan.nowSec + " gap " + plan.offsetSec
+            + " s (step " + plan.stepSec() + ", " + plan.limit + ")" + (committed ? "" : " NOT committed"));
+    }
+
+    /**
+     * Write a held ringBoot line, dated when a page trailer is in hand
+     * ({@code trailerSec} >= 0) and this link wrote the clock. Any thread.
+     */
+    private void flushPendingRingBoot(long trailerSec) {
+        long[] boot;
+        long clockSetMs;
+        synchronized (lock) {
+            boot = ringPendingBoot;
+            ringPendingBoot = null;
+            clockSetMs = ringClockSetWallMs;
+        }
+        if (boot == null) {
+            return;
+        }
+        long setMs = clockSetMs >= boot[0] ? clockSetMs : 0L;
+        appendSleepReceipt(RingProtocol.ringBootReceiptLine(boot[0], boot[1], (int) boot[2], setMs,
+            setMs > 0 ? trailerSec : -1L));
     }
 
     /**
@@ -3420,6 +3554,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             evenInterleave = ringPullFollowsHandshake;
             ringPullFollowsHandshake = false;
         }
+        // 2026-10-04: the link's signal strength, once per pull, into its
+        // receipt. Japan's failed pulls clustered in conference hours; this
+        // makes "weak link" a number. Null when Android does not answer.
+        Integer rssiDbm = readRingRssi();
         for (int i = 0; i < commands.length; i++) {
             int command = commands[i];
             byte[] frame;
@@ -3440,7 +3578,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     + " (" + i + " of " + commands.length + " types attempted, "
                     + rspCount + " answered)");
                 appendSleepReceipt(RingProtocol.pullAbortedReceiptLine(pullStartedWallMs,
-                    System.currentTimeMillis(), trigger, "write", command, i, rspCount, evenInterleave));
+                    System.currentTimeMillis(), trigger, "write", command, i, rspCount, evenInterleave, rssiDbm));
                 return false;
             }
 
@@ -3469,7 +3607,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 appendSleepReceipt(RingProtocol.sleepPullReceiptLine(
                     requestedWallMs, System.currentTimeMillis(), answered, pages, otherPages, evenInterleave,
-                    trigger));
+                    trigger, rssiDbm));
             }
 
             // Even's device-channel REQs after each health type (br4l pkts
@@ -3510,12 +3648,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + (stillConnected ? "the ring answered none of them" : "the link dropped"));
             appendSleepReceipt(RingProtocol.pullAbortedReceiptLine(pullStartedWallMs,
                 System.currentTimeMillis(), trigger, stillConnected ? "silent" : "link", -1,
-                commands.length, rspCount, evenInterleave));
+                commands.length, rspCount, evenInterleave, rssiDbm));
             return false;
         }
         logLine("ring health: requested " + commands.length + " record types, "
             + rspCount + " answered" + (evenInterleave ? " (Even connect device REQs)" : " (held-link pings)"));
         return true;
+    }
+
+    /** The ring link's RSSI in dBm, or null. Worker thread; waits at most 1 s. Never throws. */
+    private Integer readRingRssi() {
+        try {
+            return bleManager.readRemoteRssi(ringAddress, 1000);
+        } catch (RuntimeException e) {
+            logLine("ring rssi read failed: " + safeMessage(e));
+            return null;
+        }
     }
 
     /** Block (worker thread) until the health RSP flag is set or the timeout
@@ -3610,7 +3758,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * missing RSP is logged and the sequence moves on.
      */
     private boolean sendRingDeviceFrameAwaitRsp(int cmdLo, long clockSeconds, String what) {
+        return sendRingDeviceFrameAwaitRsp(cmdLo, clockSeconds, RingClockState.zoneMinutesEast(
+            System.currentTimeMillis()), what);
+    }
+
+    /** As above; {@code tzMinutes} (minutes east of UTC) goes into 00:05. */
+    private boolean sendRingDeviceFrameAwaitRsp(int cmdLo, long clockSeconds, int tzMinutes, String what) {
         byte[] frame;
+        ringLastDeviceFrameAnswered = false;
         synchronized (lock) {
             ringDeviceRspSeen = false;
             int seq = nextRingSeqLocked();
@@ -3619,7 +3774,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             } else if (cmdLo == 0x0e) {
                 frame = RingProtocol.buildClockSet(seq, nextRingNonceLocked(), clockSeconds);
             } else if (cmdLo == 0x05) {
-                frame = RingProtocol.buildDayAnchorWrite(seq, nextRingNonceLocked(), clockSeconds);
+                frame = RingProtocol.buildDayAnchorWrite(seq, nextRingNonceLocked(), clockSeconds, tzMinutes);
             } else {
                 frame = RingProtocol.buildDeviceRequest(cmdLo, seq, nextRingNonceLocked());
             }
@@ -3630,6 +3785,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return false;
         }
         boolean rsp = awaitRingDeviceRsp(RING_DEVICE_RSP_TIMEOUT_MS);
+        ringLastDeviceFrameAnswered = rsp;
         logLine("ring " + label + " " + RingProtocol.hex(frame) + (rsp
             ? " rsp +" + (SystemClock.elapsedRealtime() - startMs) + "ms"
             : " NO rsp within " + RING_DEVICE_RSP_TIMEOUT_MS + "ms"));
@@ -5042,6 +5198,58 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * One glasses-link journal line (2026-10-04). Any thread; takes the lock
+     * briefly to read the redial state, writes outside it. {@code attempt} and
+     * {@code failure} lines that repeat the previous one within
+     * {@link #GLASSES_LINK_REPEAT_GAP_MS} are folded into a count. Never throws.
+     */
+    private void noteGlassesLink(String event, String arm, String reason) {
+        try {
+            long now = SystemClock.elapsedRealtime();
+            long wallMs = System.currentTimeMillis();
+            String safeReason = reason == null ? null
+                : reason.length() > 200 ? reason.substring(0, 200) : reason;
+            long redialInMs;
+            boolean halted;
+            boolean isRunning;
+            boolean ready;
+            int suppressed = 0;
+            synchronized (lock) {
+                halted = reconnectHalted;
+                isRunning = running;
+                ready = sessionReady;
+                redialInMs = ready || halted || !isRunning || reconnectAfterMs == Long.MAX_VALUE
+                    ? -1L : Math.max(0L, reconnectAfterMs - now);
+                boolean foldable = "attempt".equals(event) || "failure".equals(event);
+                // Folded by event and arm only: a failing dial's reason text varies.
+                String key = event + "|" + arm;
+                if (foldable && key.equals(glassesLinkLastKey) && now - glassesLinkLastAtMs < GLASSES_LINK_REPEAT_GAP_MS) {
+                    glassesLinkSuppressed++;
+                    return;
+                }
+                if (foldable && key.equals(glassesLinkLastKey)) {
+                    suppressed = glassesLinkSuppressed;
+                }
+                glassesLinkLastKey = foldable ? key : null;
+                glassesLinkLastAtMs = now;
+                glassesLinkSuppressed = 0;
+            }
+            appendHealthReceipt(GLASSES_LINK_FILE, GLASSES_LINK_MAX_BYTES, "glasses link",
+                RingProtocol.glassesLinkReceiptLine(wallMs, event, arm, safeReason, redialInMs, halted, isRunning,
+                    ready, suppressed));
+        } catch (RuntimeException ignored) {
+            // a journal line must never break the link path
+        }
+    }
+
+    private String armLabel(String address) {
+        if (address == null) return "?";
+        if (address.equalsIgnoreCase(rightAddress)) return "R";
+        if (address.equalsIgnoreCase(leftAddress)) return "L";
+        return "?";
+    }
+
+    /**
      * A real glasses link loss (the GATT callback; our own teardowns close the
      * client and get none). The wear state becomes unknown, which counts as on
      * (2026-09-25 afternoon): an OFF_HEAD from before the loss no longer holds
@@ -5683,6 +5891,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             bleManager.disconnect(rightAddress);
             bleManager.disconnect(leftAddress);
         }
+        noteGlassesLink("halted", armLabel(address), "arm not paired: " + glassesLinkConnectError);
+        glassesLinkConnectError = null;
         if (!userDisconnectRequested) {
             setStateDisplay(
                 "unpaired",
@@ -5712,6 +5922,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             bleManager.disconnect(rightAddress);
             bleManager.disconnect(leftAddress);
         }
+        noteGlassesLink("failure", null, reason + (glassesLinkConnectError == null ? "" : ": " + glassesLinkConnectError));
+        glassesLinkConnectError = null;
         if (!userDisconnectRequested) {
             setStateDisplay("retrying", reason == null || reason.isEmpty() ? "Reconnecting..." : "Reconnecting after " + reason);
         }

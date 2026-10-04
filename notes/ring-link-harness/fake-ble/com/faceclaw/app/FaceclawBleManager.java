@@ -54,6 +54,16 @@ public class FaceclawBleManager {
     public static volatile int pagesPerHealthRequest = 0;
     /** Ring battery level answered on 00:01. */
     public static volatile int batteryLevel = 71;
+    /** readRemoteRssi's answer in dBm; null = the read fails (2026-10-04). */
+    public static volatile Integer rssiDbm = -67;
+    /** Append this u32 LE trailer to every DATA page; -1 = the old 6-byte opaque page (2026-10-04). */
+    public static volatile long pageTrailerSec = -1L;
+    /** The ring pushes its boot hello (00:08 DATA seq 00) on the next connect, once (2026-10-04). */
+    public static volatile boolean bootHelloOnNextConnect = false;
+    /** The ring leaves 00:0E unanswered (2026-10-04). */
+    public static volatile boolean silentClockSet = false;
+    /** Every 00:0E and 00:05 the ring received: {cmdLo, u32 seconds, tz minutes (00:05) or 0, wall ms}. */
+    public static final List<long[]> clockWrites = java.util.Collections.synchronizedList(new ArrayList<>());
 
     private static final String NOT_CONNECTED = "Not connected: ";
 
@@ -149,6 +159,13 @@ public class FaceclawBleManager {
                 }
             });
             await(done);
+            if (bootHelloOnNextConnect) {
+                bootHelloOnNextConnect = false;
+                // The ring's boot signature: device-channel 00:08 DATA with seq 00.
+                notifyRing(gatt, RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA,
+                    RingProtocol.CMD_HI_DEVICE, 0x08, 0, new byte[] {0x00, 0x00, 0x01}));
+                drain();
+            }
             return true;
         }
     }
@@ -164,6 +181,12 @@ public class FaceclawBleManager {
         synchronized (bluetoothApiLock) {
             requireGatt(address);
             return true;
+        }
+    }
+
+    public Integer readRemoteRssi(String address, int timeoutMs) {
+        synchronized (bluetoothApiLock) {
+            return gattClients.containsKey(address) ? rssiDbm : null;
         }
     }
 
@@ -291,6 +314,16 @@ public class FaceclawBleManager {
             if (frame.cmdLo == 0x7E) {
                 return; // a page ACK: nothing comes back
             }
+            if (frame.cmdLo == 0x0E || frame.cmdLo == 0x05) {
+                byte[] p = frame.payload;
+                int at = frame.cmdLo == 0x0E ? 2 : 4;
+                long u32 = (p[at] & 0xffL) | (p[at + 1] & 0xffL) << 8 | (p[at + 2] & 0xffL) << 16 | (p[at + 3] & 0xffL) << 24;
+                long tz = frame.cmdLo == 0x05 ? (short) ((p[2] & 0xff) | (p[3] & 0xff) << 8) : 0;
+                clockWrites.add(new long[] {frame.cmdLo, u32, tz, System.currentTimeMillis()});
+                if (frame.cmdLo == 0x0E && silentClockSet) {
+                    return;
+                }
+            }
             byte[] payload = frame.cmdLo == 0x01
                 ? new byte[] {nonceLo(frame), nonceHi(frame), (byte) batteryLevel, 0x02}
                 : new byte[] {nonceLo(frame), nonceHi(frame)};
@@ -305,9 +338,16 @@ public class FaceclawBleManager {
             for (int i = 0; i < pagesPerHealthRequest; i++) {
                 // An opaque page: the communicator journals and ACKs pages it
                 // cannot decode exactly as it does decodable ones.
+                byte[] body = new byte[] {0x11, 0x22, 0x01, (byte) i, 0x00, 0x00};
+                long trailer = pageTrailerSec;
+                if (trailer >= 0) {
+                    body = java.util.Arrays.copyOf(body, 10);
+                    for (int b = 0; b < 4; b++) {
+                        body[6 + b] = (byte) (trailer >>> (8 * b));
+                    }
+                }
                 notifyRing(gatt, RingProtocol.buildFrame(RingProtocol.CHAN_HEALTH, RingProtocol.KIND_DATA,
-                    frame.cmdHi, frame.cmdLo, nextRingSeq(),
-                    new byte[] {0x11, 0x22, 0x01, (byte) i, 0x00, 0x00}));
+                    frame.cmdHi, frame.cmdLo, nextRingSeq(), body));
             }
         }
         // 06:02 (health-channel DATA) and anything else: no answer.
