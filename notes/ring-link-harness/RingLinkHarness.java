@@ -1057,6 +1057,22 @@ public final class RingLinkHarness {
         return out.toArray(new long[0][]);
     }
 
+    /**
+     * The build's offset lookup for a record that arrived at {@code rxMs}. A
+     * build without the arrival-aware lookup (8b1aefb) is asked by ring
+     * second alone, which is all it can do.
+     */
+    static long offsetAt(long[][] segs, long ringSec, long rxMs) {
+        try {
+            return (Long) RingProtocol.class.getMethod("clockOffsetSecAt", long[][].class, long.class, long.class)
+                .invoke(null, segs, ringSec, rxMs);
+        } catch (NoSuchMethodException e) {
+            return RingProtocol.clockOffsetSecAt(segs, ringSec);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Write a ring-clock.json by hand (8b1aefb's format): the ring at {@code offset} since forever. */
     static void writeRingClock(Rig rig, long offset) throws IOException {
         File dir = new File(rig.files, "health");
@@ -1205,14 +1221,14 @@ public final class RingLinkHarness {
             // Pre-reset record: stamped 10 min before the reset, true t = resetSec - 600, ring t + 14400.
             long preTrue = resetSec - 600L;
             long preRing = preTrue + 14400L;
-            long a = RingProtocol.clockOffsetSecAt(segs, preRing, (resetSec - 300L) * 1000L);
-            long b = RingProtocol.clockOffsetSecAt(segs, preRing, (resetSec + 60L) * 1000L);
+            long a = offsetAt(segs, preRing, (resetSec - 300L) * 1000L);
+            long b = offsetAt(segs, preRing, (resetSec + 60L) * 1000L);
             // Post-reset record: stamped 20 min after the reset under UTC, arrived 30 min after.
             long postRing = resetSec + 1200L;
-            long c = RingProtocol.clockOffsetSecAt(segs, postRing, (resetSec + 1800L) * 1000L);
+            long c = offsetAt(segs, postRing, (resetSec + 1800L) * 1000L);
             // An old pre-reset record (2 days back), arriving after the reset.
             long oldRing = resetSec - 172_800L + 14400L;
-            long d = RingProtocol.clockOffsetSecAt(segs, oldRing, (resetSec + 60L) * 1000L);
+            long d = offsetAt(segs, oldRing, (resetSec + 60L) * 1000L);
             System.out.println("  conversions: pre-reset ring " + preRing + " -> true " + (preRing - a) + " (arrived before) / "
                 + (preRing - b) + " (arrived after); post-reset ring " + postRing + " -> " + (postRing - c)
                 + "; 2 days earlier ring " + oldRing + " -> " + (oldRing - d));
