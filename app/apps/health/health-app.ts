@@ -36,8 +36,11 @@ import {
   rollupSeries,
   sleepNights,
   type DailySummary,
+  type GapAwake,
   type RangeKey,
 } from "../../health/health-derive";
+import { ringCoverage } from "../../health/health-coverage";
+import type { HealthStore } from "../../health/health-store";
 import {
   drawGlancePage,
   GLANCE_PAGES,
@@ -58,6 +61,7 @@ import {
 import {
   addLocalDays,
   DAY_MS,
+  HOUR_MS,
   SAMPLE_METRICS,
   startOfLocalDay,
   type RollupPoint,
@@ -94,6 +98,14 @@ function metricForPage(page: GlancePage | undefined): SeriesMetric | null {
  * Exported for tests only (2026-10-04): the shared-state test drives this
  * layer and the phone's HealthViewModel against one store.
  */
+/** Ring-data seconds in a gap, for the sleep days `firstDayMs`..`lastDayMs`. */
+function gapAwake(store: HealthStore, firstDayMs: number, lastDayMs: number): GapAwake {
+  const coverage = ringCoverage(
+    store.samplesInRange(addLocalDays(firstDayMs, -1) - HOUR_MS, addLocalDays(lastDayMs, 1)),
+  );
+  return (startMs, endMs) => coverage.secondsIn(startMs, endMs);
+}
+
 export class HealthLayer implements Layer {
   private summary: DailySummary | null = null;
   private todaySummary: DailySummary | null = null;
@@ -181,10 +193,10 @@ export class HealthLayer implements Layer {
       this.range = state.range;
       this.dayMs = day;
       const sessions = store.sleepSessions();
-      // Gaps with a ring reset in them are not awake (health-derive rule 4).
-      const resets = store.ringResets();
       const todaySamples = store.samplesInRange(today, addLocalDays(today, 1));
-      const todaySummary = dailySummary(todaySamples, sessions, today, resets);
+      // A gap between sleep blocks is awake only where the ring has data
+      // (health-derive rule 4): coverage from the samples around the night.
+      const todaySummary = dailySummary(todaySamples, sessions, today, gapAwake(store, today, today));
       // Chris asked for the menu's step count to update "every 30 minutes, or
       // when you go into the health app view". This is that second case — and
       // it hands over the exact figure this page is about to draw, so the row
@@ -192,7 +204,7 @@ export class HealthLayer implements Layer {
       noteHealthSteps(today, todaySummary.steps);
       this.todaySummary = todaySummary;
       const samples = day === today ? todaySamples : store.samplesInRange(day, addLocalDays(day, 1));
-      this.summary = day === today ? todaySummary : dailySummary(samples, sessions, day, resets);
+      this.summary = day === today ? todaySummary : dailySummary(samples, sessions, day, gapAwake(store, day, day));
       // One pass per metric over a day's samples - a few hundred rows, and the
       // drill-down has to be instant when the cursor lands on it.
       const hourly: Partial<Record<SampleMetric, RollupPoint[]>> = {};
@@ -206,7 +218,7 @@ export class HealthLayer implements Layer {
       }
       this.hourly = hourly;
       // The whole night - every block, gaps as wake - not one stored session.
-      const night = assembleNight(sessions, day, resets);
+      const night = assembleNight(sessions, day, gapAwake(store, day, day));
       this.stageBands = night ? hypnogram(night) : [];
       // Week / month: one point per day ending today, from the rollup cache,
       // the same window the phone's multi-day views use.
@@ -232,7 +244,7 @@ export class HealthLayer implements Layer {
           }
           this.daily[metric] = points;
         }
-        this.nights = sleepNights(sessions, startMs, endMs, resets);
+        this.nights = sleepNights(sessions, startMs, endMs, gapAwake(store, startMs, today));
       }
       this.fixture = isFixtureData();
     } catch (error) {

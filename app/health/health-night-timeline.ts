@@ -7,15 +7,17 @@
  *
  *   - each SLEEP block the ring recorded, with its stage runs (REM / light /
  *     deep / wake) positioned where they happened;
- *   - AWAKE time between two blocks, where the ring was demonstrably on and
- *     running across the gap (no reset in it, and at least one sample of any
- *     metric overlapping it);
- *   - NO-DATA everywhere else, labelled when it can be explained: a ring reset
- *     (dated from the `ringBoot` receipts, `datedRingResets`) or no ring
- *     contact at all. **A no-data span is never awake.** Before the first block
- *     and after the last one the ring recorded no sleep, and the app cannot know
- *     whether the wearer slept then (10-04: a ~00:30-01:30 block was lost to the
- *     01:31 reset), so that time is no-data too, never "awake".
+ *   - AWAKE: any time outside a block that the ring has data for (heart rate,
+ *     HRV, SpO2, steps, calories; `ringCoverage`), before, between or after
+ *     the blocks. ⚠ RULED 2026-10-04 16:40 (Chris): "awake time is awake".
+ *     The first cut (f12e733) drew everything before the first block as
+ *     no-data and called a gap awake only between two blocks; that hid the
+ *     01:31-04:06 he was up on 10-04, with the ring recording;
+ *   - NO-DATA only where the ring recorded nothing at all, labelled when it
+ *     can be explained: a ring reset (dated from the `ringBoot` receipts,
+ *     `datedRingResets`; it may sit at the span's end, where recording
+ *     restarted) or no ring contact. **A no-data span is never awake.**
+ *   - every ring reset in the window as a marker, wherever it falls.
  *
  * Two windows (Chris's ruling, 2026-10-04): PRIMARY sleep, 20:00 -> noon, and
  * the FULL sleep day, 20:00 -> 20:00. Sleep that belongs to the day but falls
@@ -27,6 +29,7 @@
 
 import { assembleNight } from "./health-derive";
 import type { HealthSample, SleepSession } from "./health-types";
+import { ringCoverage } from "./health-coverage";
 import { localFields, localToMs } from "../util/local-zone";
 import { stageNameForId, type SleepStageName } from "./sleep-stages";
 import type { SleepWindow } from "./health-view-state";
@@ -179,7 +182,7 @@ export type TimelineSpan =
       kind: "nodata";
       startMs: number;
       endMs: number;
-      /** "reset" when a reset falls inside; "no-contact" when no sample overlaps it at all. */
+      /** "reset" when a reset falls inside or at its end; "no-contact" when 30 min or longer. */
       reason: NoDataReason;
       resetsMs: readonly number[];
     };
@@ -202,7 +205,7 @@ export type NightTimeline = {
   resetsMs: readonly number[];
   /** Light + REM + deep inside the window, seconds. */
   asleepSec: number;
-  /** Wake inside blocks plus awake gaps between them, seconds. */
+  /** Wake inside blocks plus every awake span in the window, seconds. */
   awakeSec: number;
   /** Per stage, seconds; `wake` includes the awake gaps. */
   stageSec: Readonly<Record<SleepStageName, number>>;
@@ -215,10 +218,12 @@ export type NightTimeline = {
 
 /** A no-data stretch this long with no sample at all is labelled "no ring contact". */
 const NO_CONTACT_MIN_MS = 30 * 60_000;
+/** How far after a no-data span's end a reset still explains it. See `resetsIn`. */
+const RESET_SLACK_MS = 60_000;
 
 export function buildNightTimeline(input: {
   sessions: readonly SleepSession[];
-  /** Samples of any metric around the window, for the "ring was on" test. */
+  /** Samples of any metric around the window (a couple of hours either side): what the ring recorded. */
   samples: readonly HealthSample[];
   resetsMs: readonly number[];
   dayMs: number;
@@ -235,24 +240,38 @@ export function buildNightTimeline(input: {
   const outside: OutsideSleep[] = [];
   const resetsMs = input.resetsMs.filter((ms) => ms >= bounds.startMs && ms < bounds.endMs);
 
+  const coverage = ringCoverage(input.samples);
+  // A reset is where recording RESTARTS, so it sits at the END of the no-data
+  // span it explains, give or take: the first record after it is dated to the
+  // whole second and the reset to the millisecond (10-04: data restarts
+  // 01:31:39.000, the reset is dated 01:31:39.334). Hence the minute's slack.
   const resetsIn = (startMs: number, endMs: number): number[] =>
-    input.resetsMs.filter((ms) => ms >= startMs && ms < endMs);
-  const sampleOverlaps = (startMs: number, endMs: number): boolean =>
-    input.samples.some((sample) => sample.startMs < endMs && sample.startMs + sample.spanMs > startMs);
+    input.resetsMs.filter((ms) => ms >= startMs && ms <= endMs + RESET_SLACK_MS);
 
   const pushNoData = (startMs: number, endMs: number): void => {
     if (endMs <= startMs) return;
     const resets = resetsIn(startMs, endMs);
     let reason: NoDataReason = null;
     if (resets.length > 0) reason = "reset";
-    else if (endMs - startMs >= NO_CONTACT_MIN_MS && !sampleOverlaps(startMs, endMs)) reason = "no-contact";
+    else if (endMs - startMs >= NO_CONTACT_MIN_MS) reason = "no-contact";
     spans.push({ kind: "nodata", startMs, endMs, reason, resetsMs: resets });
+  };
+
+  /** Time outside any block: awake where the ring has data, no-data where not. */
+  const fillGap = (startMs: number, endMs: number): void => {
+    let at = startMs;
+    for (const [covStart, covEnd] of coverage.intervalsIn(startMs, endMs)) {
+      pushNoData(at, covStart);
+      spans.push({ kind: "awake", startMs: covStart, endMs: covEnd });
+      stageSec.wake += (covEnd - covStart) / 1000;
+      at = covEnd;
+    }
+    pushNoData(at, endMs);
   };
 
   let unnamedSec = 0;
   let cursor = bounds.startMs;
   let previousEnd = Number.NEGATIVE_INFINITY;
-  let seenBlock = false;
   for (const block of blocks) {
     // A partial overlap with the previous block is trimmed, never drawn twice.
     const blockStart = Math.max(block.startMs, previousEnd);
@@ -271,16 +290,7 @@ export function buildNightTimeline(input: {
     const end = Math.min(blockEnd, bounds.endMs);
     if (end <= start) continue;
 
-    // The time before this block: between two blocks it can be awake.
-    if (start > cursor) {
-      const between = seenBlock;
-      if (between && resetsIn(cursor, start).length === 0 && sampleOverlaps(cursor, start)) {
-        spans.push({ kind: "awake", startMs: cursor, endMs: start });
-        stageSec.wake += (start - cursor) / 1000;
-      } else {
-        pushNoData(cursor, start);
-      }
-    }
+    if (start > cursor) fillGap(cursor, start);
 
     const runs = stageRuns(block, blockStart).filter((run) => run.endMs > start && run.startMs < end)
       .map((run) => ({ ...run, startMs: Math.max(run.startMs, start), endMs: Math.min(run.endMs, end) }));
@@ -304,9 +314,8 @@ export function buildNightTimeline(input: {
       }
     }
     cursor = end;
-    seenBlock = true;
   }
-  pushNoData(cursor, bounds.endMs);
+  fillGap(cursor, bounds.endMs);
 
   // Sleep of this day that lies wholly or partly before 20:00 the evening
   // before is not possible: a block belongs to the day its END falls in, and

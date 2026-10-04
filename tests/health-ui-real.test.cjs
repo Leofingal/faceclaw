@@ -51,7 +51,11 @@ function setup(t) {
   return { vm, layer, set: (patch, source = "phone") => S.state.healthViewState.update(patch, source) };
 }
 
-test("10-04 sleep day, primary window: one block 04:06:09-10:50:09; no data from 20:00 with the 01:31:39 reset; nothing awake before 04:06", { skip }, (t) => {
+const EDGE_2210 = 1791079800000; //   2026-10-03 22:10 EDT: the end of the last 10-minute bucket before the reset
+
+// Chris, 2026-10-04 16:40: "awake time is awake". Outside a block, time with
+// ring data is awake; no-data only where the ring recorded nothing at all.
+test("10-04 sleep day, primary window: awake 20:00-22:10, no data 22:10 to the 01:31:39 reset, awake 01:31:39-04:06:09, the block 04:06:09-10:50:09", { skip }, (t) => {
   const { vm, set } = setup(t);
   set({ metric: "sleep", range: "day", dayMs: null, sleepWindow: "primary" });
   const timeline = vm.timeline;
@@ -59,31 +63,38 @@ test("10-04 sleep day, primary window: one block 04:06:09-10:50:09; no data from
   assert.equal(timeline.dayMs, DAY_1004);
   assert.equal(timeline.startMs, EVE_1003);
 
+  const head = timeline.spans.slice(0, 4).map((s) => [s.kind, s.startMs, s.endMs]);
+  assert.deepEqual(head, [
+    ["awake", EVE_1003, EDGE_2210], // HR every hour 20:00-22:00 and steps to the 22:00 bucket
+    ["nodata", EDGE_2210, RESET], // the ring's record is gone: last pull 22:04, reset 01:31:39
+    ["awake", RESET, BLOCK_START], // HR from 01:31:39 and the 83-step walk at 03:21
+    ["sleep", BLOCK_START, BLOCK_END],
+  ]);
   const sleep = timeline.spans.filter((s) => s.kind === "sleep");
-  assert.deepEqual(sleep.map((s) => [s.startMs, s.endMs]), [[BLOCK_START, BLOCK_END]], "exactly one block");
+  assert.equal(sleep.length, 1, "exactly one block");
 
-  const first = timeline.spans[0];
-  assert.equal(first.kind, "nodata");
-  assert.equal(first.startMs, EVE_1003);
-  assert.equal(first.endMs, BLOCK_START);
-  assert.equal(first.reason, "reset");
-  assert.equal(first.resetsMs.length, 1);
-  assert.ok(
-    first.resetsMs[0] >= RESET && first.resetsMs[0] < RESET + 1000,
-    `reset at ${new Date(first.resetsMs[0]).toString()}`,
+  // The stretch with no ring records at all still reads no-data.
+  const gap = timeline.spans[1];
+  assert.equal(gap.reason, "reset");
+  assert.equal(gap.resetsMs.length, 1);
+  assert.ok(gap.resetsMs[0] >= RESET && gap.resetsMs[0] < RESET + 1000, `reset at ${new Date(gap.resetsMs[0]).toString()}`);
+  const recorded = S.world.store
+    .samplesInRange(EVE_1003 - 3_600_000, BLOCK_START)
+    .filter((x) => x.startMs < RESET && x.startMs + x.spanMs > EDGE_2210 && x.spanMs <= 10 * MIN);
+  assert.deepEqual(recorded, [], "no 10-minute record anywhere in it");
+  assert.equal(
+    S.world.store.samplesInRange(EDGE_2210, RESET).length,
+    0,
+    "and no record of any kind starts in it",
   );
+  assert.deepEqual(timeline.resetsMs.length, 1);
 
-  const awakeBefore = timeline.spans.filter((s) => s.kind === "awake" && s.startMs < BLOCK_START);
-  assert.deepEqual(awakeBefore, [], "zero awake time before 04:06");
-  const wakeRunsBefore = sleep.flatMap((s) => s.runs).filter((r) => r.stage === "wake" && r.startMs < BLOCK_START);
-  assert.deepEqual(wakeRunsBefore, []);
-
-  // Totals for the window, from the block's named fields.
+  // Totals: asleep from the block's named fields; awake = in-block wake + every awake span.
   assert.equal(timeline.asleepSec, 23430);
-  assert.equal(timeline.awakeSec, 810);
+  const awakeSpans = timeline.spans.filter((s) => s.kind === "awake").reduce((sum, s) => sum + (s.endMs - s.startMs) / 1000, 0);
+  assert.equal(timeline.awakeSec, 810 + awakeSpans);
   const rows = Object.fromEntries(vm.statRows.map((r) => [r.label, r.value]));
   assert.equal(rows.Asleep, "6h 31m");
-  assert.equal(rows.Awake, "14m");
   assert.equal(rows["Ring reset"], "1:31 AM");
   assert.equal(vm.napMarkerVisibility, "collapse", "no nap on 10-04 by 14:06");
 });
@@ -153,10 +164,21 @@ test("the shared state, both ways, on real data: glasses -> phone and phone -> g
   layer.handleInput({ type: "click" }); // day -> week
   assert.equal(vm.lastRender.content.kind, "nights");
   assert.equal(vm.lastRender.content.nights.length, 7);
-  // 10-03's bar: the wake inside its two blocks only. The 10:28 -> 15:15 gap
-  // holds the 14:17 in-transit reset, so it is not counted as awake.
+  // 10-03's bar agrees with 10-03's timeline: the wake inside its two blocks
+  // plus the ring-data part of the 10:28 -> 15:15:30 gap, nothing more.
   const sat = vm.lastRender.content.nights.find((n) => n.startMs === DAY_1003);
-  assert.equal(sat.wakeSec, 810 + 810);
+  const full = S.timeline.buildNightTimeline({
+    sessions: S.world.store.sleepSessions(),
+    samples: S.world.store.samplesInRange(EVE_1003 - 86_400_000 - 7_200_000, DAY_1003 + 21 * 3_600_000),
+    resetsMs: S.world.store.ringResets(),
+    dayMs: DAY_1003,
+    window: "full",
+  });
+  const gapStart = full.spans.find((s) => s.kind === "sleep").blockEndMs;
+  const inGap = full.spans
+    .filter((s) => s.kind === "awake" && s.startMs >= gapStart && s.endMs <= NAP_START)
+    .reduce((sum, s) => sum + (s.endMs - s.startMs) / 1000, 0);
+  assert.ok(Math.abs(sat.wakeSec - (810 + 810 + inGap)) <= 30, `bar ${sat.wakeSec} s vs timeline ${810 + 810 + inGap} s`);
 
   // Phone: step to a day; the glasses' plot follows.
   vm.rangeChips.find((c) => c.key === "day").onTap();

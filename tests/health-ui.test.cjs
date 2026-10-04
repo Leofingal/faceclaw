@@ -49,14 +49,20 @@ const NAP = block(at(14), at(15), [[2, 120]]);
 const hr = (startMs, avg) => ({ metric: "heartRate", startMs, spanMs: HOUR, min: avg, max: avg, avg, total: 0 });
 const steps = (startMs, n) => ({ metric: "steps", startMs, spanMs: 10 * MIN, min: n, max: n, avg: n, total: n });
 
-function night(window, resetsMs = [], samples = [hr(at(1), 60)]) {
+// The ring's record across the gap between A and B: the 01:00 hour of heart
+// rate and 10-minute step buckets 02:00-02:30.
+const GAP_DATA = [hr(at(1), 60), steps(at(2), 0), steps(at(2, 10), 0), steps(at(2, 20), 3)];
+
+function night(window, resetsMs = [], samples = GAP_DATA) {
   return tl.buildNightTimeline({ sessions: [A, B, NAP], samples, resetsMs, dayMs: D, window });
 }
 
 // ---------------------------------------------------------------------------
-// The night timeline
+// The night timeline. Rule (Chris, 2026-10-04 16:40, "awake time is awake"):
+// outside a block, time with ring data is awake; only time with no ring
+// record at all is no-data. Resets are markers.
 
-test("timeline: blocks in clock time, an awake gap between them, no-data before and after", () => {
+test("timeline: blocks in clock time; awake where the ring has data; no-data where it has none", () => {
   const t = night("primary");
   assert.equal(t.startMs, at(-4)); // 20:00 the evening before
   assert.equal(t.endMs, at(12)); // noon
@@ -72,7 +78,7 @@ test("timeline: blocks in clock time, an awake gap between them, no-data before 
   );
   assert.equal(t.asleepSec, 6600 + 14400);
   assert.equal(t.awakeSec, 600 + 90 * 60, "wake inside A plus the 1.5 h gap");
-  assert.equal(t.spans[0].reason, "no-contact", "3 h with no sample at all");
+  assert.equal(t.spans[0].reason, "no-contact", "3 h with no ring record at all");
   const runs = t.spans[1].runs;
   assert.deepEqual(runs.map((r) => [r.stage, r.startMs]), [
     ["wake", at(-1)],
@@ -82,36 +88,67 @@ test("timeline: blocks in clock time, an awake gap between them, no-data before 
   ]);
 });
 
-test("timeline: never draws no-data as awake - a gap with a reset in it, or no sample, is no-data", () => {
-  const withReset = night("primary", [at(1, 45)]);
-  const gap = withReset.spans[2];
-  assert.equal(gap.kind, "nodata");
-  assert.equal(gap.reason, "reset");
-  assert.deepEqual(gap.resetsMs, [at(1, 45)]);
-  assert.deepEqual(withReset.resetsMs, [at(1, 45)]);
-  assert.equal(withReset.awakeSec, 600, "only the wake inside block A");
+test("timeline: a stretch with no ring record at all is no-data, never awake; a reset at its end explains it", () => {
+  // Only the 02:00-02:30 step buckets: 01:00-02:00 has no record.
+  const t = night("primary", [at(2)], GAP_DATA.slice(1));
+  assert.deepEqual(
+    t.spans.slice(2, 4).map((s) => [s.kind, s.startMs, s.endMs]),
+    [
+      ["nodata", at(1), at(2)],
+      ["awake", at(2), at(2, 30)],
+    ],
+  );
+  assert.equal(t.spans[2].reason, "reset", "recording restarted at the reset");
+  assert.deepEqual(t.resetsMs, [at(2)]);
 
-  const noSamples = night("primary", [], []);
-  assert.equal(noSamples.spans[2].kind, "nodata");
-  assert.equal(noSamples.spans[2].reason, "no-contact");
-  assert.ok(!noSamples.spans.some((s) => s.kind === "awake"));
+  const none = night("primary", [], []);
+  assert.ok(!none.spans.some((s) => s.kind === "awake"));
+  assert.equal(none.awakeSec, 600, "only the wake inside block A");
 });
 
-test("timeline: before the first block is no-data even with ring samples in it", () => {
-  const t = night("primary", [], [hr(at(-3), 70), steps(at(-2), 400), hr(at(1), 60)]);
-  assert.equal(t.spans[0].kind, "nodata");
-  assert.equal(t.spans[0].reason, null, "ring was on, so not 'no contact', but no sleep was recorded");
+test("timeline: a reset inside a stretch with ring data is a marker; the time stays awake", () => {
+  const t = night("primary", [at(1, 45)]);
+  assert.equal(t.spans[2].kind, "awake");
+  assert.deepEqual(t.resetsMs, [at(1, 45)]);
 });
 
-test("night assembly: a gap with a ring reset in it is not counted as awake (week bars, glasses lanes)", () => {
+test("timeline: an evening before bed with heart rate recorded reads awake", () => {
+  const t = night("primary", [], [hr(at(-3), 70), hr(at(-2), 72), ...GAP_DATA]);
+  assert.deepEqual(
+    t.spans.slice(0, 2).map((s) => [s.kind, s.startMs, s.endMs]),
+    [
+      ["nodata", at(-4), at(-3)],
+      ["awake", at(-3), at(-1)],
+    ],
+  );
+});
+
+test("coverage: a run's LAST hourly bucket stops at its last 10-minute bucket (10-03 22:00); the first keeps its hour", () => {
+  const { ringCoverage } = require("../.test-build/app/health/health-coverage.js");
+  // 21:00 and 22:00 hours of HR, steps 21:50 and 22:00, then nothing until 01:30.
+  const c = ringCoverage([hr(at(-3), 80), hr(at(-2), 80), steps(at(-2, -10), 236), steps(at(-2), 0), hr(at(1, 30), 68)]);
+  assert.deepEqual(c.intervalsIn(at(-4), at(3)), [
+    [at(-3), at(-2, 10)], // 21:00 (a finished hour) -> 22:10 (the last 10-minute bucket), not -> 23:00
+    [at(1, 30), at(2, 30)], // an hour with no finer bucket keeps its span
+  ]);
+  // In the middle of a run the hour keeps its whole span (bridges missing 10-minute buckets).
+  const mid = ringCoverage([hr(at(-3), 80), steps(at(-3), 5), hr(at(-2), 80)]);
+  assert.deepEqual(mid.intervalsIn(at(-4), at(0)), [[at(-3), at(-1)]]);
+  assert.equal(mid.secondsIn(at(-4), at(0)), 2 * 3600);
+});
+
+test("night assembly: only the part of a gap the ring has data for is wake (week bars, glasses lanes)", () => {
   const { assembleNight, sleepNights } = S.derive;
   const plain = assembleNight([A, B], D);
-  assert.equal(plain.wakeSec, 600 + 90 * 60, "the 2026-09-13 rule: the gap is wake");
-  const withReset = assembleNight([A, B], D, [at(1, 45)]);
-  assert.equal(withReset.wakeSec, 600, "a reset in the gap: not wake");
-  assert.equal(withReset.gapSec, 0);
-  assert.ok(!withReset.segments.some((seg) => seg.gap));
-  const [bar] = sleepNights([A, B], D, D + 86_400_000, [at(1, 45)]);
+  assert.equal(plain.wakeSec, 600 + 90 * 60, "no coverage given: the 2026-09-13 rule, the whole gap");
+  const half = (a, b) => (Math.min(b, at(1, 45)) - a) / 1000; // data for 01:00-01:45 only
+  const covered = assembleNight([A, B], D, half);
+  assert.equal(covered.wakeSec, 600 + 45 * 60);
+  assert.equal(covered.gapSec, 45 * 60);
+  const none = assembleNight([A, B], D, () => 0);
+  assert.equal(none.wakeSec, 600);
+  assert.ok(!none.segments.some((seg) => seg.gap));
+  const [bar] = sleepNights([A, B], D, D + 86_400_000, () => 0);
   assert.equal(bar.wakeSec, 600);
 });
 
@@ -125,7 +162,7 @@ test("sleep window: primary lists the afternoon nap outside; full draws it", () 
   assert.deepEqual(full.outside, []);
   const nap = full.spans.find((s) => s.kind === "sleep" && s.startMs === at(14));
   assert.ok(nap, "the nap is drawn in full mode");
-  // 06:30 -> 14:00: between two blocks, but nothing says the ring was on.
+  // 06:30 -> 14:00: between two blocks, but the ring recorded nothing.
   const between = full.spans.find((s) => s.startMs === at(6, 30));
   assert.equal(between.kind, "nodata");
 });

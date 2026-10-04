@@ -85,6 +85,7 @@ import {
   type NightTimeline,
 } from "../health/health-night-timeline";
 import { healthStore } from "../health/health-store-files";
+import { ringCoverage } from "../health/health-coverage";
 import { requestFreshPull, ringPullProgress, syncLiveRecords } from "../health/health-live";
 import { watchOpenPull } from "../health/health-open-refresh";
 import { isFixtureData, seedFixturesIfNeeded } from "../health/health-seed";
@@ -665,9 +666,9 @@ export class HealthViewModel extends Observable {
     const full = sleepWindowBounds(dayMs, "full");
     const timeline = buildNightTimeline({
       sessions: store.sleepSessions(),
-      // An hour before the window so an hourly bucket that started earlier
-      // still counts as overlapping it.
-      samples: store.samplesInRange(full.startMs - HOUR_MS, full.endMs),
+      // Two hours either side: an hourly bucket that started earlier still
+      // overlaps the window, and the coverage rule looks at a run's edges.
+      samples: store.samplesInRange(full.startMs - 2 * HOUR_MS, full.endMs + HOUR_MS),
       resetsMs: store.ringResets(),
       dayMs,
       window: this.state.sleepWindow,
@@ -712,13 +713,15 @@ export class HealthViewModel extends Observable {
     // the dayStartMs it happened to be stored with.
     const store = healthStore();
     const sessions = store.sleepSessions();
-    // A gap with a ring reset in it is not awake (health-derive rule 4).
-    const resets = store.ringResets();
-    const nights = sleepNights(sessions, startMs, endMs, resets);
+    // A gap between blocks is awake only where the ring has data
+    // (health-derive rule 4). Nights start 20:00 the evening before.
+    const coverage = ringCoverage(store.samplesInRange(addLocalDays(startMs, -1) - HOUR_MS, endMs));
+    const awakeIn = (a: number, b: number): number => coverage.secondsIn(a, b);
+    const nights = sleepNights(sessions, startMs, endMs, awakeIn);
     const withData = nights.filter((night) => night.hasData);
-    // The latest ASSEMBLED night in the window: every block of it, gaps as wake
-    // unless a reset falls in them.
-    const latest = assembleNights(sessions, resets).find(
+    // The latest ASSEMBLED night in the window: every block of it, gaps as
+    // wake where the ring has data.
+    const latest = assembleNights(sessions, awakeIn).find(
       (night) => night.dayStartMs >= startMs && night.dayStartMs < endMs,
     );
 
