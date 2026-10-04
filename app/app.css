@@ -1337,6 +1337,16 @@ Button.permissions-primary-dimmed {
   background-color: #1c1c1c;
 }
 
+/* Health's phone view on main-page (phone-ui/health-body.xml) shares that
+ * same grid cell since audit F1, so it paints its own backdrop too. */
+.health-body {
+  background-color: #ffffff;
+}
+
+.ns-dark .health-body {
+  background-color: #1c1c1c;
+}
+
 /* ------------------------------------------------------------------------
  * HEALTH (phone-ui/health-page.xml)
  *

@@ -23,9 +23,10 @@
 
     cover-glance      the Fold is shut. One screenful: connection, what is on
                       the lens, nothing to scroll. Unfolding is the navigation.
-    a companion       the Fold is open and an app with a companion view is the
-                      foreground app ON THE GLASSES. Ghost is the only one
-                      built. The phone becomes that session's second view.
+    a companion       the Fold is open and an app with a phone view is the
+                      foreground app ON THE GLASSES: Ghost's companion or
+                      Health's graphs (phone-ui/phone-views.ts is the table).
+                      The phone becomes that app's second view.
     the app list      everything else — and the body "Exocortex" returns to.
 
   They share the page's grid cell rather than being separate pages: a page swap
@@ -59,8 +60,8 @@
 
              The inner cell holds the bodies. Per-app companions come first;
              the app list is the fallback, which is what makes it the thing you
-             land on. The generalized "which view per app" mechanism is still
-             its own queued design job; this is only the frame it hangs in.
+             land on. Which app gets which body is phone-ui/phone-views.ts
+             (audit F1); an app with no row there leaves the phone on the list.
 
              The header binds to MainViewModel (inherited); each companion body
              overrides bindingContext with its own view model. -->
@@ -98,6 +99,16 @@
                     <ui:ghost-companion bindingContext="{{ ghostCompanion }}" />
                 </GridLayout>
 
+                <!-- HEALTH'S PHONE VIEW: the graphs, whenever Health is the
+                     foreground app on the glasses (audit F1/F5). Same wrapper
+                     shape as Ghost's, for the same reason: the visibility has
+                     to bind against MainViewModel, the component against its
+                     own HealthViewModel. MainViewModel attaches that model only
+                     while this is up. -->
+                <GridLayout visibility="{{ healthBodyVisibility }}">
+                    <ui:health-body bindingContext="{{ health }}" />
+                </GridLayout>
+
                 <!-- THE HOME BODY: the app list, checkbox + reorder +
                      tap-to-launch. Same component the standalone
                      exocortex-apps-page shows, bound to MainViewModel's own
@@ -106,11 +117,13 @@
                      to act on immediately, not list content. -->
                 <GridLayout rows="auto,auto,*" visibility="{{ homeBodyVisibility }}"
                     class="exocortex-home-body">
-                    <!-- Only while looking at the app list with Ghost still
-                         focused over there; the way back to the companion. -->
-                    <StackLayout row="0" class="home-row" tap="{{ onShowGhostTap }}" visibility="{{ ghostReturnRowVisibility }}">
-                        <Label text="Ghost" class="home-row-title" />
-                        <Label text="Back to the companion for the session on the glasses" class="home-row-meta" textWrap="true" />
+                    <!-- Only while looking at the app list with an app that
+                         has a phone view still focused over there; the way
+                         back to that view. Ghost's text is unchanged; the
+                         strings live in phone-views.ts. -->
+                    <StackLayout row="0" class="home-row" tap="{{ onReturnRowTap }}" visibility="{{ returnRowVisibility }}">
+                        <Label text="{{ returnRowTitle }}" class="home-row-title" />
+                        <Label text="{{ returnRowMeta }}" class="home-row-meta" textWrap="true" />
                     </StackLayout>
 
                     <!-- Screen recording is started from settings-hub-page's
