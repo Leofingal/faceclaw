@@ -13,10 +13,12 @@ const assert = require("node:assert/strict");
 const {
   convertRecords,
   parseRingClockSegments,
+  ringClockEpochAt,
   ringClockOffsetSecAt,
   ringSecToRealMs,
   sleepIdentityHolds,
   sleepWireFromRing,
+  stepLedgerDayKey,
 } = require("../.test-build/app/health/health-ingest.js");
 
 // The ring clock history the pre-2026-10-04 build implies in EDT: the ring
@@ -105,6 +107,57 @@ test("offset history: the segment in force when the ring stamped the time wins",
 test("offset history: done slewing is the identity", () => {
   const segs = [[0, 14400], [1791200000, 0]];
   assert.equal(ringSecToRealMs(segs, 1791300000), 1791300000 * 1000);
+});
+
+// ---------------------------------------------------------------------------
+// The hold rule across a ring reset (2026-10-04, clock-hold-1004)
+//
+// Held at +14400 since forever, then the ring resets and the connect at
+// 11:31:05 EDT (1791127865) writes plain UTC: the history the build saves is
+// [[0, 14400], [1791127865, 0]]. The ring re-lives 4 h of ring seconds.
+const RESET_SEC = 1791127865;
+const ACROSS_RESET = [[0, 14400], [RESET_SEC, 0]];
+
+test("across a reset: a pre-reset stamp reads +14400 whether it arrived before or after the reset", () => {
+  // Stamped 10:00 EDT 10-04 (true 1791122400) under +14400: ring 1791136800.
+  const ring = 1791122400 + 14400;
+  assert.equal(ringSecToRealMs(ACROSS_RESET, ring, 1791124000 * 1000), 1791122400 * 1000, "arrived 10:26, before");
+  assert.equal(ringSecToRealMs(ACROSS_RESET, ring, (RESET_SEC + 60) * 1000), 1791122400 * 1000, "arrived after");
+  // Without the arrival time the ring second alone reads it 4 h late: the fault this guards.
+  assert.equal(ringSecToRealMs(ACROSS_RESET, ring), ring * 1000);
+});
+
+test("across a reset: a post-reset stamp reads 0", () => {
+  // Stamped 12:00 EDT (true and ring 1791129600), arrived 12:05.
+  assert.equal(ringSecToRealMs(ACROSS_RESET, 1791129600, 1791129900 * 1000), 1791129600 * 1000);
+  // A night that started after the reset, through the shipping sleep path.
+  const startSec = RESET_SEC + 3600;
+  const wire = sleepWireFromRing(
+    { ...asRingRecord(ROW_0913, startSec, startSec + 60), receivedAtMs: (startSec + 7200) * 1000 },
+    ACROSS_RESET,
+  );
+  assert.equal(wire.clockCorrectionMs, 0);
+});
+
+test("across a reset: a pre-reset nap still in the journal is undone with +14400", () => {
+  // Started 09:00 EDT 10-04 (true 1791118800), ring + 14400 = 1791133200, which is past the
+  // reset write's ring second; arrived 10:30 EDT (1791123000), before the reset.
+  const ringStart = 1791118800 + 14400;
+  const wire = sleepWireFromRing(
+    { ...asRingRecord(ROW_0913, ringStart, ringStart + 3600), receivedAtMs: 1791123000 * 1000 },
+    ACROSS_RESET,
+  );
+  assert.equal(wire.clockCorrectionMs, 4 * HOUR_MS);
+});
+
+test("clock epochs: a reset to UTC starts one; slew steps and forward jumps do not", () => {
+  assert.equal(ringClockEpochAt(ACROSS_RESET, (RESET_SEC - 1) * 1000), 0, "before the reset write");
+  assert.equal(ringClockEpochAt(ACROSS_RESET, (RESET_SEC + 1) * 1000), RESET_SEC, "after it");
+  assert.equal(ringClockEpochAt([[0, 14400], [1791142095, 14230], [1791144065, 14060]], 1791200000 * 1000), 0, "slew");
+  assert.equal(ringClockEpochAt([[0, -32400], [1791127865, 0]], 1791200000 * 1000), 0, "forward from JST");
+  assert.equal(ringClockEpochAt(EDT_LEGACY, 1791200000 * 1000), 0, "held");
+  assert.equal(stepLedgerDayKey(1791086400, 0), "1791086400", "epoch 0 keeps the old key");
+  assert.equal(stepLedgerDayKey(1791086400, RESET_SEC), "1791086400@1791127865");
 });
 
 test("offset history parses the Java state file and refuses junk", () => {

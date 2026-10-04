@@ -461,6 +461,22 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
     "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Only when needed: connect to the ring only for a pull - every half hour, and whenever you open Health - and drop the link again afterwards, so the rest of the time the phone stays off the ring's radio as in Only via glasses. The half-hourly pulls pause while the glasses are in their case or have reported being taken off; opening Health still pulls, and one pull runs when you put them back on. Takes effect on the next connection to the glasses.",
 });
 
+// 2026-10-04: the ring's clock holds the offset it has (UTC+4 h on Chris's
+// ring, the old handshake's EDT value) and never steps back; a ring behind UTC
+// or one that just reset is written plain UTC. This switch brings a ring that
+// sits AHEAD of UTC back to UTC over a few days instead, at most 170 s per
+// connect, never across the ring's hour, never 22:00-08:00, at most once per
+// 10 min (7025819's slew). Read by the communicator from the settings store
+// at each clock write (FaceclawBleCommunicator.RING_CLOCK_RESTORE_UTC_KEY).
+export const ringClockRestoreUtcSetting = new ConfigSettingBoolean({
+  id: "ring-clock-restore-utc",
+  label: "Bring ring clock back to UTC",
+  storageKey: "developer.ringClockRestoreUtc",
+  defaultValue: false,
+  description:
+    "The ring keeps whatever clock offset it has and is never set backward, because a big backward jump makes the ring wipe its stored health data. Turn this on to walk a ring that runs ahead of UTC back to UTC instead: at most 170 seconds per connection, never overnight, so it takes several days. Health data is dated correctly either way. Takes effect on the next ring connection.",
+});
+
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
 // (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx
 // Whisper backend. Same underlying model family, two different places it

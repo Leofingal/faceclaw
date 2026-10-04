@@ -1547,7 +1547,7 @@ public final class RingProtocol {
     }
 
     // ------------------------------------------------------------------
-    // The ring's clock: Even's scheme, reached by a slew (2026-10-04)
+    // The ring's clock: hold its offset, never step it back (2026-10-04)
     // ------------------------------------------------------------------
     //
     // Even writes plain UTC seconds into 00:0E and 00:05 and the real zone
@@ -1556,13 +1556,26 @@ public final class RingProtocol {
     // ring's clock 13 h BACK, and the ring dropped every record not newer
     // than its last (the Japan heart-rate hole).
     //
-    // Getting from UTC+4 h to UTC is itself a 4 h backward move, and the
-    // firmware's clock transition (openCFW r1 TIME-HEALTH-ROLLOVER-
+    // The firmware's clock transition (openCFW r1 TIME-HEALTH-ROLLOVER-
     // CORRELATION.md) resets the sleep engine on a backward jump of >= 180 s
-    // and FORMATS THE HEALTH DATABASE on >= 3600 s. So the clock goes back at
-    // most CLOCK_MAX_BACK_STEP_SEC per connect, and forward in one write.
-    // The offset the ring holds ("ring clock minus true UTC") is persisted by
-    // RingClockState, so a restart resumes the slew where it was.
+    // and FORMATS THE HEALTH DATABASE on >= 3600 s. 7025819 slewed the ring
+    // from UTC+4 h to UTC at most 170 s per connect, to match Even. Chris,
+    // 2026-10-04: "It doesn't really matter what time the ring thinks it is."
+    // The store records the offset in force per record and undoes it on
+    // ingest, so the default rule is now (planClockWrite):
+    //   - ring behind UTC, or no clock (a reset seen on this link): write
+    //     plain UTC, a forward move, safe at any size;
+    //   - ring at or ahead of UTC: write now + the offset it already holds.
+    //     Never a backward step.
+    // The slew survives as a developer setting, default off
+    // (developer.ringClockRestoreUtc): with it on, an offset above 0 comes down
+    // by 7025819's rules until it reaches 0. The offset the ring holds ("ring
+    // clock minus true UTC") is persisted by RingClockState.
+
+    /** ClockPlan.mode: the default rule, hold the offset (never back). */
+    public static final String CLOCK_MODE_HOLD = "hold";
+    /** ClockPlan.mode: developer.ringClockRestoreUtc on, slew an offset above 0 to UTC. */
+    public static final String CLOCK_MODE_RESTORE_UTC = "restore-utc";
 
     /** Largest backward move in one write: 10 s under the firmware's 180 s line. */
     public static final long CLOCK_MAX_BACK_STEP_SEC = 170L;
@@ -1584,7 +1597,7 @@ public final class RingProtocol {
 
     /** One connect's clock write, decided before it is sent. */
     public static final class ClockPlan {
-        /** True UTC seconds at the decision: the target value. */
+        /** True UTC seconds at the decision. */
         public final long nowSec;
         /** The phone's zone, minutes east of UTC, for 00:05. */
         public final int tzMinutes;
@@ -1594,42 +1607,91 @@ public final class RingProtocol {
         public final long offsetSec;
         /** The u32 that goes into 00:0E and both 00:05s. */
         public final long writtenSec;
-        /** What set the size of the move: see {@link #planClockWrite}. */
+        /** Why this value: see {@link #planClockWrite}. */
         public final String limit;
+        /** {@link #CLOCK_MODE_HOLD} or {@link #CLOCK_MODE_RESTORE_UTC}: the rule in force. */
+        public final String mode;
+        /** The ring reset on this link and has no clock: the write is forward from nothing. */
+        public final boolean clockless;
 
         ClockPlan(long nowSec, int tzMinutes, long prevOffsetSec, long offsetSec, String limit) {
+            this(nowSec, tzMinutes, prevOffsetSec, offsetSec, limit, CLOCK_MODE_RESTORE_UTC, false);
+        }
+
+        ClockPlan(long nowSec, int tzMinutes, long prevOffsetSec, long offsetSec, String limit, String mode,
+                boolean clockless) {
             this.nowSec = nowSec;
             this.tzMinutes = tzMinutes;
             this.prevOffsetSec = prevOffsetSec;
             this.offsetSec = offsetSec;
             this.writtenSec = nowSec + offsetSec;
             this.limit = limit;
+            this.mode = mode;
+            this.clockless = clockless;
         }
 
         public long stepSec() {
             return offsetSec - prevOffsetSec;
+        }
+
+        /** A real backward move of the ring's clock (not the first write after a reset). */
+        public boolean isBackwardStep() {
+            return !clockless && offsetSec < prevOffsetSec;
         }
     }
 
     /**
      * Where this connect writes the ring's clock. Pure.
      *
-     * <p>The target is offset 0 (true UTC). An offset at or below 0 goes
-     * straight to 0: a forward move is safe at any size ({@code limit}
-     * "forward", or "at-target"). An offset above 0 comes down by at most
-     * {@link #CLOCK_MAX_BACK_STEP_SEC}, and by less, or not at all, when:
-     * the phone's local hour is in the quiet window ("quiet-hours"); the last
-     * backward step was under {@link #CLOCK_BACK_STEP_SPACING_MS} ago
-     * ("spacing"); or the full step would cross the ring's local hour
-     * boundary ("hour-edge"). Otherwise "step-cap", or "last-step" for the
-     * final, smaller one.
+     * <ul>
+     *   <li>{@code clockless} (the ring reset on this link, so it holds no
+     *       clock): plain UTC, offset 0, {@code limit} "reset". Forward from
+     *       nothing, and the persisted offset becomes 0 from this boot on.</li>
+     *   <li>Offset below 0 (ring behind UTC): plain UTC in one forward write,
+     *       "forward"; at 0, "at-target".</li>
+     *   <li>Offset above 0, {@code restoreUtc} off (the default): write
+     *       {@code now + offset}, "hold". The ring's clock never moves back.</li>
+     *   <li>Offset above 0, {@code restoreUtc} on: 7025819's slew, see
+     *       {@link #planClockSlew}.</li>
+     * </ul>
      *
      * @param nowMs            true wall time
      * @param tzMinutes        phone zone, minutes east of UTC, at nowMs
      * @param currentOffsetSec ring clock minus UTC, as last committed
      * @param lastBackStepAtMs wall time of the last committed backward step, 0 = never
+     * @param clockless        a ring reset was seen on this link before the write
+     * @param restoreUtc       developer.ringClockRestoreUtc
      */
-    public static ClockPlan planClockWrite(long nowMs, int tzMinutes, long currentOffsetSec, long lastBackStepAtMs) {
+    public static ClockPlan planClockWrite(long nowMs, int tzMinutes, long currentOffsetSec, long lastBackStepAtMs,
+            boolean clockless, boolean restoreUtc) {
+        long nowSec = Math.floorDiv(nowMs, 1000L);
+        String mode = restoreUtc ? CLOCK_MODE_RESTORE_UTC : CLOCK_MODE_HOLD;
+        if (clockless) {
+            return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, 0L, "reset", mode, true);
+        }
+        if (currentOffsetSec <= 0) {
+            return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, 0L,
+                currentOffsetSec == 0 ? "at-target" : "forward", mode, false);
+        }
+        if (!restoreUtc) {
+            return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, currentOffsetSec, "hold", mode, false);
+        }
+        return planClockSlew(nowMs, tzMinutes, currentOffsetSec, lastBackStepAtMs);
+    }
+
+    /**
+     * 7025819's slew toward UTC, now behind developer.ringClockRestoreUtc. Pure.
+     *
+     * <p>An offset at or below 0 goes straight to 0: a forward move is safe at
+     * any size ({@code limit} "forward", or "at-target"). An offset above 0
+     * comes down by at most {@link #CLOCK_MAX_BACK_STEP_SEC}, and by less, or
+     * not at all, when: the phone's local hour is in the quiet window
+     * ("quiet-hours"); the last backward step was under
+     * {@link #CLOCK_BACK_STEP_SPACING_MS} ago ("spacing"); or the full step
+     * would cross the ring's local hour boundary ("hour-edge"). Otherwise
+     * "step-cap", or "last-step" for the final, smaller one.
+     */
+    public static ClockPlan planClockSlew(long nowMs, int tzMinutes, long currentOffsetSec, long lastBackStepAtMs) {
         long nowSec = Math.floorDiv(nowMs, 1000L);
         if (currentOffsetSec <= 0) {
             return new ClockPlan(nowSec, tzMinutes, currentOffsetSec, 0L,
@@ -1662,25 +1724,67 @@ public final class RingProtocol {
      * {@code segments} are {from ring second, offset} pairs in write order;
      * the first one (from 0) is the offset before any write this state knows
      * of. The LAST segment whose start is at or before {@code ringSec} wins:
-     * after a backward step the ring re-lives up to 170 s of ring time, and
+     * after a slew step the ring re-lives up to 170 s of ring time, and
      * those seconds are read as the newer offset, so a stamp is out by at most
      * one step. An empty list reads 0.
      */
     public static long clockOffsetSecAt(long[][] segments, long ringSec) {
+        return clockOffsetSecAt(segments, ringSec, Long.MAX_VALUE);
+    }
+
+    /**
+     * As above, for a record that arrived at {@code receivedAtMs}: a segment
+     * written after the record arrived cannot be the one it was stamped under.
+     * A segment's write time needs no new field: it wrote {@code now + offset},
+     * so it took effect at true second {@code start - offset}.
+     *
+     * <p>This matters after a ring reset under the hold rule: the ring goes
+     * from UTC+4 h to UTC, so its clock re-lives 4 h of ring seconds. Pages
+     * that arrived before the reset (journaled, not yet stored) are read with
+     * the offset in force when they arrived, and a stamp that would put a
+     * record more than {@link #CLOCK_FUTURE_SLACK_SEC} after its own arrival
+     * is read with the segment before. Mirrors {@code ringClockOffsetSecAt} in
+     * {@code health-ingest.ts}.
+     */
+    public static long clockOffsetSecAt(long[][] segments, long ringSec, long receivedAtMs) {
         if (segments == null || segments.length == 0) {
             return 0L;
         }
+        long rxSec = receivedAtMs == Long.MAX_VALUE ? Long.MAX_VALUE : Math.floorDiv(receivedAtMs, 1000L);
         for (int i = segments.length - 1; i >= 0; i--) {
-            if (segments[i][0] <= ringSec) {
-                return segments[i][1];
+            long start = segments[i][0];
+            long offset = segments[i][1];
+            if (start > ringSec) {
+                continue;
             }
+            if (i > 0 && rxSec != Long.MAX_VALUE) {
+                if (start - offset > rxSec) {
+                    continue;
+                }
+                if (ringSec - offset > rxSec + CLOCK_FUTURE_SLACK_SEC) {
+                    continue;
+                }
+            }
+            return offset;
         }
         return segments[0][1];
     }
 
     /**
-     * One {@code ringClock} receipt line per clock write: the value written,
-     * the target (true UTC), and the gap still to slew. {@code rsp} is the
+     * How far after its own arrival a record's true time may land before the
+     * lookup reads it with the older segment instead: ring drift between
+     * connects plus a slew step. Only a backward move of more than this
+     * (a reset from UTC+4 h to UTC) can trip it.
+     */
+    public static final long CLOCK_FUTURE_SLACK_SEC = 600L;
+
+    /**
+     * One {@code ringClock} receipt line per clock write: the value written
+     * ({@code writtenSec}), true UTC ({@code targetSec}), the offset written
+     * ({@code gapSec}: held under the hold rule) and the one before
+     * ({@code prevGapSec}), why ({@code limit}: hold, reset, forward,
+     * at-target, or a slew limit), the rule ({@code mode}) and whether a ring
+     * reset on this link left it without a clock ({@code clockless}). {@code rsp} is the
      * ring's 00:0E answer; {@code committed} says the new offset was saved
      * (only with an RSP, so an unanswered write never lets the next step
      * start from a value the ring may not hold). {@code note} says why the
@@ -1700,6 +1804,8 @@ public final class RingProtocol {
             + ",\"written\":" + written
             + ",\"rsp\":" + rsp
             + ",\"committed\":" + committed
+            + ",\"mode\":\"" + jsonSafe(plan.mode) + "\""
+            + ",\"clockless\":" + plan.clockless
             + (note == null ? "" : ",\"note\":\"" + jsonSafe(note) + "\"") + "}";
     }
 

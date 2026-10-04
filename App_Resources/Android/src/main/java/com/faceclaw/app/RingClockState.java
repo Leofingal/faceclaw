@@ -14,15 +14,19 @@ import java.util.regex.Pattern;
 /**
  * Where the ring's clock is, persisted (2026-10-04): {@code files/health/ring-clock.json}.
  *
- * <p>The ring's clock is slewed from our old value ({@code now - zone offset},
- * UTC+4 h in EDT) to Even's (plain UTC) by at most
- * {@link RingProtocol#CLOCK_MAX_BACK_STEP_SEC} per connect; see
- * {@link RingProtocol#planClockWrite}. This file holds:
+ * <p>The ring's clock holds whatever offset it has at or above UTC (ours:
+ * UTC+4 h, the old {@code now - zone offset} in EDT) and never moves back; a
+ * ring behind UTC, or one that reset and lost its clock, is written plain UTC
+ * (see {@link RingProtocol#planClockWrite}). With the developer setting
+ * {@code developer.ringClockRestoreUtc} on, an offset above 0 is slewed to UTC
+ * by at most {@link RingProtocol#CLOCK_MAX_BACK_STEP_SEC} per connect. The
+ * file format is unchanged from 7025819. This file holds:
  * <ul>
  *   <li>{@code offsetSec}: ring clock minus true UTC as last written AND
- *       answered. The next backward step starts from here, so a value the ring
+ *       answered. The next write starts from here, so a value the ring
  *       may not have taken is never a base.</li>
- *   <li>{@code lastBackStepAtMs}: wall time of the last committed backward step.</li>
+ *   <li>{@code lastBackStepAtMs}: wall time of the last committed backward
+ *       slew step (the write after a reset is not one).</li>
  *   <li>{@code segments}: {@code [ring second, offset]} from each committed
  *       change, oldest first, the first one {@code [0, seed]}. The store sync
  *       reads it to turn a ring timestamp back into true time with the offset
@@ -47,7 +51,7 @@ import java.util.regex.Pattern;
  */
 public final class RingClockState {
     public static final String FILE = "ring-clock.json";
-    /** Bounds the file. The 4 h slew is 85 segments; nothing else adds any. */
+    /** Bounds the file. The 4 h slew is 85 segments; the hold rule adds one per reset or forward jump. */
     static final int MAX_SEGMENTS = 512;
 
     private static final Object LOCK = new Object();
@@ -109,7 +113,7 @@ public final class RingClockState {
 
     /**
      * Record a write the ring answered: the new offset becomes the base, a
-     * backward step stamps {@code lastBackStepAtMs}, and a changed offset
+     * backward slew step stamps {@code lastBackStepAtMs}, and a changed offset
      * opens a segment at the written ring second. Returns the saved state.
      */
     public static RingClockState commit(File healthDir, RingProtocol.ClockPlan plan, long nowMs) {
@@ -126,7 +130,7 @@ public final class RingClockState {
                 // Drop the second-oldest, keeping the seed as the floor.
                 segs.remove(1);
             }
-            long lastBack = plan.offsetSec < plan.prevOffsetSec ? nowMs : current.lastBackStepAtMs;
+            long lastBack = plan.isBackwardStep() ? nowMs : current.lastBackStepAtMs;
             RingClockState next = new RingClockState(plan.offsetSec, lastBack, current.seed, current.seedOffsetSec,
                 current.seededAtMs, segs.toArray(new long[0][]), false);
             save(healthDir, next);

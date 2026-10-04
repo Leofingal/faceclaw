@@ -91,11 +91,18 @@ public final class RingLinkHarness {
         // 2026-09-25 evening: no timed ring pull while the glasses mic runs.
         if ("onDemandMicSessionTicks".contains(only)) onDemandMicSessionTicks();
         if ("directMicSessionTicks".contains(only)) directMicSessionTicks();
-        // 2026-10-04: the ring clock slewed to Even's scheme; ringBoot dated; RSSI per pull.
-        if ("ringClockSlewFromHome".contains(only)) ringClockSlewFromHome();
+        // 2026-10-04 (later): the ring clock HOLDS its offset; a reset or a ring
+        // behind UTC is written UTC. The slew is the developer setting.
+        if ("ringClockHoldFromHome".contains(only)) ringClockHoldFromHome();
         if ("ringClockForwardFromJapan".contains(only)) ringClockForwardFromJapan();
+        if ("ringClockStaysUtc".contains(only)) ringClockStaysUtc();
+        if ("ringClockResetMidRun".contains(only)) ringClockResetMidRun();
+        // The developer setting developer.ringClockRestoreUtc: 7025819's slew.
+        if ("ringClockSlewFromHome".contains(only)) ringClockSlewFromHome();
+        if ("ringClockResetWhileSlewing".contains(only)) ringClockResetWhileSlewing();
         if ("ringClockResumeAfterRestart".contains(only)) ringClockResumeAfterRestart();
         if ("ringClockUnansweredWrite".contains(only)) ringClockUnansweredWrite();
+        // 2026-10-04: ringBoot dated; RSSI per pull.
         if ("ringBootDatedAndRssi".contains(only)) ringBootDatedAndRssi();
 
         System.out.println();
@@ -1014,18 +1021,264 @@ public final class RingLinkHarness {
     }
 
     /**
-     * The instruction's known-good, home case: the ring starts at UTC + 4 h
-     * (what 062fb8a writes in EDT, and where the ring sat on 10-04). Each
-     * connect's write must step back by at most 170 s, and the slew must reach
-     * plain UTC. Starts 11:01:05 EDT so the first write meets the hour edge.
+     * Set developer.ringClockRestoreUtc through the communicator's seam. False
+     * on a build without the seam (7025819/8b1aefb: always slew; 062fb8a: no
+     * clock logic at all).
+     */
+    static boolean setRestoreUtc(Boolean on) {
+        try {
+            Field f = FaceclawBleCommunicator.class.getDeclaredField("ringClockRestoreUtcSetting");
+            f.setAccessible(true);
+            f.set(null, on == null ? null : (java.util.function.BooleanSupplier) () -> on);
+            return true;
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    /** The persisted ring-clock.json of a rig, or "" when there is none. */
+    static String ringClockJson(Rig rig) {
+        try {
+            return new String(Files.readAllBytes(new File(new File(rig.files, "health"), "ring-clock.json").toPath()),
+                java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    /** The {@code [ring second, offset]} segments of a ring-clock.json. */
+    static long[][] segmentsOf(String json) {
+        List<long[]> out = new ArrayList<>();
+        int at = json.indexOf("\"segments\"");
+        if (at < 0) return new long[0][];
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("\\[\\s*(-?[0-9]+)\\s*,\\s*(-?[0-9]+)\\s*\\]").matcher(json.substring(at));
+        while (m.find()) out.add(new long[] {Long.parseLong(m.group(1)), Long.parseLong(m.group(2))});
+        return out.toArray(new long[0][]);
+    }
+
+    /** Write a ring-clock.json by hand (8b1aefb's format): the ring at {@code offset} since forever. */
+    static void writeRingClock(Rig rig, long offset) throws IOException {
+        File dir = new File(rig.files, "health");
+        dir.mkdirs();
+        Files.write(new File(dir, "ring-clock.json").toPath(), ("{\"v\":1,\"offsetSec\":" + offset
+            + ",\"lastBackStepAtMs\":0,\"seed\":\"harness\",\"seedOffsetSec\":" + offset
+            + ",\"seededAtMs\":0,\"segments\":[[0," + offset + "]]}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The default rule, home case: the ring starts at UTC + 4 h (what 062fb8a
+     * writes in EDT, and where the ring sat on 10-04), the setting OFF. Every
+     * connect for two days (one per 30 min, quiet hours included) writes
+     * now + 14400: the offset is held, never a backward write.
+     * Hand-computed first write, 11:31:05 EDT = 1791127865: 1791127865 + 14400 = 1791142265.
+     */
+    static void ringClockHoldFromHome() throws Exception {
+        section("ring clock: setting off, from UTC+4 h (home): hold +4 h on every connect, never back");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        boolean seam = setRestoreUtc(false);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            int start = FaceclawBleManager.clockWrites.size();
+            int connects = 96;
+            List<Long> offsets = new ArrayList<>();
+            for (int i = 1; i <= connects; i++) {
+                offsets.add(clockConnect(rig, "hold " + i, virtual));
+            }
+            List<long[]> writes = clockOffsetsSince(start, virtual);
+            long firstWrite = writes.isEmpty() ? -1L : writes.get(0)[0];
+            System.out.println("  setting seam: " + (seam ? "yes" : "NO (build without the setting)"));
+            System.out.println("  connect 1 wrote " + firstWrite + " (offset " + offsets.get(0) + " s)");
+            System.out.println("  offsets over " + connects + " connects: " + new java.util.TreeSet<>(offsets));
+            expect("connect 1 writes 1791127865 + 14400 = 1791142265 (hand-computed)", virtual && firstWrite == 1791142265L);
+            expect("every one of " + connects + " connects (48 h, quiet hours included) writes offset +14400",
+                offsets.size() == connects && offsets.stream().allMatch(o -> o != null && o == 14400L));
+            boolean neverBack = true;
+            for (int i = 1; i < writes.size(); i++) {
+                // Wall time moves 1800 s between connects; the written value must move by the same.
+                if (writes.get(i)[0] - writes.get(i - 1)[0] != 1800L) neverBack = false;
+            }
+            expect("no backward write, ever: each written value is the previous + 1800 s", neverBack && writes.size() == connects);
+            List<String> clockLines = rig.receipts("\"type\":\"ringClock\"");
+            expect("one ringClock receipt per connect: " + clockLines.size(), clockLines.size() == connects);
+            expect("the first receipt: seeded from the old EDT value, limit hold, mode hold",
+                !clockLines.isEmpty() && clockLines.get(0).contains("\"note\":\"seeded legacy-zone 14400\"")
+                    && clockLines.get(0).contains("\"gapSec\":14400,\"prevGapSec\":14400,\"stepSec\":0,")
+                    && clockLines.get(0).contains("\"limit\":\"hold\"") && clockLines.get(0).contains("\"mode\":\"hold\""));
+            if (!clockLines.isEmpty()) System.out.println("  " + clockLines.get(0));
+            String json = ringClockJson(rig);
+            System.out.println("  ring-clock.json: " + json);
+            expect("ring-clock.json: offset 14400, one segment [0,14400], no backward step stamped",
+                json.contains("\"offsetSec\":14400,\"lastBackStepAtMs\":0,") && json.contains("\"segments\":[[0,14400]]"));
+            List<Long> zones = anchorZonesSince(start);
+            expect("every 00:05 carries EDT, -240 (Even's 10 ff)", !zones.isEmpty() && zones.stream().allMatch(z -> z == -240L));
+            rig.close();
+        } finally {
+            setRestoreUtc(null);
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /** A ring already on UTC (Even's value): written UTC, nothing changes. */
+    static void ringClockStaysUtc() throws Exception {
+        section("ring clock: starts at UTC, stays UTC");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        setRestoreUtc(false);
+        try {
+            Rig rig = new Rig(true);
+            writeRingClock(rig, 0L);
+            rig.glassesConnect();
+            int start = FaceclawBleManager.clockWrites.size();
+            List<Long> offsets = new ArrayList<>();
+            for (int i = 1; i <= 6; i++) offsets.add(clockConnect(rig, "utc " + i, virtual));
+            long firstWrite = clockOffsetsSince(start, virtual).isEmpty() ? -1L : clockOffsetsSince(start, virtual).get(0)[0];
+            System.out.println("  offsets " + offsets + "; connect 1 wrote " + firstWrite);
+            expect("every connect writes plain UTC (offset 0); connect 1 = 1791127865",
+                offsets.stream().allMatch(o -> o != null && o == 0L) && firstWrite == 1791127865L);
+            List<String> lines = rig.receipts("\"type\":\"ringClock\"");
+            expect("receipts say at-target", !lines.isEmpty() && lines.stream().allMatch(l -> l.contains("\"limit\":\"at-target\"")));
+            expect("ring-clock.json unchanged: [[0,0]]", ringClockJson(rig).contains("\"segments\":[[0,0]]"));
+            rig.close();
+        } finally {
+            setRestoreUtc(null);
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * Hold at +4 h, the ring resets between two connects, then more connects.
+     * The connect that sees the boot signature writes plain UTC (forward from
+     * nothing) and every later one stays UTC. Conversions on both sides of the
+     * reset, through the offset history the build saved: a record stamped
+     * before the reset (whether it arrived before the reset or after it) reads
+     * +14400; a record stamped after reads 0.
+     */
+    static void ringClockResetMidRun() throws Exception {
+        section("ring clock: setting off, reset mid-run: UTC after it, conversions right on both sides");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        setRestoreUtc(false);
+        FaceclawBleManager.pagesPerHealthRequest = 1;
+        FaceclawBleManager.pageTrailerSec = 1174L;
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            int start = FaceclawBleManager.clockWrites.size();
+            List<Long> offsets = new ArrayList<>();
+            for (int i = 1; i <= 3; i++) offsets.add(clockConnect(rig, "pre-reset " + i, virtual));
+            long resetWall = WALL[0] + 30L * 60_000L;
+            FaceclawBleManager.bootHelloOnNextConnect = true;
+            offsets.add(clockConnect(rig, "reset", virtual));
+            for (int i = 1; i <= 3; i++) offsets.add(clockConnect(rig, "post-reset " + i, virtual));
+            List<long[]> writes = clockOffsetsSince(start, virtual);
+            StringBuilder w = new StringBuilder("  written (00:0E u32, one connect per 30 min; the 4th is the reset):");
+            for (long[] x : writes) w.append(' ').append(x[0]);
+            System.out.println("  offsets " + offsets);
+            System.out.println(w);
+            expect("+14400 x3, then the reset connect writes UTC, then UTC x3",
+                offsets.equals(java.util.Arrays.asList(14400L, 14400L, 14400L, 0L, 0L, 0L, 0L)));
+            long resetSec = Math.floorDiv(resetWall, 1000L);
+            expect("the reset write is exactly the wall second, " + resetSec, writes.size() == 7 && writes.get(3)[0] == resetSec);
+            List<String> lines = rig.receipts("\"type\":\"ringClock\"");
+            String resetLine = lines.size() >= 4 ? lines.get(3) : "(none)";
+            System.out.println("  " + resetLine);
+            expect("the reset receipt: limit reset, clockless true, prev 14400, gap 0, committed",
+                resetLine.contains("\"gapSec\":0,\"prevGapSec\":14400,") && resetLine.contains("\"limit\":\"reset\"")
+                    && resetLine.contains("\"committed\":true") && resetLine.contains("\"clockless\":true"));
+            expect("the connect after it: at-target, clockless false",
+                lines.size() >= 5 && lines.get(4).contains("\"limit\":\"at-target\"") && lines.get(4).contains("\"clockless\":false"));
+            String json = ringClockJson(rig);
+            System.out.println("  ring-clock.json: " + json);
+            long[][] segs = segmentsOf(json);
+            expect("segments: [0,14400] then [" + resetSec + ",0]",
+                segs.length == 2 && segs[0][0] == 0L && segs[0][1] == 14400L && segs[1][0] == resetSec && segs[1][1] == 0L);
+            expect("a reset write is not a backward step: lastBackStepAtMs stays 0", json.contains("\"lastBackStepAtMs\":0,"));
+            // Conversions, through the build's own lookup and the saved history.
+            // Pre-reset record: stamped 10 min before the reset, true t = resetSec - 600, ring t + 14400.
+            long preTrue = resetSec - 600L;
+            long preRing = preTrue + 14400L;
+            long a = RingProtocol.clockOffsetSecAt(segs, preRing, (resetSec - 300L) * 1000L);
+            long b = RingProtocol.clockOffsetSecAt(segs, preRing, (resetSec + 60L) * 1000L);
+            // Post-reset record: stamped 20 min after the reset under UTC, arrived 30 min after.
+            long postRing = resetSec + 1200L;
+            long c = RingProtocol.clockOffsetSecAt(segs, postRing, (resetSec + 1800L) * 1000L);
+            // An old pre-reset record (2 days back), arriving after the reset.
+            long oldRing = resetSec - 172_800L + 14400L;
+            long d = RingProtocol.clockOffsetSecAt(segs, oldRing, (resetSec + 60L) * 1000L);
+            System.out.println("  conversions: pre-reset ring " + preRing + " -> true " + (preRing - a) + " (arrived before) / "
+                + (preRing - b) + " (arrived after); post-reset ring " + postRing + " -> " + (postRing - c)
+                + "; 2 days earlier ring " + oldRing + " -> " + (oldRing - d));
+            expect("pre-reset record that arrived before the reset: true time " + preTrue, preRing - a == preTrue);
+            expect("pre-reset record that arrived after the reset: true time " + preTrue + " (ring-second lookup alone gives "
+                + (preRing - RingProtocol.clockOffsetSecAt(segs, preRing)) + ")", preRing - b == preTrue);
+            expect("post-reset record: true time = ring time " + postRing, postRing - c == postRing);
+            expect("a 2-day-old pre-reset record: +14400", oldRing - d == resetSec - 172_800L);
+            rig.close();
+        } finally {
+            FaceclawBleManager.bootHelloOnNextConnect = false;
+            FaceclawBleManager.pagesPerHealthRequest = 0;
+            FaceclawBleManager.pageTrailerSec = -1L;
+            setRestoreUtc(null);
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * Setting ON, slewing from +4 h; the ring resets a few connects in. The
+     * reset connect writes plain UTC (not the next 170 s step) and the slew is over.
+     */
+    static void ringClockResetWhileSlewing() throws Exception {
+        section("ring clock: setting on, reset while slewing: UTC after");
+        java.util.TimeZone saved = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
+        boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        boolean seam = setRestoreUtc(true);
+        try {
+            Rig rig = new Rig(true);
+            rig.glassesConnect();
+            List<Long> offsets = new ArrayList<>();
+            for (int i = 1; i <= 3; i++) offsets.add(clockConnect(rig, "slew " + i, virtual));
+            FaceclawBleManager.bootHelloOnNextConnect = true;
+            offsets.add(clockConnect(rig, "reset", virtual));
+            for (int i = 1; i <= 2; i++) offsets.add(clockConnect(rig, "after " + i, virtual));
+            System.out.println("  offsets " + offsets);
+            expect("14230, 14060, 13890, then the reset writes UTC, then UTC",
+                seam && offsets.equals(java.util.Arrays.asList(14230L, 14060L, 13890L, 0L, 0L, 0L)));
+            List<String> lines = rig.receipts("\"type\":\"ringClock\"");
+            expect("the reset receipt: prev 13890, limit reset, mode restore-utc",
+                lines.size() >= 4 && lines.get(3).contains("\"prevGapSec\":13890,") && lines.get(3).contains("\"limit\":\"reset\"")
+                    && lines.get(3).contains("\"mode\":\"restore-utc\""));
+            rig.close();
+        } finally {
+            FaceclawBleManager.bootHelloOnNextConnect = false;
+            setRestoreUtc(null);
+            restoreWall();
+            java.util.TimeZone.setDefault(saved);
+        }
+    }
+
+    /**
+     * The developer setting ON (developer.ringClockRestoreUtc): 7025819's slew.
+     * The ring starts at UTC + 4 h. Each connect's write must step back by at
+     * most 170 s, and the slew must reach plain UTC, then hold it.
      * Hand-computed first write, 11:31:05 EDT = 1791127865: 1791127865 + 14230.
      */
     static void ringClockSlewFromHome() throws Exception {
-        section("ring clock: from UTC+4 h (home) to UTC, at most 170 s back per connect");
+        section("ring clock: setting on, from UTC+4 h (home) to UTC, at most 170 s back per connect");
         java.util.TimeZone saved = java.util.TimeZone.getDefault();
         java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
         // 30 min before 11:31:05 EDT; clockConnect adds 30 min before each connect.
         boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        setRestoreUtc(true);
         try {
             Rig rig = new Rig(true);
             rig.glassesConnect();
@@ -1062,16 +1315,22 @@ public final class RingLinkHarness {
             System.out.println("  " + connects + " connects (one per 30 min of virtual wall time)");
             expect("every write stepped back 0..170 s (" + connects + " connects)", small);
             expect("the slew reached plain UTC (offset 0)", prev == 0L);
+            Long after = clockConnect(rig, "clock after", virtual);
+            connects++;
+            expect("then it behaves as the hold rule: stays at 0", after != null && after == 0L);
             List<String> clockLines = rig.receipts("\"type\":\"ringClock\"");
             expect("one ringClock receipt per connect: " + clockLines.size(), clockLines.size() == connects);
             expect("the first receipt says the state was seeded from the old EDT value",
                 !clockLines.isEmpty() && clockLines.get(0).contains("\"note\":\"seeded legacy-zone 14400\""));
-            expect("the last receipt shows gap 0",
-                !clockLines.isEmpty() && clockLines.get(clockLines.size() - 1).contains("\"gapSec\":0,"));
+            expect("the last receipt shows gap 0, at-target, mode restore-utc",
+                !clockLines.isEmpty() && clockLines.get(clockLines.size() - 1).contains("\"gapSec\":0,")
+                    && clockLines.get(clockLines.size() - 1).contains("\"limit\":\"at-target\"")
+                    && clockLines.get(clockLines.size() - 1).contains("\"mode\":\"restore-utc\""));
             List<Long> zones = anchorZonesSince(start);
             expect("every 00:05 carries EDT, -240 (Even's 10 ff)", !zones.isEmpty() && zones.stream().allMatch(z -> z == -240L));
             rig.close();
         } finally {
+            setRestoreUtc(null);
             restoreWall();
             java.util.TimeZone.setDefault(saved);
         }
@@ -1082,10 +1341,11 @@ public final class RingLinkHarness {
      * write does it. On 062fb8a the write is now - 32400 and 00:05 says -240.
      */
     static void ringClockForwardFromJapan() throws Exception {
-        section("ring clock: from UTC-9 h (JST) to UTC in one forward write");
+        section("ring clock: setting off, from UTC-9 h (JST) to UTC in one forward write");
         java.util.TimeZone saved = java.util.TimeZone.getDefault();
         java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
         boolean virtual = useVirtualWall(1791127865000L);
+        setRestoreUtc(false);
         try {
             Rig rig = new Rig(true);
             rig.glassesConnect();
@@ -1103,6 +1363,7 @@ public final class RingLinkHarness {
                 !lines.isEmpty() && lines.get(0).contains("\"prevGapSec\":-32400") && lines.get(0).contains("\"limit\":\"forward\""));
             rig.close();
         } finally {
+            setRestoreUtc(null);
             restoreWall();
             java.util.TimeZone.setDefault(saved);
         }
@@ -1110,10 +1371,11 @@ public final class RingLinkHarness {
 
     /** An app restart mid-slew resumes from the saved offset, not from the seed. */
     static void ringClockResumeAfterRestart() throws Exception {
-        section("ring clock: a restart mid-slew resumes where it was");
+        section("ring clock: setting on, a restart mid-slew resumes where it was");
         java.util.TimeZone saved = java.util.TimeZone.getDefault();
         java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
         boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        setRestoreUtc(true);
         try {
             Rig rig = new Rig(true);
             rig.glassesConnect();
@@ -1128,6 +1390,7 @@ public final class RingLinkHarness {
             expect("after it: 13890, not the seed again", c != null && c == 13890L);
             again.close();
         } finally {
+            setRestoreUtc(null);
             restoreWall();
             java.util.TimeZone.setDefault(saved);
         }
@@ -1139,10 +1402,11 @@ public final class RingLinkHarness {
      * at most 170 s back from either value the ring may hold.
      */
     static void ringClockUnansweredWrite() throws Exception {
-        section("ring clock: an unanswered 00:0E is not a base");
+        section("ring clock: setting on, an unanswered 00:0E is not a base");
         java.util.TimeZone saved = java.util.TimeZone.getDefault();
         java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/New_York"));
         boolean virtual = useVirtualWall(1791127865000L - 30L * 60_000L);
+        setRestoreUtc(true);
         try {
             Rig rig = new Rig(true);
             rig.glassesConnect();
@@ -1163,6 +1427,7 @@ public final class RingLinkHarness {
                 lines.size() >= 2 && lines.get(1).contains("\"rsp\":false,\"committed\":false"));
             rig.close();
         } finally {
+            setRestoreUtc(null);
             restoreWall();
             java.util.TimeZone.setDefault(saved);
         }

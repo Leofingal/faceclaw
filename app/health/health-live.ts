@@ -47,8 +47,10 @@ import {
   convertRecords,
   parseRingBoots,
   parseRingClockSegments,
+  ringClockEpochAt,
   ringSecToRealMs,
   sleepWireFromRing,
+  stepLedgerDayKey,
   type RingBootDate,
   type RingClockSegments,
   type WireHourlyRecord,
@@ -145,9 +147,9 @@ function ringBootsReader(): () => readonly RingBootDate[] {
   };
 }
 
-function anchorToMs(clock: RingClockSegments, anchorUnixSeconds: number): number | null {
+function anchorToMs(clock: RingClockSegments, anchorUnixSeconds: number, receivedAtMs: number): number | null {
   if (anchorUnixSeconds === UNKNOWN_TIME) return null;
-  return ringSecToRealMs(clock, anchorUnixSeconds);
+  return ringSecToRealMs(clock, anchorUnixSeconds, receivedAtMs);
 }
 
 /**
@@ -232,7 +234,7 @@ function readLedger(): StepBucketLedger | null {
 
 /** Keep the ledger bounded. Newest `LEDGER_DAYS_KEPT` days survive. */
 function pruneLedger(ledger: StepBucketLedger): void {
-  const keys = Object.keys(ledger.ringDays).sort((a, b) => Number(b) - Number(a));
+  const keys = Object.keys(ledger.ringDays).sort((a, b) => ledgerKeyOrder(b) - ledgerKeyOrder(a));
   for (const key of keys.slice(LEDGER_DAYS_KEPT)) delete ledger.ringDays[key];
 }
 
@@ -244,13 +246,22 @@ function writeLedger(ledger: StepBucketLedger): void {
   }
 }
 
+/**
+ * Order for pruning: the epoch first (a reset to UTC makes anchors repeat, and
+ * the newer epoch is the newer day), then the anchor.
+ */
+function ledgerKeyOrder(key: string): number {
+  const [anchor, epoch] = key.split("@");
+  return Number(epoch ?? 0) * 1e10 + Number(anchor);
+}
+
 /** Merge this pull's buckets into that ring-day's ledger and return its full set. */
 function accumulateStepBuckets(
+  dayKey: string,
   anchorSec: number,
   delivered: readonly { index: number; steps: number; activeCalories: number; totalCalories: number }[],
 ): { index: number; steps: number; activeCalories: number; totalCalories: number }[] {
   const ledger: StepBucketLedger = readLedger() ?? { version: 2, ringDays: {} };
-  const dayKey = String(anchorSec);
   const day: StepDayBuckets = ledger.ringDays[dayKey] ?? {};
   ledger.ringDays[dayKey] = day;
   for (const bucket of delivered) {
@@ -274,7 +285,7 @@ function accumulateStepBuckets(
   const calories = merged.reduce((acc, b) => acc + b.totalCalories, 0);
   console.log(
     `health live: steps ledger +${delivered.length} delivered -> ${merged.length} buckets held ` +
-      `for ring-day anchor ${anchorSec}, ${steps} steps / ${calories} cal, ` +
+      `for ring-day ${dayKey === String(anchorSec) ? `anchor ${anchorSec}` : dayKey}, ${steps} steps / ${calories} cal, ` +
       `${Object.keys(ledger.ringDays).length} days in ledger`,
   );
   return merged;
@@ -297,12 +308,13 @@ function toWire(record: any, clock: RingClockSegments, boots: () => readonly Rin
       });
     }
     const anchorSec = Number(record.anchorUnixSeconds);
-    const anchorMs = anchorToMs(clock, anchorSec);
+    const receivedAtMs = Number(record.receivedAtMs);
+    const anchorMs = anchorToMs(clock, anchorSec, receivedAtMs);
     // Each group undone with the offset in force at its own ring hour.
     const dated =
       anchorMs === null
         ? groups
-        : groups.map((g) => ({ ...g, startMs: ringSecToRealMs(clock, anchorSec + g.hourIndex * 3600) }));
+        : groups.map((g) => ({ ...g, startMs: ringSecToRealMs(clock, anchorSec + g.hourIndex * 3600, receivedAtMs) }));
     return { kind: "hourly", metric, anchorMs, groups: dated };
   }
 
@@ -345,12 +357,22 @@ function toWire(record: any, clock: RingClockSegments, boots: () => readonly Rin
     // two calendar days, and the buckets land on whichever real day they fall
     // in — which is the point.
     const anchorSec = Number(record.anchorUnixSeconds);
-    const anchorMs = anchorToMs(clock, anchorSec);
+    const receivedAtMs = Number(record.receivedAtMs);
+    const anchorMs = anchorToMs(clock, anchorSec, receivedAtMs);
     if (anchorMs === null) return { kind: "steps", anchorMs: null, buckets };
-    // Hand convertSteps() the whole day, not just this pull's increment.
-    const accumulated = accumulateStepBuckets(anchorSec, buckets);
+    // Hand convertSteps() the whole day, not just this pull's increment. The
+    // day is keyed by clock epoch too: after a reset from UTC+4 h to UTC the
+    // ring re-lives 4 h of ring time, and its ring-day anchors repeat.
+    const accumulated = accumulateStepBuckets(
+      stepLedgerDayKey(anchorSec, ringClockEpochAt(clock, receivedAtMs)),
+      anchorSec,
+      buckets,
+    );
     // Each bucket undone with the offset in force at its own ring time.
-    const dated = accumulated.map((b) => ({ ...b, startMs: ringSecToRealMs(clock, anchorSec + b.index * 600) }));
+    const dated = accumulated.map((b) => ({
+      ...b,
+      startMs: ringSecToRealMs(clock, anchorSec + b.index * 600, receivedAtMs),
+    }));
     return { kind: "steps", anchorMs, buckets: dated };
   }
 

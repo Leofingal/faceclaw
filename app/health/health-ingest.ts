@@ -150,13 +150,23 @@ export type ConversionResult = {
  * JST (+09:00) receipts hours after landing in the US, and stored the
  * in-flight nap 9 h late (`sleep.jsonl` row 10-04 11:15Z, ring 02:55:30Z).
  *
- * Now the handshake slews the ring toward Even's value, plain UTC (0), at most
- * 170 s back per connect, and records every committed change in
+ * Now the handshake holds the ring's offset when it is at or ahead of UTC
+ * (never a backward step), writes plain UTC when the ring is behind or has
+ * just reset (forward), and, only with the developer setting
+ * `developer.ringClockRestoreUtc`, slews it to UTC at most 170 s back per
+ * connect. Every committed change is recorded in
  * `files/health/ring-clock.json` (`RingClockState.java`) as
  * `[ring second, offset]` segments. A ring timestamp is undone with the
  * offset in force when the ring STAMPED it, read from those segments: no zone
- * is involved, so the two sides cannot drift apart again, and once the slew
- * is done the offset is 0 and this is the identity.
+ * is involved, so the two sides cannot drift apart again.
+ *
+ * A reset under the hold rule moves the ring from UTC+4 h to UTC, so its clock
+ * re-lives 4 h of ring seconds and a ring second alone no longer names one
+ * offset. The record's arrival time settles it: a segment written after the
+ * record arrived is not the one it was stamped under (a segment's write time
+ * is `start - offset`, since the write was `now + offset`), and a reading that
+ * would put the record well after its own arrival belongs to the segment
+ * before.
  *
  * The known-good EDT windows in `tests/health-night.test.cjs` still hold
  * through this path with the history the old build implies, `[[0, 14400]]`.
@@ -168,17 +178,59 @@ export type RingClockSegments = readonly (readonly [number, number])[];
  * The last segment starting at or before `ringSec` wins (mirrors
  * `RingProtocol.clockOffsetSecAt`); before the first, the first; none, 0.
  */
-export function ringClockOffsetSecAt(segments: RingClockSegments, ringSec: number): number {
+export function ringClockOffsetSecAt(segments: RingClockSegments, ringSec: number, receivedAtMs?: number): number {
   if (!segments || segments.length === 0) return 0;
+  const rxSec = receivedAtMs === undefined || !Number.isFinite(receivedAtMs) ? null : Math.floor(receivedAtMs / 1000);
   for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i]![0] <= ringSec) return segments[i]![1];
+    const [start, offset] = segments[i]!;
+    if (start > ringSec) continue;
+    if (i > 0 && rxSec !== null) {
+      // Written after this record arrived: not the offset it was stamped under.
+      if (start - offset > rxSec) continue;
+      // Would date the record after its own arrival: stamped under an older segment.
+      if (ringSec - offset > rxSec + RING_CLOCK_FUTURE_SLACK_SEC) continue;
+    }
+    return offset;
   }
   return segments[0]![1];
 }
 
-/** A ring timestamp (seconds, ring clock) as true epoch ms. */
-export function ringSecToRealMs(segments: RingClockSegments, ringSec: number): number {
-  return (ringSec - ringClockOffsetSecAt(segments, ringSec)) * 1000;
+/** Mirrors `RingProtocol.CLOCK_FUTURE_SLACK_SEC`: ring drift plus one slew step, well under a reset's 4 h. */
+export const RING_CLOCK_FUTURE_SLACK_SEC = 600;
+
+/** A ring timestamp (seconds, ring clock) as true epoch ms; `receivedAtMs` is the record's arrival. */
+export function ringSecToRealMs(segments: RingClockSegments, ringSec: number, receivedAtMs?: number): number {
+  return (ringSec - ringClockOffsetSecAt(segments, ringSec, receivedAtMs)) * 1000;
+}
+
+/**
+ * Which clock epoch a record that arrived at `receivedAtMs` belongs to: the
+ * true second (`start - offset`) of the latest segment, written by then, that
+ * moved the ring's clock BACK by more than `RING_CLOCK_FUTURE_SLACK_SEC` (a
+ * reset from UTC+4 h to UTC), or 0 when there is none. Inside one epoch a ring
+ * second names one instant; across epochs it may not, so the step ledger keys
+ * a ring-day by (anchor, epoch). A slew step (170 s) or a forward jump never
+ * starts an epoch, so existing ledgers keep their keys.
+ */
+export function ringClockEpochAt(segments: RingClockSegments, receivedAtMs: number): number {
+  if (!segments || segments.length < 2) return 0;
+  const rxSec = Math.floor(receivedAtMs / 1000);
+  for (let i = segments.length - 1; i >= 1; i--) {
+    const [start, offset] = segments[i]!;
+    const written = start - offset;
+    if (written > rxSec) continue;
+    if (segments[i - 1]![1] - offset > RING_CLOCK_FUTURE_SLACK_SEC) return written;
+  }
+  return 0;
+}
+
+/**
+ * The step ledger's key for a ring-day: the raw anchor second, plus `@epoch`
+ * once a reset has started a clock epoch (`ringClockEpochAt`). Epoch 0 keeps
+ * the plain anchor, so a ledger written before this build keeps its keys.
+ */
+export function stepLedgerDayKey(anchorSec: number, epoch: number): string {
+  return epoch ? `${anchorSec}@${epoch}` : String(anchorSec);
 }
 
 /**
@@ -317,9 +369,10 @@ export function sleepWireFromRing(
     clockCorrectionMs = bootAtMs === null ? undefined : -bootAtMs;
   } else {
     // The offset in force at the session's START, for both ends: the stage
-    // segments are ring-clock durations, and the slew never steps back in the
-    // quiet hours (RingProtocol.CLOCK_QUIET_*), so a night is not split.
-    clockCorrectionMs = ringClockOffsetSecAt(clock, startTs) * 1000;
+    // segments are ring-clock durations, the hold rule never steps back, and
+    // the developer slew never steps back in the quiet hours
+    // (RingProtocol.CLOCK_QUIET_*), so a night is not split.
+    clockCorrectionMs = ringClockOffsetSecAt(clock, startTs, Number(record.receivedAtMs)) * 1000;
   }
   return {
     kind: "sleep",

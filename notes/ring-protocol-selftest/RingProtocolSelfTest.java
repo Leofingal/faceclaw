@@ -1174,35 +1174,35 @@ public final class RingProtocolSelfTest {
         // 2026-10-04T15:31:05Z = 11:31:05 EDT. Ring at the old EDT value, +14400.
         // Ring local = UTC + 14400 - 240 min = 15:31:05 local, 1865 s into the hour.
         long now = 1791127865000L;
-        RingProtocol.ClockPlan a = RingProtocol.planClockWrite(now, -240, 14400L, 0L);
+        RingProtocol.ClockPlan a = RingProtocol.planClockSlew(now, -240, 14400L, 0L);
         System.out.println("CLOCK " + a.writtenSec + " offset " + a.prevOffsetSec + " -> " + a.offsetSec + " " + a.limit);
         expect("first step from +14400: 170 s back, writes 1791127865 + 14230 = 1791142095",
             a.offsetSec == 14230L && a.writtenSec == 1791142095L && a.stepSec() == -170L
                 && "step-cap".equals(a.limit) && a.nowSec == 1791127865L);
         // :01:05 EDT (15:01:05Z): ring local 65 s into its hour, room 65 - 30 = 35 s.
-        RingProtocol.ClockPlan edge = RingProtocol.planClockWrite(1791126065000L, -240, 14400L, 0L);
+        RingProtocol.ClockPlan edge = RingProtocol.planClockSlew(1791126065000L, -240, 14400L, 0L);
         expect("65 s past the ring's hour: only 35 s back (never across the hour), writes 1791140430",
             edge.offsetSec == 14365L && edge.writtenSec == 1791140430L && "hour-edge".equals(edge.limit));
         expect("a step 5 min after the last one waits: same offset, 'spacing'",
-            RingProtocol.planClockWrite(now, -240, 14400L, now - 300_000L).offsetSec == 14400L
-                && "spacing".equals(RingProtocol.planClockWrite(now, -240, 14400L, now - 300_000L).limit));
+            RingProtocol.planClockSlew(now, -240, 14400L, now - 300_000L).offsetSec == 14400L
+                && "spacing".equals(RingProtocol.planClockSlew(now, -240, 14400L, now - 300_000L).limit));
         expect("10 min after the last one it steps",
-            RingProtocol.planClockWrite(now, -240, 14400L, now - 600_000L).offsetSec == 14230L);
+            RingProtocol.planClockSlew(now, -240, 14400L, now - 600_000L).offsetSec == 14230L);
         // 23:31:05 EDT = 03:31:05Z next day.
-        RingProtocol.ClockPlan quiet = RingProtocol.planClockWrite(1791171065000L, -240, 14400L, 0L);
+        RingProtocol.ClockPlan quiet = RingProtocol.planClockSlew(1791171065000L, -240, 14400L, 0L);
         expect("23:31 local: no backward step in the quiet hours, writes now + 14400",
             quiet.offsetSec == 14400L && quiet.writtenSec == 1791171065L + 14400L && "quiet-hours".equals(quiet.limit));
         expect("08:00 local is open again (12:00:40Z, 40 s into the ring hour -> 10 s)",
-            RingProtocol.planClockWrite(1791115240000L, -240, 14400L, 0L).offsetSec == 14390L);
+            RingProtocol.planClockSlew(1791115240000L, -240, 14400L, 0L).offsetSec == 14390L);
         // The Japan state: ring 9 h behind. Forward, one write, straight to UTC.
-        RingProtocol.ClockPlan japan = RingProtocol.planClockWrite(now, 540, -32400L, 0L);
+        RingProtocol.ClockPlan japan = RingProtocol.planClockSlew(now, 540, -32400L, 0L);
         expect("from -32400 (JST): one forward write to plain UTC, 1791127865",
             japan.offsetSec == 0L && japan.writtenSec == 1791127865L && "forward".equals(japan.limit));
         expect("100 s left: the last step is 100 s, 'last-step'",
-            RingProtocol.planClockWrite(now, -240, 100L, 0L).offsetSec == 0L
-                && "last-step".equals(RingProtocol.planClockWrite(now, -240, 100L, 0L).limit));
+            RingProtocol.planClockSlew(now, -240, 100L, 0L).offsetSec == 0L
+                && "last-step".equals(RingProtocol.planClockSlew(now, -240, 100L, 0L).limit));
         expect("at target: writes now, 'at-target'",
-            RingProtocol.planClockWrite(now, -240, 0L, 0L).writtenSec == 1791127865L);
+            RingProtocol.planClockSlew(now, -240, 0L, 0L).writtenSec == 1791127865L);
         // The whole slew from +14400 at one write per 30 min of daytime never steps back more than 170 s.
         long off = 14400L;
         long t = now;
@@ -1210,7 +1210,7 @@ public final class RingProtocolSelfTest {
         int writes = 0;
         boolean allSmall = true;
         while (off > 0 && writes < 1000) {
-            RingProtocol.ClockPlan p = RingProtocol.planClockWrite(t, -240, off, last);
+            RingProtocol.ClockPlan p = RingProtocol.planClockSlew(t, -240, off, last);
             if (p.stepSec() < -RingProtocol.CLOCK_MAX_BACK_STEP_SEC || p.stepSec() > 0) {
                 allSmall = false;
             }
@@ -1232,6 +1232,43 @@ public final class RingProtocolSelfTest {
                 && RingProtocol.clockOffsetSecAt(segs, 1791200000L) == 14060L
                 && RingProtocol.clockOffsetSecAt(new long[0][], 5L) == 0L);
 
+        // --- The hold rule (2026-10-04, the default) ---
+        RingProtocol.ClockPlan hold = RingProtocol.planClockWrite(now, -240, 14400L, 0L, false, false);
+        System.out.println("CLOCK hold " + hold.writtenSec + " offset " + hold.prevOffsetSec + " -> " + hold.offsetSec + " " + hold.limit);
+        expect("hold: from +14400 writes now + 14400 = 1791142265, 'hold', no step",
+            hold.offsetSec == 14400L && hold.writtenSec == 1791142265L && hold.stepSec() == 0L
+                && "hold".equals(hold.limit) && "hold".equals(hold.mode) && !hold.isBackwardStep());
+        expect("hold: in the quiet hours too, 'hold' (no slew rules apply)",
+            "hold".equals(RingProtocol.planClockWrite(1791171065000L, -240, 14400L, 0L, false, false).limit));
+        RingProtocol.ClockPlan holdJst = RingProtocol.planClockWrite(now, 540, -32400L, 0L, false, false);
+        expect("hold: from -32400 (behind UTC) one forward write to plain UTC 1791127865",
+            holdJst.offsetSec == 0L && holdJst.writtenSec == 1791127865L && "forward".equals(holdJst.limit));
+        expect("hold: at UTC stays UTC, 'at-target'",
+            RingProtocol.planClockWrite(now, -240, 0L, 0L, false, false).writtenSec == 1791127865L
+                && "at-target".equals(RingProtocol.planClockWrite(now, -240, 0L, 0L, false, false).limit));
+        RingProtocol.ClockPlan reset = RingProtocol.planClockWrite(now, -240, 14400L, 0L, true, false);
+        expect("reset (no clock) at +14400: plain UTC 1791127865, 'reset', not a backward step",
+            reset.offsetSec == 0L && reset.writtenSec == 1791127865L && "reset".equals(reset.limit)
+                && reset.clockless && !reset.isBackwardStep());
+        expect("restore-utc on: the first slew step, 14230, mode restore-utc",
+            RingProtocol.planClockWrite(now, -240, 14400L, 0L, false, true).offsetSec == 14230L
+                && "restore-utc".equals(RingProtocol.planClockWrite(now, -240, 14400L, 0L, false, true).mode));
+        expect("restore-utc on, reset: plain UTC, 'reset'",
+            "reset".equals(RingProtocol.planClockWrite(now, -240, 13890L, now - 60_000L, true, true).limit)
+                && RingProtocol.planClockWrite(now, -240, 13890L, now - 60_000L, true, true).offsetSec == 0L);
+        // Across a reset: seed +14400, then at 11:31:05 EDT (1791127865) the reset write [1791127865, 0].
+        long[][] across = {{0L, 14400L}, {1791127865L, 0L}};
+        // A record stamped 10:00 EDT under +14400: ring 1791122400 + 14400 = 1791136800 (>= the reset's
+        // ring second, so a ring-second lookup alone reads it as offset 0, 4 h late).
+        expect("across a reset: a pre-reset record that ARRIVED before the reset reads +14400",
+            RingProtocol.clockOffsetSecAt(across, 1791136800L, 1791124000000L) == 14400L);
+        expect("across a reset: the same stamp arriving after the reset is in the future under 0, reads +14400",
+            RingProtocol.clockOffsetSecAt(across, 1791136800L, 1791128000000L) == 14400L);
+        expect("across a reset: a post-reset record (12:00 EDT, ring 1791129600, arrived 12:05) reads 0",
+            RingProtocol.clockOffsetSecAt(across, 1791129600L, 1791129900000L) == 0L);
+        expect("across a reset: with no arrival time the old lookup is unchanged",
+            RingProtocol.clockOffsetSecAt(across, 1791136800L) == 0L);
+
         // 00:05 carries the zone: EDT is Even's 10 ff, byte for byte; JST is 1c 02 (+540).
         expect("00:05 in EDT is byte-identical to the old constant form",
             Arrays.equals(RingProtocol.buildDayAnchorWrite(3, 0x2828, 1789119138L, -240),
@@ -1242,7 +1279,15 @@ public final class RingProtocolSelfTest {
         String clockLine = RingProtocol.ringClockReceiptLine(1791127866000L, a, true, true, true, null);
         System.out.println("RECEIPT " + clockLine);
         expect("ringClock line: written value, target and remaining gap",
-            clockLine.contains("\"writtenSec\":1791142095,\"targetSec\":1791127865,\"gapSec\":14230,\"prevGapSec\":14400,\"stepSec\":-170,\"tzMin\":-240,\"limit\":\"step-cap\",\"written\":true,\"rsp\":true,\"committed\":true}"));
+            clockLine.contains("\"writtenSec\":1791142095,\"targetSec\":1791127865,\"gapSec\":14230,\"prevGapSec\":14400,\"stepSec\":-170,\"tzMin\":-240,\"limit\":\"step-cap\",\"written\":true,\"rsp\":true,\"committed\":true,\"mode\":\"restore-utc\",\"clockless\":false}"));
+        String holdLine = RingProtocol.ringClockReceiptLine(1791127866000L, hold, true, true, true, null);
+        System.out.println("RECEIPT " + holdLine);
+        expect("ringClock line under the hold rule: value written, offset held, why",
+            holdLine.contains("\"writtenSec\":1791142265,\"targetSec\":1791127865,\"gapSec\":14400,\"prevGapSec\":14400,\"stepSec\":0,\"tzMin\":-240,\"limit\":\"hold\",\"written\":true,\"rsp\":true,\"committed\":true,\"mode\":\"hold\",\"clockless\":false}"));
+        String resetLine = RingProtocol.ringClockReceiptLine(1791127866000L, reset, true, true, true, null);
+        expect("ringClock line after a reset: gap 0, limit reset, clockless true",
+            resetLine.contains("\"gapSec\":0,\"prevGapSec\":14400,\"stepSec\":-14400,\"tzMin\":-240,\"limit\":\"reset\"")
+                && resetLine.contains("\"clockless\":true}"));
 
         // A real page, journal n=2573 (10-03 20:07 EDT): trailer 54 01 00 00 = 340 s.
         RingProtocol.Frame page = RingProtocol.parse(unhex(

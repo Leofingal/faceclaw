@@ -252,6 +252,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     static volatile java.util.function.LongSupplier ringClockWallMs = System::currentTimeMillis;
     /**
+     * The ring sent its boot signature on this link, before our 00:0E, and the
+     * push counter does not look like an 8-bit wrap: the ring reset and holds
+     * no clock, so this link's write is forward from nothing whatever value it
+     * carries. Cleared when a link comes up. Guarded by lock.
+     */
+    private boolean ringClocklessThisLink;
+    /**
+     * Developer setting, default off (2026-10-04): slew a ring clock that sits
+     * ahead of UTC back to UTC at 7025819's pace instead of holding it. Read
+     * from {@link FaceclawSettings} at each clock write, so flipping it takes
+     * effect on the next connect.
+     */
+    public static final String RING_CLOCK_RESTORE_UTC_KEY = "developer.ringClockRestoreUtc";
+    /** Harness seam for {@link #RING_CLOCK_RESTORE_UTC_KEY}; null = read the settings store. */
+    static volatile java.util.function.BooleanSupplier ringClockRestoreUtcSetting = null;
+    /**
      * True from a completed handshake until the next pull starts: that pull sends
      * Even's connect-time device REQs (incl. 00:04). A pull on a held link keeps
      * 0daf44f's pings, because Even's held-link syncs send no device frames at
@@ -2283,6 +2299,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         flushPendingRingBoot(-1L);
         synchronized (lock) {
             ringPendingBoot = new long[] {System.currentTimeMillis(), linkAgeMs, prevPushSeq};
+            // 2026-10-04: the clock write that follows on this link goes to plain
+            // UTC (forward from nothing). A previous push seq of f0..ff could be
+            // the 8-bit counter wrapping onto a 00:08 push rather than a reset;
+            // then the ring may still hold its clock, and writing UTC over a
+            // ring at UTC+4 h would be a 4 h backward jump (the health store
+            // formats at 3600 s), so that case is not treated as a reset.
+            // Measured 10-04 11:31:01.334: the boot push arrives in the same
+            // notification batch as, and just before, the RSP to our 00:08,
+            // so the 00:0E that follows sees it.
+            ringClocklessThisLink = prevPushSeq < 0xf0;
         }
     }
 
@@ -2315,6 +2341,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 if (connected) {
                     // Receipt-log only: link age for ringConnectSkipped/ringBoot lines.
                     ringLinkUpElapsedMs = SystemClock.elapsedRealtime();
+                    // A boot signature on this link is what makes its clock write a reset write.
+                    ringClocklessThisLink = false;
                     // Start the on-demand linger from the moment the link came
                     // up, so a link that answers nothing still gets its grace
                     // period before being dropped again.
@@ -2592,6 +2620,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         flushPendingRingBoot(-1L);
         synchronized (lock) {
             ringClockSetWallMs = 0L;
+            ringClocklessThisLink = false;
         }
         // autoConnect=true (see FaceclawBleManager.connect's 3-arg overload) -
         // matches what Even's own app does for this device specifically.
@@ -3244,15 +3273,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // JS store sync reads the same file to undo the offset, so the two
         // sides can no longer drift apart. Every write leaves a ringClock
         // receipt: value written, target, remaining gap.
-        long nowMs = ringClockWallMs.getAsLong();
+        //
+        // 2026-10-04, later (Chris): "It doesn't really matter what time the
+        // ring thinks it is." The slew is no longer the default. The ring HOLDS
+        // the offset it has (UTC+4 h here) and never moves back; a ring behind
+        // UTC, or one that reset on this link, is written plain UTC. The slew
+        // is the developer setting developer.ringClockRestoreUtc (default off).
+        // The write is planned at the 00:0E step, after 00:08's RSP, because
+        // the ring's boot signature (the reset) arrives with that RSP.
         java.io.File healthDir = new java.io.File(appContext.getFilesDir(), "health");
-        RingClockState clockState = RingClockState.load(healthDir, nowMs);
-        int tzMinutes = RingClockState.zoneMinutesEast(nowMs);
-        RingProtocol.ClockPlan clockPlan = RingProtocol.planClockWrite(nowMs, tzMinutes,
-            clockState.offsetSec, clockState.lastBackStepAtMs);
-        long liveClockSeconds = clockPlan.writtenSec;
-        Log.i(TAG, "ring handshake clock: offset " + clockPlan.prevOffsetSec + " -> " + clockPlan.offsetSec
-                + " s (" + clockPlan.limit + "), tz " + tzMinutes + " min (" + TimeZone.getDefault().getID() + ")");
+        RingClockState clockState = null;
+        RingProtocol.ClockPlan clockPlan = null;
+        int tzMinutes = RingClockState.zoneMinutesEast(ringClockWallMs.getAsLong());
 
         // 2026-09-14 (sleep lobe, even-sequence-match): order, repetition and
         // pacing copied from a complete Even connect - bazzite-desktop
@@ -3274,9 +3306,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // pkt 63664 vs 64303). Left alone because it is paired with
         // ringClockOffsetMs() and the -4h sleep correction, and 0daf44f
         // delivered sleep with it. See the 2026-09-14 return before changing.
-        long clockSeconds = liveClockSeconds;
+        long clockSeconds = 0L;
         int[] handshake = {0x08, 0x0e, 0x05, 0x01, 0x05, 0x0a, 0x0a};
         for (int cmdLo : handshake) {
+            if (cmdLo == 0x0e) {
+                long nowMs = ringClockWallMs.getAsLong();
+                boolean clockless;
+                synchronized (lock) {
+                    clockless = ringClocklessThisLink;
+                }
+                boolean restoreUtc = ringClockRestoreUtc();
+                clockState = RingClockState.load(healthDir, nowMs);
+                tzMinutes = RingClockState.zoneMinutesEast(nowMs);
+                clockPlan = RingProtocol.planClockWrite(nowMs, tzMinutes, clockState.offsetSec,
+                    clockState.lastBackStepAtMs, clockless, restoreUtc);
+                clockSeconds = clockPlan.writtenSec;
+                Log.i(TAG, "ring handshake clock: offset " + clockPlan.prevOffsetSec + " -> " + clockPlan.offsetSec
+                    + " s (" + clockPlan.limit + ", " + clockPlan.mode + (clockless ? ", ring reset on this link" : "")
+                    + "), tz " + tzMinutes + " min (" + TimeZone.getDefault().getID() + ")");
+            }
             boolean written = sendRingDeviceFrameAwaitRsp(cmdLo, clockSeconds, tzMinutes, "handshake");
             if (cmdLo == 0x0e) {
                 noteRingClockWrite(healthDir, clockPlan, clockState, written, ringLastDeviceFrameAnswered);
@@ -3299,6 +3347,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringPullFollowsHandshake = true;
         }
         logLine("ring health: sent device-channel handshake (8 frames, Even br4l order)");
+    }
+
+    /** {@link #RING_CLOCK_RESTORE_UTC_KEY}, false when the store cannot be read. */
+    private boolean ringClockRestoreUtc() {
+        java.util.function.BooleanSupplier seam = ringClockRestoreUtcSetting;
+        if (seam != null) {
+            return seam.getAsBoolean();
+        }
+        try {
+            return FaceclawSettings.getInstance(appContext).getBoolean(RING_CLOCK_RESTORE_UTC_KEY, false);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /**
@@ -3327,8 +3388,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         String note = before.seededNow ? "seeded " + before.seed + " " + before.seedOffsetSec : null;
         appendSleepReceipt(RingProtocol.ringClockReceiptLine(wallMs, plan, written, answered, committed, note));
-        logLine("ring clock write " + plan.writtenSec + " target " + plan.nowSec + " gap " + plan.offsetSec
-            + " s (step " + plan.stepSec() + ", " + plan.limit + ")" + (committed ? "" : " NOT committed"));
+        logLine("ring clock write " + plan.writtenSec + " utc " + plan.nowSec + " offset " + plan.offsetSec
+            + " s (step " + plan.stepSec() + ", " + plan.limit + ", " + plan.mode + ")"
+            + (committed ? "" : " NOT committed"));
     }
 
     /**

@@ -49,6 +49,7 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   ringConnectionModeSetting,
+  ringClockRestoreUtcSetting,
   saveVoiceRecordingsSetting,
   screenTimeoutSetting,
   showBleBandwidthSetting,
@@ -223,6 +224,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     blurb: "Diagnostics and switches that are not part of ordinary use.",
     entries: [
       value(ringConnectionModeSetting),
+      value(ringClockRestoreUtcSetting),
       value(saveVoiceRecordingsSetting),
       value(firmwareDebugFlagsSetting),
       value(suspendEvenHubWhenScreenOffSetting),
