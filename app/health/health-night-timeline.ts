@@ -19,6 +19,14 @@
  *     restarted) or no ring contact. **A no-data span is never awake.**
  *   - every ring reset in the window as a marker, wherever it falls.
  *
+ * The TOTALS are not over the drawn window (Chris, 2026-10-04 23:55): sleep
+ * quality is measured from the sleep day's first recorded sleep to its last
+ * wake (the end of its last block). Awake inside that window counts, a
+ * no-data gap inside it is totalled on its own (`noDataSec`, neither asleep nor
+ * awake), and nothing before the first block or after the last counts at all,
+ * however it is drawn. The week/month bars (night assembly, rule 4) already
+ * count exactly this: block stages plus the ring-data part of the gaps.
+ *
  * Two windows (Chris's ruling, 2026-10-04): PRIMARY sleep, 20:00 -> noon, and
  * the FULL sleep day, 20:00 -> 20:00. Sleep that belongs to the day but falls
  * after noon (an afternoon nap) is listed in `outside` so the view can show an
@@ -203,11 +211,25 @@ export type NightTimeline = {
   spans: readonly TimelineSpan[];
   /** Resets inside the window, wherever they fall. */
   resetsMs: readonly number[];
-  /** Light + REM + deep inside the window, seconds. */
+  /**
+   * THE QUALITY WINDOW (Chris, 2026-10-04 23:55): sleep quality is measured
+   * only from the sleep day's FIRST recorded sleep to its LAST wake (the end
+   * of its last block), whatever window is drawn and including a nap the
+   * primary window does not show. Null when the day has no resolved block.
+   * Every total below is over this window, not over the drawn one.
+   */
+  qualityStartMs: number | null;
+  qualityEndMs: number | null;
+  /** Light + REM + deep (and unnamed stages) in the blocks, seconds. */
   asleepSec: number;
-  /** Wake inside blocks plus every awake span in the window, seconds. */
+  /** Wake inside the blocks plus the AWAKE part of the gaps between them, seconds. */
   awakeSec: number;
-  /** Per stage, seconds; `wake` includes the awake gaps. */
+  /**
+   * The part of the gaps between blocks the ring recorded NOTHING for:
+   * neither asleep nor awake, totalled on its own and left out of both.
+   */
+  noDataSec: number;
+  /** Per stage over the quality window, seconds; `wake` includes the awake gaps. */
   stageSec: Readonly<Record<SleepStageName, number>>;
   outside: readonly OutsideSleep[];
   /** False when no block of this sleep day reaches into the window. */
@@ -263,21 +285,54 @@ export function buildNightTimeline(input: {
     for (const [covStart, covEnd] of coverage.intervalsIn(startMs, endMs)) {
       pushNoData(at, covStart);
       spans.push({ kind: "awake", startMs: covStart, endMs: covEnd });
-      stageSec.wake += (covEnd - covStart) / 1000;
       at = covEnd;
     }
     pushNoData(at, endMs);
   };
 
-  let unnamedSec = 0;
-  let cursor = bounds.startMs;
+  // The blocks, a partial overlap with the previous one trimmed off so no
+  // time is drawn or counted twice.
+  const trimmed: { block: SleepSession; start: number }[] = [];
   let previousEnd = Number.NEGATIVE_INFINITY;
   for (const block of blocks) {
-    // A partial overlap with the previous block is trimmed, never drawn twice.
-    const blockStart = Math.max(block.startMs, previousEnd);
+    const start = Math.max(block.startMs, previousEnd);
+    if (block.endMs <= start) continue;
+    trimmed.push({ block, start });
+    previousEnd = block.endMs;
+  }
+
+  // ---- Quality: first recorded sleep -> last wake, over the whole sleep day.
+  let unnamedSec = 0;
+  let noDataSec = 0;
+  trimmed.forEach(({ block, start }, index) => {
+    if (index > 0) {
+      const gapStart = trimmed[index - 1]!.block.endMs;
+      const awake = coverage.secondsIn(gapStart, start);
+      stageSec.wake += awake;
+      noDataSec += Math.max(0, (start - gapStart) / 1000 - awake);
+    }
+    if (start === block.startMs) {
+      // The record's NAMED totals, not a sum of segments: they do not depend
+      // on the unconfirmed stage-id mapping (see `stageSeconds`).
+      stageSec.wake += Math.max(0, block.wakeSec);
+      stageSec.rem += Math.max(0, block.remSec);
+      stageSec.light += Math.max(0, block.lightSec);
+      stageSec.deep += Math.max(0, block.deepSec);
+    } else {
+      for (const run of stageRuns(block, start)) {
+        const seconds = (run.endMs - run.startMs) / 1000;
+        // An unnamed stage inside a block is still time in the block, and not
+        // wake (wake has its own id): counted as asleep, under no stage.
+        if (run.stage) stageSec[run.stage] += seconds;
+        else unnamedSec += seconds;
+      }
+    }
+  });
+
+  // ---- The drawn window.
+  let cursor = bounds.startMs;
+  for (const { block, start: blockStart } of trimmed) {
     const blockEnd = block.endMs;
-    if (blockEnd <= blockStart) continue;
-    previousEnd = blockEnd;
 
     if (blockEnd > bounds.endMs) {
       outside.push({
@@ -296,23 +351,6 @@ export function buildNightTimeline(input: {
       .map((run) => ({ ...run, startMs: Math.max(run.startMs, start), endMs: Math.min(run.endMs, end) }));
     spans.push({ kind: "sleep", startMs: start, endMs: end, blockStartMs: block.startMs, blockEndMs: block.endMs, runs });
 
-    const whole = start === block.startMs && end === block.endMs;
-    if (whole) {
-      // The record's NAMED totals, not a sum of segments: they do not depend
-      // on the unconfirmed stage-id mapping (see `stageSeconds`).
-      stageSec.wake += Math.max(0, block.wakeSec);
-      stageSec.rem += Math.max(0, block.remSec);
-      stageSec.light += Math.max(0, block.lightSec);
-      stageSec.deep += Math.max(0, block.deepSec);
-    } else {
-      for (const run of runs) {
-        const seconds = (run.endMs - run.startMs) / 1000;
-        // An unnamed stage inside a block is still time in the block, and not
-        // wake (wake has its own id): counted as asleep, under no stage.
-        if (run.stage) stageSec[run.stage] += seconds;
-        else unnamedSec += seconds;
-      }
-    }
     cursor = end;
   }
   fillGap(cursor, bounds.endMs);
@@ -328,8 +366,11 @@ export function buildNightTimeline(input: {
     endMs: bounds.endMs,
     spans,
     resetsMs,
+    qualityStartMs: trimmed.length > 0 ? trimmed[0]!.start : null,
+    qualityEndMs: trimmed.length > 0 ? trimmed[trimmed.length - 1]!.block.endMs : null,
     asleepSec: stageSec.rem + stageSec.light + stageSec.deep + unnamedSec,
     awakeSec: stageSec.wake,
+    noDataSec,
     stageSec,
     outside,
     hasSleep: spans.some((span) => span.kind === "sleep"),

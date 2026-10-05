@@ -89,12 +89,18 @@ test("10-04 sleep day, primary window: awake 20:00-22:10, no data 22:10 to the 0
   );
   assert.deepEqual(timeline.resetsMs.length, 1);
 
-  // Totals: asleep from the block's named fields; awake = in-block wake + every awake span.
+  // Quality totals (Chris 2026-10-04 23:55): first recorded sleep to last wake,
+  // 04:06:09-10:50:09; the awake evening and 01:31-04:06 are drawn, not counted.
+  assert.equal(timeline.qualityStartMs, BLOCK_START);
+  assert.equal(timeline.qualityEndMs, BLOCK_END);
   assert.equal(timeline.asleepSec, 23430);
-  const awakeSpans = timeline.spans.filter((s) => s.kind === "awake").reduce((sum, s) => sum + (s.endMs - s.startMs) / 1000, 0);
-  assert.equal(timeline.awakeSec, 810 + awakeSpans);
+  assert.equal(timeline.awakeSec, 810);
+  assert.equal(timeline.noDataSec, 0);
   const rows = Object.fromEntries(vm.statRows.map((r) => [r.label, r.value]));
   assert.equal(rows.Asleep, "6h 31m");
+  assert.equal(rows.Awake, "14m");
+  assert.equal(rows["No data"], undefined);
+  assert.equal(rows.Measured, "4:06 AM - 10:50 AM");
   assert.equal(rows["Ring reset"], "1:31 AM");
   assert.equal(vm.napMarkerVisibility, "collapse", "no nap on 10-04 by 14:06");
 });
@@ -174,11 +180,10 @@ test("the shared state, both ways, on real data: glasses -> phone and phone -> g
     dayMs: DAY_1003,
     window: "full",
   });
-  const gapStart = full.spans.find((s) => s.kind === "sleep").blockEndMs;
-  const inGap = full.spans
-    .filter((s) => s.kind === "awake" && s.startMs >= gapStart && s.endMs <= NAP_START)
-    .reduce((sum, s) => sum + (s.endMs - s.startMs) / 1000, 0);
-  assert.ok(Math.abs(sat.wakeSec - (810 + 810 + inGap)) <= 30, `bar ${sat.wakeSec} s vs timeline ${810 + 810 + inGap} s`);
+  // The bars use the same quality-window totals as the day view.
+  assert.equal(full.qualityEndMs, NAP_END, "10-03's last wake is the end of the plane nap");
+  assert.equal(sat.deepSec + sat.remSec + sat.lightSec, full.asleepSec);
+  assert.ok(Math.abs(sat.wakeSec - full.awakeSec) <= 30, `bar ${sat.wakeSec} s vs day view ${full.awakeSec} s`);
 
   // Phone: step to a day; the glasses' plot follows.
   vm.rangeChips.find((c) => c.key === "day").onTap();

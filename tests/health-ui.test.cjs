@@ -76,8 +76,6 @@ test("timeline: blocks in clock time; awake where the ring has data; no-data whe
       ["nodata", at(6, 30), at(12)],
     ],
   );
-  assert.equal(t.asleepSec, 6600 + 14400);
-  assert.equal(t.awakeSec, 600 + 90 * 60, "wake inside A plus the 1.5 h gap");
   assert.equal(t.spans[0].reason, "no-contact", "3 h with no ring record at all");
   const runs = t.spans[1].runs;
   assert.deepEqual(runs.map((r) => [r.stage, r.startMs]), [
@@ -86,6 +84,21 @@ test("timeline: blocks in clock time; awake where the ring has data; no-data whe
     ["deep", at(0)],
     ["rem", at(0, 30)],
   ]);
+});
+
+test("quality totals: first recorded sleep to last wake of the sleep day, the same in either window", () => {
+  for (const window of ["primary", "full"]) {
+    const t = night(window);
+    assert.equal(t.qualityStartMs, at(-1), "block A's start");
+    assert.equal(t.qualityEndMs, at(15), "the nap's end: the sleep day's last wake, drawn or not");
+    assert.equal(t.asleepSec, 6600 + 14400 + 3600, "A, B and the nap");
+    assert.equal(t.awakeSec, 600 + 90 * 60, "wake inside A plus the A-B gap the ring recorded");
+    assert.equal(t.noDataSec, 7.5 * 3600, "B -> nap, 06:30-14:00, no ring record: neither asleep nor awake");
+    assert.equal(t.stageSec.wake, t.awakeSec);
+  }
+  // Ring data before the first block and after the last never counts.
+  const evening = night("primary", [], [hr(at(-3), 70), hr(at(-2), 72), ...GAP_DATA, hr(at(16), 80)]); // 16:00 is after the nap, the last wake
+  assert.equal(evening.awakeSec, 600 + 90 * 60);
 });
 
 test("timeline: a stretch with no ring record at all is no-data, never awake; a reset at its end explains it", () => {

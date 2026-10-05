@@ -674,12 +674,19 @@ export class HealthViewModel extends Observable {
       window: this.state.sleepWindow,
     });
     this.timeline = timeline;
+    // Totals over the QUALITY window - first recorded sleep to last wake of
+    // the sleep day (Chris 2026-10-04 23:55) - not over the drawn window.
     const stats: StatRow[] = [];
-    if (timeline.hasSleep) {
+    if (timeline.qualityStartMs !== null && timeline.qualityEndMs !== null) {
       stats.push({ label: "Asleep", value: formatDuration(timeline.asleepSec) });
       stats.push({ label: "Awake", value: formatDuration(timeline.awakeSec) });
+      if (timeline.noDataSec >= 60) stats.push({ label: "No data", value: formatDuration(timeline.noDataSec) });
+      stats.push({
+        label: "Measured",
+        value: `${clockText(timeline.qualityStartMs)} - ${clockText(timeline.qualityEndMs)}`,
+      });
     } else {
-      stats.push({ label: "No sleep recorded", value: "in this window" });
+      stats.push({ label: "No sleep recorded", value: "this sleep day" });
     }
     for (const resetMs of timeline.resetsMs) stats.push({ label: "Ring reset", value: clockText(resetMs) });
     return {
