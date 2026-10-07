@@ -154,6 +154,20 @@
          menu edits, so a change here shows up there and vice versa. -->
     <ScrollView visibility="{{ settingsPaneVisibility }}">
       <StackLayout class="ghost-pane-body">
+        <!-- Fresh Context (2026-10-06): an ACTION, the phone's mirror of the
+             same entry in Ghost's window menu on the glasses. It sits on this
+             pane only because the phone's Ghost view has no menu of its own;
+             it is a button, not a setting. No confirm step (Chris, 09-21). -->
+        <Label text="Actions" class="home-section-title" />
+        <StackLayout class="ghost-setting">
+          <Button text="{{ freshContextLabel }}" tap="{{ onFreshContextTap }}"
+            isEnabled="{{ freshContextEnabled }}" class="-primary" />
+          <Label text="Retire this session and start a new one in the same folder. The glasses follow it."
+            class="ghost-setting-desc" textWrap="true" />
+          <Label text="{{ freshContextStatus }}" visibility="{{ freshContextStatusVisibility }}"
+            class="ghost-compose-status" textWrap="true" />
+        </StackLayout>
+
         <Label text="Session" class="home-section-title" />
         <StackLayout class="ghost-setting">
           <Label text="Host" class="ghost-setting-label" />

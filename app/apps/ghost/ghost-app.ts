@@ -22,7 +22,12 @@ import {
   ghostSpeakSetting,
   ghostTokenSetting,
 } from "./ghost-client";
-import { clearGhostCompanion, publishGhostCompanion } from "./ghost-companion-store";
+import {
+  clearGhostCompanion,
+  publishGhostCompanion,
+  setGhostFreshContextHandler,
+} from "./ghost-companion-store";
+import { FRESH_CONTEXT_LABEL } from "./ghost-fresh-context";
 import { GhostLayer } from "./ghost-layer";
 
 export const GHOST_WINDOW_ID = "ghost";
@@ -51,6 +56,16 @@ export function createGhostAppWindow(options: InProcessAppOptions): InProcessWin
       onSelect: (ctx) => {
         ctx.stack.pop();
         void layer.poll();
+      },
+    },
+    {
+      // An ACTION, not a setting (2026-10-06 ruling: settings are phone-only),
+      // and with no confirm step (Chris, 2026-09-21). The result holds the
+      // glass for a few seconds; see GhostLayer.freshContext().
+      label: FRESH_CONTEXT_LABEL,
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        void layer.freshContext();
       },
     },
     {
@@ -102,6 +117,7 @@ export function createGhostAppWindow(options: InProcessAppOptions): InProcessWin
     onClosed: () => {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
+      setGhostFreshContextHandler(null);
       // The phone's companion screen dies with the window. Leaving the last
       // feed published would give the phone a frozen conversation it had no
       // way to know was stale.
@@ -119,6 +135,8 @@ export function createGhostAppWindow(options: InProcessAppOptions): InProcessWin
     app.requestRender();
   };
   publishGhostCompanion({ open: true, ...layer.companionState() });
+  // The phone's Ghost view reaches the same action through the store.
+  setGhostFreshContextHandler(() => layer.freshContext());
   void layer.poll();
   pollTimer = setInterval(() => void layer.poll(), POLL_MS);
   return app;

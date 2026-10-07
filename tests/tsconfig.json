@@ -57,6 +57,8 @@
     "../app/health/health-night-timeline.ts",
     "../app/health/health-coverage.ts",
     "../app/util/log-upload-core.ts",
-    "../app/apps/ghost/ghost-charge-mute.ts"
+    "../app/apps/ghost/ghost-charge-mute.ts",
+    "../app/apps/ghost/ghost-fresh-context.ts",
+    "../app/native/mic-route.ts"
   ]
 }

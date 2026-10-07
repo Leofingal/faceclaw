@@ -8,11 +8,17 @@ import { GhostSttClient } from "./ghost-stt";
 import { ghostSessionSetting, voiceModelIdleUnloadSetting } from "../ui/dashboard-settings";
 import { idleUnloadMinutes, onboardModelKindForProvider } from "./asr-model-defs";
 import { toUint8Array } from "../util/array-util";
+import { isPhoneMicFallback } from "./mic-route";
 
 declare const com: any;
 
 export type VoiceControlState = {
   status: string;
+  /**
+   * The current capture was forced to the phone mic (meant: the hearing aids)
+   * but Android routed it to the phone's built-in mic. See mic-route.ts.
+   */
+  phoneMicFallback?: boolean;
 };
 
 // "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
@@ -118,6 +124,10 @@ export class FaceclawVoiceControlBridge {
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
+  // The live capture's input route, as Java reports it (onInputRoute), and
+  // whether that capture had the phone mic forced. Reset per capture.
+  private inputRoute = "";
+  private captureForcePhoneMic = false;
   private started = false;
   // The mic is a single shared stream; these are the reasons it is running.
   // The first holder starts capture (choosing the provider); the mic stops
@@ -320,6 +330,8 @@ export class FaceclawVoiceControlBridge {
     // provider is the setting as requested; the receipt's mode/model fields
     // say what actually ran, e.g. after a missing cloud key fell back.
     this.controller?.setReceiptContext(options.provider, Boolean(options.forcePhoneMic), holder);
+    this.captureForcePhoneMic = Boolean(options.forcePhoneMic);
+    this.inputRoute = "";
     this.verificationRejected = false;
     if (options.speakerVerification) {
       this.verificationActive = true;
@@ -547,6 +559,13 @@ export class FaceclawVoiceControlBridge {
           listener();
         }
       },
+      onInputRoute: (deviceType: string, _deviceName: string) => {
+        const next = deviceType ? String(deviceType) : "";
+        if (next === this.inputRoute) return;
+        this.inputRoute = next;
+        // Re-broadcast the same status line with the route folded in.
+        this.setStatus(this.status);
+      },
       onSpeakerVerified: (isWearer: boolean, similarity: number) => {
         if (!this.verificationActive) return;
         this.verificationRejected = !isWearer;
@@ -585,8 +604,9 @@ export class FaceclawVoiceControlBridge {
 
   private setStatus(status: string): void {
     this.status = status;
+    const phoneMicFallback = isPhoneMicFallback(this.captureForcePhoneMic, this.inputRoute);
     for (const listener of this.statusListeners) {
-      listener({ status });
+      listener({ status, phoneMicFallback });
     }
   }
 }

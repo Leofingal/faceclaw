@@ -44,6 +44,7 @@ import { shell } from "../../ui/shell/shell";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { clamp } from "../../util/numeric-util";
 import {
+  clearSession,
   fetchActiveSessionId,
   fetchFeed,
   fetchProse,
@@ -58,6 +59,7 @@ import {
   type GhostItem,
 } from "./ghost-client";
 import { appendGhostSpeechReceipt, speakGhost, stopGhostSpeech } from "./ghost-speech";
+import { clearFailure, freshContextMessage, runFreshContext, type ClearResult } from "./ghost-fresh-context";
 import {
   currentAutoSpeechMuteReason,
   mutedSpeechReceiptLine,
@@ -125,6 +127,19 @@ const LISTEN_TIMEOUT_MS = 120_000;
  * with nothing heard, scroll-up still abandons.
  */
 const SCROLL_COMMIT_AFTER_MS = 3_000;
+
+/**
+ * How long a Fresh Context result holds the glass (2026-10-06). Long enough to
+ * read one line after the menu closes; the feed comes back by itself after.
+ */
+const NOTICE_MS = 6_000;
+
+/**
+ * What the listening screen says when a forced-phone-mic capture landed on the
+ * phone's own microphone instead of the hearing aids (2026-10-06: a car's
+ * Bluetooth took the route and dictation quality dropped with no sign of it).
+ */
+export const PHONE_MIC_MARKER = "phone mic";
 
 /**
  * A slow-rotating glyph, evaluated fresh at paint time rather than driven by
@@ -232,6 +247,20 @@ export class GhostLayer implements Layer {
   private heard = "";
   private interim = "";
   private micStatus = "";
+  /**
+   * The live capture is on the phone's built-in mic although the phone mic was
+   * forced (meaning: the hearing aids were wanted). Set from the voice bridge's
+   * status, reset at each capture start; shown as PHONE_MIC_MARKER.
+   */
+  private micFallback = false;
+
+  // -- Fresh Context ----------------------------------------------------------
+  /** The call in flight, so a double tap (or lens + phone) runs it once. */
+  private freshInFlight: Promise<ClearResult> | null = null;
+  /** A one-line result that holds the glass until noticeUntil. */
+  private notice = "";
+  private noticeUntil = 0;
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while this layer is the holder of the shared voice capture. */
   private capturing = false;
   /** The untouched first transcript, kept so a bad merge stays checkable. */
@@ -270,12 +299,15 @@ export class GhostLayer implements Layer {
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
       if (!this.capturing) return;
       this.micStatus = state.status;
+      this.micFallback = Boolean(state.phoneMicFallback);
       this.requestRender();
     });
   }
 
   onRemoved(): void {
     this.closed = true;
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = null;
     this.abortCapture();
     this.cancelAutoSend();
     stopGhostSpeech();
@@ -362,6 +394,8 @@ export class GhostLayer implements Layer {
       this.paintApproval(image, this.approvalItem, ctx.stack.isFocused(), width, height);
     } else if (this.onMic()) {
       this.paintMic(image, width, height);
+    } else if (this.noticeShowing()) {
+      this.paintPage(image, width, height, { meta: "ghost", headline: this.notice, body: [] });
     } else {
       const item = this.currentItem();
       if (!item) {
@@ -573,6 +607,9 @@ export class GhostLayer implements Layer {
         // is MERGED INTO what he already said or REPLACES it.
         const verb = this.addingToRaw ? "Adding" : "Listening";
         headline = `${verb}...  ${spinner}`;
+        // Next to the indicator, not in the body: the body is the recogniser's
+        // own status line and gets replaced as the capture runs.
+        if (this.micFallback) headline += `  ${PHONE_MIC_MARKER}`;
         body = [this.micStatus || "Speak, then tap to send."];
         hint = gestureHints([[GESTURE_CLICK, "send"]]);
         break;
@@ -1084,6 +1121,7 @@ export class GhostLayer implements Layer {
     this.heard = "";
     this.interim = "";
     this.micStatus = "";
+    if (!this.capturing) this.micFallback = false;
     this.micState = "listening";
     this.listenStartedAtMs = Date.now();
     if (!this.capturing) {
@@ -1464,6 +1502,9 @@ export class GhostLayer implements Layer {
     }
     const result = await fetchFeed(sessionId, FEED_LIMIT);
     if (this.closed) return;
+    // The session changed while this poll was out (a Fresh Context, or
+    // auto-follow): its answer belongs to the old feed, so drop it.
+    if (sessionId !== ghostSessionId()) return;
     const feed = result.feed;
     if (!feed) {
       this.status =
@@ -1596,8 +1637,21 @@ export class GhostLayer implements Layer {
 
   private async checkAutoFollow(): Promise<void> {
     if (!ghostAutoFollowSetting.get()) return;
+    const before = ghostSessionId();
     const next = await fetchActiveSessionId();
     if (!next || next === ghostSessionId() || this.closed) return;
+    // The session moved while the pointer was being read (a Fresh Context
+    // adopted its new id): this answer may predate that, so it cannot be
+    // trusted to switch anything. The next tick asks again.
+    if (ghostSessionId() !== before) return;
+    this.adoptSession(next);
+  }
+
+  /**
+   * Point Ghost at another session and drop everything scoped to the old one.
+   * Shared by auto-follow and Fresh Context.
+   */
+  private adoptSession(next: string): void {
     // Everything cached below is scoped to the OLD session's feed. Carrying it
     // across would show a stale headline captioned as if it belonged to the
     // new session.
@@ -1618,5 +1672,47 @@ export class GhostLayer implements Layer {
     this.resetMic();
     stopGhostSpeech();
     this.status = "";
+  }
+
+  // =========================================================================
+  // Fresh Context (2026-10-06)
+  //
+  // An action in Ghost's window menu, mirrored on the phone's Ghost view
+  // through the companion store. No confirm step (Chris, 2026-09-21). The
+  // box retires the session and returns a new id with an agent already
+  // running; this adopts it at once, since the old id 404s from then on.
+
+  freshContext(): Promise<ClearResult> {
+    if (this.closed) return Promise.resolve(clearFailure("not-open"));
+    if (this.freshInFlight) return this.freshInFlight;
+    this.showNotice("Fresh context...");
+    const run = runFreshContext({
+      currentSessionId: () => ghostSessionId(),
+      clearSession: (id) => clearSession(id),
+      adopt: (id) => this.adoptSession(id),
+    }).then((result) => {
+      this.freshInFlight = null;
+      if (!this.closed) this.showNotice(freshContextMessage(result));
+      return result;
+    });
+    this.freshInFlight = run;
+    return run;
+  }
+
+  private noticeShowing(): boolean {
+    return this.notice !== "" && Date.now() < this.noticeUntil;
+  }
+
+  private showNotice(text: string): void {
+    this.notice = text;
+    this.noticeUntil = Date.now() + NOTICE_MS;
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    // Repaint when it lapses so the feed comes back without waiting on a poll.
+    this.noticeTimer = setTimeout(() => {
+      this.noticeTimer = null;
+      this.notice = "";
+      this.requestRender();
+    }, NOTICE_MS);
+    this.requestRender();
   }
 }

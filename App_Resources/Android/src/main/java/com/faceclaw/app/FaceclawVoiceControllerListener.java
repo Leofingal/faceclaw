@@ -41,4 +41,13 @@ public interface FaceclawVoiceControllerListener {
      * speaker model could not be loaded.
      */
     void onSpeakerVerified(boolean isWearer, float similarity);
+
+    /**
+     * The input a phone-mic capture is actually routed to, as a type label
+     * ("BLE_HEADSET", "BUILTIN_MIC", ...; "" when unknown) and product name.
+     * Emitted once audio flows and on every routing change. Never fires for a
+     * G2 capture. Added 2026-10-06 so the glasses can mark a capture that fell
+     * to the phone's own mic when the hearing aids were wanted.
+     */
+    void onInputRoute(String deviceType, String deviceName);
 }

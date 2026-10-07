@@ -54,8 +54,10 @@ import {
 import {
   ghostCompanionState,
   onGhostCompanionChanged,
+  requestGhostFreshContext,
   type GhostCompanionState,
 } from "../apps/ghost/ghost-companion-store";
+import { FRESH_CONTEXT_LABEL, freshContextMessage } from "../apps/ghost/ghost-fresh-context";
 import { formatErrorMessage } from "../util/format-error";
 import {
   buildBasenameIndex,
@@ -210,11 +212,19 @@ export class GhostCompanionViewModel extends Observable {
 
   private unsubscribe: (() => void) | null = null;
 
+  // ── Fresh Context (2026-10-06) ──────────────────────────────────────────
+  private _freshBusy = false;
+  private _freshStatus = "";
+
   attach(): void {
     if (this.unsubscribe) return;
     this._state = ghostCompanionState();
     this.unsubscribe = onGhostCompanionChanged((state) => {
+      const sessionChanged = state.sessionId !== this._state.sessionId;
       this._state = state;
+      // A new session (Fresh Context, or auto-follow) shares nothing with the
+      // old one's transcript; showing it under the new id would be a lie.
+      if (sessionChanged) this.resetTranscriptState();
       this.refreshFeed();
     });
     this.refreshFeed();
@@ -247,6 +257,8 @@ export class GhostCompanionViewModel extends Observable {
     if (!sessionId) return;
     fetchTranscript(sessionId)
       .then((turns) => {
+        // The session moved while this was out; its turns belong to the old one.
+        if (this._state.sessionId !== sessionId) return;
         this._transcript = turns;
         this._transcriptError = "";
         this.refreshTranscriptViews();
@@ -258,6 +270,20 @@ export class GhostCompanionViewModel extends Observable {
         this._transcriptError = formatErrorMessage(error, 160);
         this.refreshTranscriptViews();
       });
+  }
+
+  /** Drop everything scoped to the previous session's transcript. */
+  private resetTranscriptState(): void {
+    this._transcript = [];
+    this._transcriptError = "";
+    this._pinnedUuid = null;
+    this._docFileRef = null;
+    this._docFileText = "";
+    this._docFileLoading = false;
+    this._docFileError = "";
+    // Same working directory, but re-read the manifest under the new id.
+    this.manifestSessionId = null;
+    this.refreshTranscriptViews();
   }
 
   private refreshFileManifestIfStale(sessionId: string): void {
@@ -862,6 +888,64 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("speakReplies", this.speakReplies);
   }
 
+  // ── Fresh Context ───────────────────────────────────────────────────────
+  //
+  // The phone's mirror of the Ghost window menu's action. It does not call the
+  // box itself: the store hands it to the open GhostLayer, which owns the
+  // session id, so lens and phone adopt the new session through one path.
+  // No confirm step (Chris, 2026-09-21).
+
+  get freshContextLabel(): string {
+    return this._freshBusy ? "Fresh Context…" : FRESH_CONTEXT_LABEL;
+  }
+
+  get freshContextEnabled(): boolean {
+    return !this._freshBusy && !!this._state.sessionId;
+  }
+
+  get freshContextStatus(): string {
+    return this._freshStatus;
+  }
+
+  get freshContextStatusVisibility(): "visible" | "collapse" {
+    return this._freshStatus ? "visible" : "collapse";
+  }
+
+  onFreshContextTap(): Promise<void> {
+    if (this._freshBusy) return Promise.resolve();
+    this._freshBusy = true;
+    this.setFreshStatus("");
+    this.notifyFresh();
+    return requestGhostFreshContext()
+      .then((result) => {
+        this.setFreshStatus(freshContextMessage(result));
+        if (!result.failure && result.sessionId) {
+          // The layer has already adopted the id and published it, which reset
+          // the transcript above; this covers a store that had not yet
+          // delivered. The pane stays put so the result line stays readable.
+          if (this._state.sessionId !== result.sessionId) this.resetTranscriptState();
+        }
+      })
+      .catch((error) => {
+        this.setFreshStatus(formatErrorMessage(error, 160));
+      })
+      .then(() => {
+        this._freshBusy = false;
+        this.notifyFresh();
+      });
+  }
+
+  private setFreshStatus(value: string): void {
+    this._freshStatus = value;
+    this.notifyPropertyChange("freshContextStatus", value);
+    this.notifyPropertyChange("freshContextStatusVisibility", this.freshContextStatusVisibility);
+  }
+
+  private notifyFresh(): void {
+    this.notifyPropertyChange("freshContextLabel", this.freshContextLabel);
+    this.notifyPropertyChange("freshContextEnabled", this.freshContextEnabled);
+  }
+
   // ── Compose ─────────────────────────────────────────────────────────────
 
   get composeText(): string {
@@ -938,6 +1022,7 @@ export class GhostCompanionViewModel extends Observable {
     this.notifyPropertyChange("sendEnabled", this.sendEnabled);
     this.notifyPropertyChange("ghostSession", this.ghostSession);
     this.notifyPropertyChange("autoFollow", this.autoFollow);
+    this.notifyFresh();
     this.notifyDocChange();
     this.loadDocFileIfNeeded();
   }

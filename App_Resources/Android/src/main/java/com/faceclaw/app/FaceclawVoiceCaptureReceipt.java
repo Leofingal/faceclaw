@@ -125,6 +125,16 @@ public final class FaceclawVoiceCaptureReceipt {
     private Device routedAfterStart;
     private Device routedAtFirstAudio;
     private final List<RoutingChange> routingChanges = new ArrayList<>();
+    /** Every input type listed when the request was chosen (2026-10-06). */
+    private String[] inputsSeen;
+    // The communication-device step (FaceclawMicRoute.chooseCommunicationDevice),
+    // taken only when no hearing-aid input was listed. Null = not attempted.
+    private boolean commTried;
+    private String[] commAvailable;
+    private Device commDevice;
+    private boolean commAccepted;
+    private Device commInputAfter;
+    private long commWaitMs;
     private int routingChangesOmitted;
     private Boolean clientSilenced;
 
@@ -210,6 +220,27 @@ public final class FaceclawVoiceCaptureReceipt {
     public synchronized void setRequestedNoneFound() {
         requestSearched = true;
         requested = null;
+    }
+
+    /** The input device types listed when the requested device was chosen. */
+    public synchronized void setInputsSeen(String[] types) {
+        inputsSeen = types == null ? null : types.clone();
+    }
+
+    /**
+     * The communication-device step ran. {@code device} null means no hearing
+     * device was offered among {@code available}; otherwise {@code accepted} is
+     * setCommunicationDevice()'s return, and {@code inputAfter} the hearing-aid
+     * input that appeared within {@code waitMs} (null if none did).
+     */
+    public synchronized void setCommDevice(String[] available, Device device, boolean accepted,
+                                           Device inputAfter, long waitMs) {
+        commTried = true;
+        commAvailable = available == null ? null : available.clone();
+        commDevice = device;
+        commAccepted = accepted;
+        commInputAfter = inputAfter;
+        commWaitMs = waitMs;
     }
 
     /** getRoutedDevice() right after startRecording(); often still null that early. */
@@ -418,6 +449,25 @@ public final class FaceclawVoiceCaptureReceipt {
                 out.append("{\"found\":true,\"device\":");
                 appendDevice(out, requested);
                 out.append(",\"accepted\":").append(requestAccepted).append('}');
+            }
+            out.append(",\"inputsSeen\":");
+            appendStrings(out, inputsSeen);
+            out.append(",\"commDevice\":");
+            if (!commTried) {
+                out.append("null");
+            } else {
+                out.append("{\"available\":");
+                appendStrings(out, commAvailable);
+                if (commDevice == null) {
+                    out.append(",\"found\":false}");
+                } else {
+                    out.append(",\"found\":true,\"device\":");
+                    appendDevice(out, commDevice);
+                    out.append(",\"accepted\":").append(commAccepted);
+                    out.append(",\"inputAfter\":");
+                    appendDevice(out, commInputAfter);
+                    out.append(",\"waitMs\":").append(commWaitMs).append('}');
+                }
             }
             out.append(",\"routedAfterStart\":");
             appendDevice(out, routedAfterStart);
@@ -633,6 +683,21 @@ public final class FaceclawVoiceCaptureReceipt {
         if (truncated) {
             out.append(",\"transcriptTruncated\":true");
         }
+    }
+
+    private static void appendStrings(StringBuilder out, String[] values) {
+        if (values == null) {
+            out.append("null");
+            return;
+        }
+        out.append('[');
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) {
+                out.append(',');
+            }
+            out.append(json(values[i]));
+        }
+        out.append(']');
     }
 
     private static void appendDevice(StringBuilder out, Device device) {

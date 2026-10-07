@@ -13,6 +13,7 @@
  * hosted app could not use this as-is; see the return doc.
  */
 import { type GhostItem } from "./ghost-client";
+import { clearFailure, type ClearResult } from "./ghost-fresh-context";
 import { parseGhostTimestamp } from "../exocortex/status-line";
 
 export type GhostCompanionState = {
@@ -129,4 +130,24 @@ export function publishGhostCompanion(patch: Partial<GhostCompanionState>): void
  */
 export function clearGhostCompanion(): void {
   publishGhostCompanion({ open: false, items: [], cursor: -1, status: "", sessionId: "" });
+}
+
+/**
+ * Fresh Context, as the phone reaches it. The ACTION belongs to the layer on
+ * the glasses (it owns the session id and the feed it must reset), so the
+ * phone's Ghost view does not call the box itself: it asks the open window to
+ * do exactly what its own menu entry does. One code path, so the lens and the
+ * phone can never disagree about which session is live afterwards.
+ *
+ * Null while Ghost's window is closed; the phone view only shows while it is
+ * open, so "not-open" is a guard, not a state anyone should see.
+ */
+let freshContextHandler: (() => Promise<ClearResult>) | null = null;
+
+export function setGhostFreshContextHandler(handler: (() => Promise<ClearResult>) | null): void {
+  freshContextHandler = handler;
+}
+
+export function requestGhostFreshContext(): Promise<ClearResult> {
+  return freshContextHandler ? freshContextHandler() : Promise.resolve(clearFailure("not-open"));
 }

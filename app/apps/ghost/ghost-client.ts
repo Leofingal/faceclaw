@@ -19,6 +19,7 @@ import {
   ghostTokenSetting,
 } from "../../ui/dashboard-settings";
 import { fetchWithUserAgent } from "../../util/http";
+import { classifyClearResponse, clearFailure, type ClearResult } from "./ghost-fresh-context";
 
 export { ghostHostSetting, ghostTokenSetting, ghostSessionSetting };
 
@@ -202,6 +203,26 @@ export async function sendInput(sessionId: string, text: string): Promise<boolea
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Fresh Context: retire this session on the box and get the id of the new one
+ * (POST /api/glasses/:id/clear). Never rejects; see ghost-fresh-context.ts for
+ * how the answer is read, including the "server predates this route" gate.
+ */
+export async function clearSession(sessionId: string): Promise<ClearResult> {
+  if (!sessionId) return clearFailure("no-session");
+  try {
+    const response = await fetchWithUserAgent(`${ghostHost()}/api/glasses/${sessionId}/clear`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json", ...ghostAuthHeaders() },
+      body: "{}",
+    });
+    const body = await response.text().catch(() => "");
+    return classifyClearResponse(response.status, body);
+  } catch (error) {
+    return clearFailure("offline", String((error as Error)?.message ?? error));
   }
 }
 

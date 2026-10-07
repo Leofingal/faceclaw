@@ -34,6 +34,7 @@ public final class VoiceCaptureSelfTest {
         testAppendCap();
         testNonSpeechTags();
         testTagsDroppedInLine();
+        testCommDeviceLines();
 
         System.out.println();
         System.out.println(failures == 0
@@ -198,6 +199,41 @@ public final class VoiceCaptureSelfTest {
         silenced.noteClientSilenced(true);
         silenced.noteClientSilenced(false);
         contains("silenced is sticky", silenced.toJsonLine(), "\"clientSilenced\":true");
+    }
+
+    /**
+     * 2026-10-06: the input list and the communication-device step. The car
+     * case (requested.found=false) is the one these fields exist to explain.
+     */
+    private static void testCommDeviceLines() {
+        section("input list + communication device");
+        FaceclawVoiceCaptureReceipt plain = phoneReceipt("whisper");
+        String plainLine = plain.toJsonLine();
+        contains("no input list before a search", plainLine, "\"inputsSeen\":null");
+        contains("no comm step unless tried", plainLine, "\"commDevice\":null");
+
+        FaceclawVoiceCaptureReceipt car = phoneReceipt("whisper");
+        car.setInputsSeen(new String[] {"BUILTIN_MIC", "BLUETOOTH_SCO"});
+        car.setRequestedNoneFound();
+        FaceclawVoiceCaptureReceipt.Device aids = new FaceclawVoiceCaptureReceipt.Device("BLE_HEADSET", "Christ Hearing aids", 502);
+        car.setCommDevice(new String[] {"BUILTIN_EARPIECE", "BLE_HEADSET"}, aids, true, aids, 150);
+        String carLine = car.toJsonLine();
+        System.out.println("EXAMPLE " + carLine);
+        contains("input list in order", carLine, "\"inputsSeen\":[\"BUILTIN_MIC\",\"BLUETOOTH_SCO\"]");
+        contains("comm step: offered, chosen, accepted, input back, wait", carLine,
+            "\"commDevice\":{\"available\":[\"BUILTIN_EARPIECE\",\"BLE_HEADSET\"],\"found\":true,"
+                + "\"device\":{\"type\":\"BLE_HEADSET\",\"name\":\"Christ Hearing aids\",\"id\":502},"
+                + "\"accepted\":true,\"inputAfter\":{\"type\":\"BLE_HEADSET\",\"name\":\"Christ Hearing aids\",\"id\":502},"
+                + "\"waitMs\":150}");
+
+        FaceclawVoiceCaptureReceipt none = phoneReceipt("whisper");
+        none.setCommDevice(new String[] {"BUILTIN_EARPIECE", "BLUETOOTH_SCO"}, null, false, null, 0);
+        contains("comm step: nothing offered", none.toJsonLine(),
+            "\"commDevice\":{\"available\":[\"BUILTIN_EARPIECE\",\"BLUETOOTH_SCO\"],\"found\":false}");
+
+        FaceclawVoiceCaptureReceipt g2 = new FaceclawVoiceCaptureReceipt(1789440100000L, 1789440100000L, 9_000L,
+            "soniox", "continuous", false, "cloud", null, false);
+        check("no input list on g2", g2.toJsonLine().indexOf("inputsSeen") < 0);
     }
 
     private static void testG2Line() {

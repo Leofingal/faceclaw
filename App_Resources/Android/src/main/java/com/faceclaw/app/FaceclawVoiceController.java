@@ -162,6 +162,20 @@ public class FaceclawVoiceController {
     private volatile String lastCaptureProvider;
     // Worker thread only: the phone-mic routing listener, removed before release.
     private android.media.AudioRouting.OnRoutingChangedListener phoneMicRoutingListener;
+    /**
+     * True while this capture has made the hearing aids the communication
+     * device (see selectHearingCommunicationDevice); cleared, and the device
+     * released, when the capture's worker ends. Only touched on the worker.
+     */
+    private boolean commDeviceSetByCapture;
+    /**
+     * How long to wait for the hearing aids' input to appear after making them
+     * the communication device. A judgment, not a measurement: long enough for
+     * a Bluetooth profile switch, short enough that a capture start in the car
+     * does not feel stuck. Verify in the car.
+     */
+    private static final long COMM_INPUT_WAIT_MS = 600;
+    private static final long COMM_INPUT_POLL_MS = 50;
 
     public FaceclawVoiceController(Context context) {
         this.appContext = context.getApplicationContext();
@@ -562,6 +576,7 @@ public class FaceclawVoiceController {
             failure = "error";
             failureMessage = error.getClass().getSimpleName() + ": " + error.getMessage();
         } finally {
+            releaseCommunicationDevice();
             stopG2Audio();
             writeRecordingIfAny();
             // Before releaseLc3(): the G2 packet counters are read off the decoder.
@@ -982,7 +997,12 @@ public class FaceclawVoiceController {
                 record.release();
                 return null;
             }
-            android.media.AudioDeviceInfo preferredInput = findPreferredBleAudioInput();
+            android.media.AudioDeviceInfo preferredInput = findPreferredBleAudioInput(r);
+            if (preferredInput == null) {
+                // 2026-10-06: a car on classic Bluetooth took the hearing aids'
+                // input off the list entirely. Try to bring it back.
+                preferredInput = selectHearingCommunicationDevice(r);
+            }
             if (preferredInput != null) {
                 boolean accepted = record.setPreferredDevice(preferredInput);
                 Log.i(TAG, "phone mic: requesting preferred input device type="
@@ -1009,8 +1029,9 @@ public class FaceclawVoiceController {
                 final long startElapsed = r.startElapsedMs;
                 android.media.AudioRouting.OnRoutingChangedListener routingListener = router -> {
                     try {
-                        r.addRoutingChange(SystemClock.elapsedRealtime() - startElapsed,
-                                deviceOf(router.getRoutedDevice()));
+                        android.media.AudioDeviceInfo routed = router.getRoutedDevice();
+                        r.addRoutingChange(SystemClock.elapsedRealtime() - startElapsed, deviceOf(routed));
+                        emitInputRoute(routed);
                     } catch (Throwable ignored) {
                         // A receipt must never break capture.
                     }
@@ -1053,32 +1074,147 @@ public class FaceclawVoiceController {
      * calls, so an old OS that never returns a device of that type just never
      * matches -- no version guard needed.
      */
-    private android.media.AudioDeviceInfo findPreferredBleAudioInput() {
+    private android.media.AudioDeviceInfo findPreferredBleAudioInput(FaceclawVoiceCaptureReceipt r) {
+        android.media.AudioDeviceInfo[] inputs = listInputs();
+        if (inputs == null) {
+            return null;
+        }
+        String[] types = typesOf(inputs);
+        if (r != null) {
+            r.setInputsSeen(types);
+        }
+        // The choice itself is FaceclawMicRoute.chooseInput (pure, self-tested):
+        // the dedicated hearing-aid type over the general BLE Audio type.
+        int index = FaceclawMicRoute.chooseInput(types);
+        return index < 0 ? null : inputs[index];
+    }
+
+    private android.media.AudioDeviceInfo[] listInputs() {
         android.media.AudioManager audioManager =
                 (android.media.AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
         if (audioManager == null) {
             return null;
         }
-        android.media.AudioDeviceInfo[] inputs;
         try {
-            inputs = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
+            return audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
         } catch (Throwable t) {
             Log.w(TAG, "phone mic: could not enumerate input devices", t);
             return null;
         }
-        android.media.AudioDeviceInfo hearingAid = null;
-        android.media.AudioDeviceInfo bleHeadset = null;
-        for (android.media.AudioDeviceInfo device : inputs) {
-            int type = device.getType();
-            if (type == android.media.AudioDeviceInfo.TYPE_HEARING_AID) {
-                hearingAid = device;
-            } else if (type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET) {
-                bleHeadset = device;
-            }
+    }
+
+    private static String[] typesOf(android.media.AudioDeviceInfo[] devices) {
+        String[] types = new String[devices.length];
+        for (int i = 0; i < devices.length; i++) {
+            types[i] = describeAudioDeviceType(devices[i].getType());
         }
-        // Prefer the dedicated hearing-aid type over the general BLE Audio
-        // type when both are somehow present.
-        return hearingAid != null ? hearingAid : bleHeadset;
+        return types;
+    }
+
+    /**
+     * No hearing-aid input is listed, but the hearing aids may still be
+     * connected (2026-10-06: the car's classic-Bluetooth hands-free connected
+     * and the LE Audio input vanished from GET_DEVICES_INPUTS while the aids
+     * stayed paired). If Android still offers them as a communication device
+     * (API 31), select them for the length of this capture and wait briefly
+     * for their input to come back; return that input, or null.
+     *
+     * Guarded to MODE_NORMAL: during a phone call the communication device IS
+     * the call's route, and moving it to dictate would move the call.
+     * Released in runLoop()'s finally (releaseCommunicationDevice). Whether the
+     * input actually returns is unverified: it needs a capture in the car.
+     */
+    private android.media.AudioDeviceInfo selectHearingCommunicationDevice(FaceclawVoiceCaptureReceipt r) {
+        if (android.os.Build.VERSION.SDK_INT < 31) {
+            return null;
+        }
+        android.media.AudioManager audioManager =
+                (android.media.AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager == null) {
+            return null;
+        }
+        try {
+            if (audioManager.getMode() != android.media.AudioManager.MODE_NORMAL) {
+                Log.i(TAG, "phone mic: audio mode " + audioManager.getMode()
+                        + " (call?); not touching the communication device");
+                return null;
+            }
+            java.util.List<android.media.AudioDeviceInfo> available =
+                    audioManager.getAvailableCommunicationDevices();
+            android.media.AudioDeviceInfo[] offered =
+                    available.toArray(new android.media.AudioDeviceInfo[0]);
+            String[] offeredTypes = typesOf(offered);
+            int index = FaceclawMicRoute.chooseCommunicationDevice(offeredTypes);
+            if (index < 0) {
+                Log.i(TAG, "phone mic: no hearing device among communication devices "
+                        + java.util.Arrays.toString(offeredTypes));
+                if (r != null) {
+                    r.setCommDevice(offeredTypes, null, false, null, 0);
+                }
+                return null;
+            }
+            android.media.AudioDeviceInfo device = offered[index];
+            boolean accepted = audioManager.setCommunicationDevice(device);
+            commDeviceSetByCapture = accepted;
+            long waitStart = SystemClock.elapsedRealtime();
+            android.media.AudioDeviceInfo input = null;
+            if (accepted) {
+                while (input == null && SystemClock.elapsedRealtime() - waitStart < COMM_INPUT_WAIT_MS) {
+                    android.media.AudioDeviceInfo[] inputs = listInputs();
+                    if (inputs != null) {
+                        int found = FaceclawMicRoute.chooseInput(typesOf(inputs));
+                        if (found >= 0) {
+                            input = inputs[found];
+                            break;
+                        }
+                    }
+                    try {
+                        Thread.sleep(COMM_INPUT_POLL_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            long waited = SystemClock.elapsedRealtime() - waitStart;
+            Log.i(TAG, "phone mic: communication device " + describeAudioDeviceType(device.getType())
+                    + " " + device.getProductName() + " accepted=" + accepted
+                    + " inputAfter=" + (input == null ? "none" : describeAudioDeviceType(input.getType()))
+                    + " waitedMs=" + waited);
+            if (r != null) {
+                r.setCommDevice(offeredTypes, deviceOf(device), accepted, deviceOf(input), waited);
+            }
+            if (input == null) {
+                // Nothing came back: do not leave calls routed to the aids
+                // for a capture that is on the built-in mic anyway.
+                releaseCommunicationDevice();
+            }
+            return input;
+        } catch (Throwable t) {
+            Log.w(TAG, "phone mic: communication-device step failed", t);
+            releaseCommunicationDevice();
+            return null;
+        }
+    }
+
+    /** Undo selectHearingCommunicationDevice(), if it took. Never throws. */
+    private void releaseCommunicationDevice() {
+        if (!commDeviceSetByCapture) {
+            return;
+        }
+        commDeviceSetByCapture = false;
+        if (android.os.Build.VERSION.SDK_INT < 31) {
+            return;
+        }
+        try {
+            android.media.AudioManager audioManager =
+                    (android.media.AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.clearCommunicationDevice();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "phone mic: clearCommunicationDevice failed", t);
+        }
     }
 
     /** The receipt's plain-value view of an Android audio device; null stays null. */
@@ -1216,6 +1352,8 @@ public class FaceclawVoiceController {
                     r.setRoutedAtFirstAudio(deviceOf(routed));
                     sampleClientSilenced(record, r);
                 }
+                // The listening screen's "phone mic" marker keys on this.
+                emitInputRoute(routed);
             }
             decodedSamples += read;
             processPcmChunk(pcm, read, 0, 0, false);
@@ -1389,6 +1527,18 @@ public class FaceclawVoiceController {
             return;
         }
         mainHandler.post(() -> currentListener.onFrameMeta(angleDegrees, ssr));
+    }
+
+    /** The phone-mic capture's routed input (type label + name); null is "". */
+    private void emitInputRoute(android.media.AudioDeviceInfo device) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null) {
+            return;
+        }
+        final String type = device == null ? "" : describeAudioDeviceType(device.getType());
+        CharSequence productName = device == null ? null : device.getProductName();
+        final String name = productName == null ? "" : productName.toString();
+        mainHandler.post(() -> currentListener.onInputRoute(type, name));
     }
 
     private void emitSpeechEnd() {
